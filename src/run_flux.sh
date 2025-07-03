@@ -3,11 +3,11 @@
 # =============================================================================
 # FLUX Artifact Generation Pipeline Script
 # =============================================================================
-# This script runs FLUX artifact generation using pre-processed VLPart results
+# This script runs FLUX artifact generation using pre-processed GSAM results
 # to create visual artifacts for training data synthesis.
 #
-# Usage: ./run_flux.sh [vlpart_output_dir] [options]
-# Example: ./run_flux.sh vlpart_output_person --artifact-types "distortion removal"
+# Usage: ./run_flux.sh [gsam_output_dir] [options]
+# Example: ./run_flux.sh gsam_output_person --artifact-types "distortion removal"
 # =============================================================================
 
 set -e  # Exit on any error
@@ -24,13 +24,18 @@ if [[ -n "$OPENAI_API_KEY" ]]; then
 fi
 
 # Default values
-VLPART_DIR=""
+GSAM_DIR=""
 ARTIFACT_TYPES="addition removal distortion"
 DEVICE="cuda"
 RESUME=false
 OUTPUT_DIR=""
 INJECT=15
 USE_RF_SOLVER=false
+PE_STEP_ADDITION=0.3
+PE_STEP_REMOVAL=0.5
+PE_STEP_DISTORTION=0.7
+GUIDANCE=5.0
+NUM_STEPS=25
 
 # Colors for output
 RED='\033[0;31m'
@@ -70,10 +75,10 @@ show_help() {
 FLUX Artifact Generation Pipeline
 
 USAGE:
-    ./run_flux.sh <vlpart_output_dir> [OPTIONS]
+    ./run_flux.sh <gsam_output_dir> [OPTIONS]
 
 ARGUMENTS:
-    vlpart_output_dir       Directory containing VLPart segmentation results
+    gsam_output_dir         Directory containing GSAM segmentation results
                            (must contain processed_data/ subdirectory)
 
 OPTIONS:
@@ -82,7 +87,7 @@ OPTIONS:
     --device DEVICE         Device to use (default: cuda)
     --output-dir DIR        Output directory (default: flux_output_<supercategory>)
     --resume                Resume processing from previous run
-    --inject INT            Inject step for FLUX generation (default: 25)
+    --inject INT            Inject step for FLUX generation (default: 15)
     --pe-step-addition FLOAT PE step value for addition artifacts (default: 0.3)
     --pe-step-removal FLOAT  PE step value for removal artifacts (default: 0.5)
     --pe-step-distortion FLOAT PE step value for distortion artifacts (default: 0.7)
@@ -93,31 +98,31 @@ OPTIONS:
 
 EXAMPLES:
     # Basic usage
-    ./run_flux.sh vlpart_output_person
+    ./run_flux.sh gsam_output_person
 
     # Generate only distortion artifacts
-    ./run_flux.sh vlpart_output_person --artifact-types "distortion"
+    ./run_flux.sh gsam_output_person --artifact-types "distortion"
 
     # Use CPU and custom output directory
-    ./run_flux.sh vlpart_output_animal --device cpu --output-dir custom_flux_results
+    ./run_flux.sh gsam_output_animal --device cpu --output-dir custom_flux_results
 
     # Resume interrupted processing
-    ./run_flux.sh vlpart_output_person --resume
+    ./run_flux.sh gsam_output_person --resume
 
     # Custom inject step value
-    ./run_flux.sh vlpart_output_person --inject 30
+    ./run_flux.sh gsam_output_person --inject 30
 
     # Custom PE step values for fine-tuning
-    ./run_flux.sh vlpart_output_person --pe-step-addition 0.2 --pe-step-removal 0.6 --pe-step-distortion 0.8
+    ./run_flux.sh gsam_output_person --pe-step-addition 0.2 --pe-step-removal 0.6 --pe-step-distortion 0.8
 
     # Adjust FLUX parameters
-    ./run_flux.sh vlpart_output_person --guidance 7.5 --num-steps 30
+    ./run_flux.sh gsam_output_person --guidance 7.5 --num-steps 30
 
     # Use RF solver for more accurate generation
-    ./run_flux.sh vlpart_output_person --use-rf-solver
+    ./run_flux.sh gsam_output_person --use-rf-solver
 
 REQUIREMENTS:
-    - VLPart results directory with processed_data/ subdirectory
+    - GSAM results directory with processed_data/ subdirectory
     - OPENAI_API_KEY environment variable set
     - Python environment with required FLUX dependencies
 
@@ -192,10 +197,10 @@ while [[ $# -gt 0 ]]; do
             exit 1
             ;;
         *)
-            if [[ -z "$VLPART_DIR" ]]; then
-                VLPART_DIR="$1"
+            if [[ -z "$GSAM_DIR" ]]; then
+                GSAM_DIR="$1"
             else
-                print_error "Multiple VLPart directories specified: $VLPART_DIR and $1"
+                print_error "Multiple GSAM directories specified: $GSAM_DIR and $1"
                 exit 1
             fi
             shift
@@ -204,29 +209,29 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate required arguments
-if [[ -z "$VLPART_DIR" ]]; then
-    print_error "VLPart output directory is required"
+if [[ -z "$GSAM_DIR" ]]; then
+    print_error "GSAM output directory is required"
     show_help
     exit 1
 fi
 
-# Verify VLPart directory exists and has required structure
-if [[ ! -d "$VLPART_DIR" ]]; then
-    print_error "VLPart directory does not exist: $VLPART_DIR"
+# Verify GSAM directory exists and has required structure
+if [[ ! -d "$GSAM_DIR" ]]; then
+    print_error "GSAM directory does not exist: $GSAM_DIR"
     exit 1
 fi
 
-if [[ ! -d "$VLPART_DIR/processed_data" ]]; then
-    print_error "VLPart intermediate data directory not found: $VLPART_DIR/processed_data"
-    print_error "Make sure to run VLPart segmentation first with run_vlpart.sh"
+if [[ ! -d "$GSAM_DIR/processed_data" ]]; then
+    print_error "GSAM intermediate data directory not found: $GSAM_DIR/processed_data"
+    print_error "Make sure to run GSAM segmentation first with run_gsam.sh"
     exit 1
 fi
 
 # Set output directory if not specified
 if [[ -z "$OUTPUT_DIR" ]]; then
-    # Extract supercategory from VLPart directory name
-    basename_vlpart=$(basename "$VLPART_DIR")
-    if [[ "$basename_vlpart" =~ ^vlpart_output_(.+)$ ]]; then
+    # Extract supercategory from GSAM directory name
+    basename_gsam=$(basename "$GSAM_DIR")
+    if [[ "$basename_gsam" =~ ^gsam_output_(.+)$ ]]; then
         supercategory="${BASH_REMATCH[1]}"
         OUTPUT_DIR="flux_output_${supercategory}"
     else
@@ -257,27 +262,32 @@ check_dependencies() {
         exit 1
     fi
     
-    # Check VLPart intermediate data
-    intermediate_count=$(find "$VLPART_DIR/processed_data" -name "image_*.pkl" 2>/dev/null | wc -l)
+    # Check GSAM intermediate data
+    intermediate_count=$(find "$GSAM_DIR/processed_data" -name "image_*.pkl" 2>/dev/null | wc -l)
     if [[ $intermediate_count -eq 0 ]]; then
-        print_error "No VLPart intermediate data files found in $VLPART_DIR/processed_data"
-        print_error "Make sure VLPart processing completed successfully"
+        print_error "No GSAM intermediate data files found in $GSAM_DIR/processed_data"
+        print_error "Make sure GSAM processing completed successfully"
         exit 1
     fi
     
     print_success "Dependencies check passed"
-    print_info "Found $intermediate_count VLPart intermediate files to process"
+    print_info "Found $intermediate_count GSAM intermediate files to process"
 }
 
 # Print configuration
 print_configuration() {
     print_header "FLUX ARTIFACT GENERATION CONFIGURATION"
-    echo "VLPart directory:   $VLPART_DIR"
-    echo "Artifact types:     $ARTIFACT_TYPES"
-    echo "Device:             $DEVICE"
-    echo "Output directory:   $OUTPUT_DIR"
-    echo "Inject step:        $INJECT"
-    echo "Use RF solver:      $USE_RF_SOLVER"
+    echo "GSAM directory:        $GSAM_DIR"
+    echo "Artifact types:        $ARTIFACT_TYPES"
+    echo "Device:                $DEVICE"
+    echo "Output directory:      $OUTPUT_DIR"
+    echo "Inject step:           $INJECT"
+    echo "PE step addition:      $PE_STEP_ADDITION"
+    echo "PE step removal:       $PE_STEP_REMOVAL"
+    echo "PE step distortion:    $PE_STEP_DISTORTION"
+    echo "Guidance:              $GUIDANCE"
+    echo "Number of steps:       $NUM_STEPS"
+    echo "Use RF solver:         $USE_RF_SOLVER"
     echo ""
 }
 
@@ -285,15 +295,20 @@ print_configuration() {
 run_flux_generation() {
     print_header "FLUX ARTIFACT GENERATION PROCESSING"
     
-    intermediate_count=$(find "$VLPART_DIR/processed_data" -name "image_*.pkl" | wc -l)
+    intermediate_count=$(find "$GSAM_DIR/processed_data" -name "image_*.pkl" | wc -l)
     print_info "Processing $intermediate_count intermediate data files with FLUX"
     
     # Build FLUX command
-    flux_cmd="python batch_flux_generation.py $VLPART_DIR"
+    flux_cmd="python batch_flux_generation.py $GSAM_DIR"
     flux_cmd="$flux_cmd --artifact-types $ARTIFACT_TYPES"
     flux_cmd="$flux_cmd --device $DEVICE"
     flux_cmd="$flux_cmd --output-dir $OUTPUT_DIR"
     flux_cmd="$flux_cmd --inject $INJECT"
+    flux_cmd="$flux_cmd --pe-step-addition $PE_STEP_ADDITION"
+    flux_cmd="$flux_cmd --pe-step-removal $PE_STEP_REMOVAL"
+    flux_cmd="$flux_cmd --pe-step-distortion $PE_STEP_DISTORTION"
+    flux_cmd="$flux_cmd --guidance $GUIDANCE"
+    flux_cmd="$flux_cmd --num-steps $NUM_STEPS"
     
     if [[ "$RESUME" == true ]]; then
         flux_cmd="$flux_cmd --resume"
@@ -332,9 +347,9 @@ print_summary() {
     print_header "FLUX ARTIFACT GENERATION SUMMARY"
     
     # Input summary
-    intermediate_count=$(find "$VLPART_DIR/processed_data" -name "image_*.pkl" 2>/dev/null | wc -l)
-    echo "Input (VLPart Results):"
-    echo "  Source directory:     $VLPART_DIR"
+    intermediate_count=$(find "$GSAM_DIR/processed_data" -name "image_*.pkl" 2>/dev/null | wc -l)
+    echo "Input (GSAM Results):"
+    echo "  Source directory:     $GSAM_DIR"
     echo "  Intermediate files:   $intermediate_count"
     echo ""
     
@@ -379,7 +394,7 @@ trap cleanup SIGINT SIGTERM
 # Main execution
 main() {
     print_header "FLUX ARTIFACT GENERATION PIPELINE"
-    echo "Starting FLUX processing from VLPart results: $VLPART_DIR"
+    echo "Starting FLUX processing from GSAM results: $GSAM_DIR"
     echo "Timestamp: $(date)"
     echo ""
     
