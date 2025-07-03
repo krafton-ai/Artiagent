@@ -488,29 +488,20 @@ def main():
         print("   Please run VLPart processing first.")
         sys.exit(1)
     
-    try:
-        run_flux_generation(
-            segmentation_output_dir=args.segmentation_output_dir,
-            artifact_types=args.artifact_types,
-            resume=args.resume,
-            device=args.device,
-            output_dir=args.output_dir,
-            inject_step=args.inject,
-            pe_step_addition=args.pe_step_addition,
-            pe_step_removal=args.pe_step_removal,
-            pe_step_distortion=args.pe_step_distortion,
-            guidance=args.guidance,
-            num_steps=args.num_steps,
-            seed=args.seed
-        )
-        
-    except KeyboardInterrupt:
-        print("\n⏹️  FLUX generation interrupted by user.")
-        print("Progress saved. Use --resume to continue later.")
-        
-    except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
-        raise
+    run_flux_generation(
+        segmentation_output_dir=args.segmentation_output_dir,
+        artifact_types=args.artifact_types,
+        resume=args.resume,
+        device=args.device,
+        output_dir=args.output_dir,
+        inject_step=args.inject,
+        pe_step_addition=args.pe_step_addition,
+        pe_step_removal=args.pe_step_removal,
+        pe_step_distortion=args.pe_step_distortion,
+        guidance=args.guidance,
+        num_steps=args.num_steps,
+        seed=args.seed
+    )
 
 
 if __name__ == "__main__":

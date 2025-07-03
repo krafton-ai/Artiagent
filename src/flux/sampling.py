@@ -192,6 +192,7 @@ def denoise(
 ):
     # this is ignored for schnell
     inject_list = [True] * int(info['inject_step']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['inject_step']))
+    attn_mask_list = [True] * int(info['attn_mask_step']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['attn_mask_step']))
 
     if inverse:
         timesteps = timesteps[::-1]
@@ -217,6 +218,7 @@ def denoise(
         info['inverse'] = inverse
         info['second_order'] = False
         info['inject'] = inject_list[i]
+        info['attn_mask'] = attn_mask_list[i]
 
         pred, info = model(
             img=img,

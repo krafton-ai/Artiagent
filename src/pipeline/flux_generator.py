@@ -300,7 +300,7 @@ class FluxGenerator:
 
 
         # inversion initial noise
-        z, info = denoise_first_order(self.model, **inp, timesteps=timesteps, guidance=1, inverse=True, info=info, percentage_of_steps=flux_args.percentage_of_steps)
+        z, info = denoise(self.model, **inp, timesteps=timesteps, guidance=1, inverse=True, info=info, percentage_of_steps=flux_args.percentage_of_steps)
         inp_target["img"] = z
 
         timesteps = get_schedule(flux_args.num_steps, inp_target["img"].shape[1], shift=(flux_args.name != "flux-schnell"))
@@ -310,8 +310,8 @@ class FluxGenerator:
         info['single_stream_block_mask'] = flux_args.masks[3]
         info['precomputed_double_mask'] = info['precomputed_double_mask_gen'] 
         info['precomputed_single_mask'] = info['precomputed_single_mask_gen']
-        # denoise_first_order initial noise
-        x, _ = denoise_first_order(self.model, **inp_target, timesteps=timesteps, guidance=info['guidance'], inverse=False, info=info, percentage_of_steps=flux_args.percentage_of_steps)
+        # denoise initial noise
+        x, _ = denoise(self.model, **inp_target, timesteps=timesteps, guidance=info['guidance'], inverse=False, info=info, percentage_of_steps=flux_args.percentage_of_steps)
 
         # decode latents to pixel space
 
