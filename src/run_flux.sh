@@ -11,7 +11,6 @@
 # =============================================================================
 
 set -e  # Exit on any error
-set -e  # Exit on any error
 if [[ -f .env ]]; then
     source .env
 fi
