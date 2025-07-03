@@ -26,7 +26,7 @@ fi
 
 # Default values
 VLPART_DIR=""
-ARTIFACT_TYPES="distortion removal addition"
+ARTIFACT_TYPES="addition removal distortion"
 DEVICE="cuda"
 RESUME=false
 OUTPUT_DIR=""
