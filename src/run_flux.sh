@@ -30,6 +30,7 @@ DEVICE="cuda"
 RESUME=false
 OUTPUT_DIR=""
 INJECT=15
+USE_RF_SOLVER=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -87,6 +88,7 @@ OPTIONS:
     --pe-step-distortion FLOAT PE step value for distortion artifacts (default: 0.7)
     --guidance FLOAT        FLUX guidance value (default: 5.0)
     --num-steps INT         Number of FLUX generation steps (default: 25)
+    --use-rf-solver         Use RF solver (second-order) instead of first-order denoising (default: False)
     --help                  Show this help message
 
 EXAMPLES:
@@ -110,6 +112,9 @@ EXAMPLES:
 
     # Adjust FLUX parameters
     ./run_flux.sh vlpart_output_person --guidance 7.5 --num-steps 30
+
+    # Use RF solver for more accurate generation
+    ./run_flux.sh vlpart_output_person --use-rf-solver
 
 REQUIREMENTS:
     - VLPart results directory with processed_data/ subdirectory
@@ -172,6 +177,10 @@ while [[ $# -gt 0 ]]; do
         --num-steps)
             NUM_STEPS="$2"
             shift 2
+            ;;
+        --use-rf-solver)
+            USE_RF_SOLVER=true
+            shift
             ;;
         --help)
             show_help
@@ -268,6 +277,7 @@ print_configuration() {
     echo "Device:             $DEVICE"
     echo "Output directory:   $OUTPUT_DIR"
     echo "Inject step:        $INJECT"
+    echo "Use RF solver:      $USE_RF_SOLVER"
     echo ""
 }
 
@@ -287,6 +297,10 @@ run_flux_generation() {
     
     if [[ "$RESUME" == true ]]; then
         flux_cmd="$flux_cmd --resume"
+    fi
+    
+    if [[ "$USE_RF_SOLVER" == true ]]; then
+        flux_cmd="$flux_cmd --use-rf-solver"
     fi
     
     print_info "Running FLUX artifact generation..."

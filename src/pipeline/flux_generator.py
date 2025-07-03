@@ -33,6 +33,7 @@ class FluxConfig:
     feature_path: str = 'feature'
     percentage_of_steps: float = 1.0
     offload: bool = False
+    use_rf_solver: bool = False  # Use denoise (RF solver) instead of denoise_first_order
     
     def __post_init__(self):
         if self.masks is None:
@@ -299,8 +300,12 @@ class FluxGenerator:
         info['precomputed_single_mask'] = single_stream_mask_inv
 
 
+        # Choose denoising function based on configuration
+        # RF solver (denoise) is more accurate but slower than first-order denoising
+        denoise_func = denoise if self.config.use_rf_solver else denoise_first_order
+        
         # inversion initial noise
-        z, info = denoise(self.model, **inp, timesteps=timesteps, guidance=1, inverse=True, info=info, percentage_of_steps=flux_args.percentage_of_steps)
+        z, info = denoise_func(self.model, **inp, timesteps=timesteps, guidance=1, inverse=True, info=info, percentage_of_steps=flux_args.percentage_of_steps)
         inp_target["img"] = z
 
         timesteps = get_schedule(flux_args.num_steps, inp_target["img"].shape[1], shift=(flux_args.name != "flux-schnell"))
@@ -311,7 +316,7 @@ class FluxGenerator:
         info['precomputed_double_mask'] = info['precomputed_double_mask_gen'] 
         info['precomputed_single_mask'] = info['precomputed_single_mask_gen']
         # denoise initial noise
-        x, _ = denoise(self.model, **inp_target, timesteps=timesteps, guidance=info['guidance'], inverse=False, info=info, percentage_of_steps=flux_args.percentage_of_steps)
+        x, _ = denoise_func(self.model, **inp_target, timesteps=timesteps, guidance=info['guidance'], inverse=False, info=info, percentage_of_steps=flux_args.percentage_of_steps)
 
         # decode latents to pixel space
 

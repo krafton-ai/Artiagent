@@ -296,7 +296,7 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
                        resume: bool = False, device: str = 'cuda',
                        output_dir: Optional[str] = None, inject_step: int=25,
                        pe_step_addition: float=0.3, pe_step_removal: float=0.3, pe_step_distortion: float=0.5,
-                       guidance: float=5.0, num_steps: int=25, seed: int=42):
+                       guidance: float=5.0, num_steps: int=25, seed: int=42, use_rf_solver: bool=False):
     """Run FLUX artifact generation on processed data"""
     
     # Extract supercategory from output directory name
@@ -347,6 +347,7 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
         inject_step=inject_step,
         attn_mask_step=0,
         seed=seed,
+        use_rf_solver=use_rf_solver,
     )
     
     # Initialize components directly
@@ -475,6 +476,8 @@ def main():
                        help='Number of steps for FLUX generation (default: 25)')
     parser.add_argument('--seed', type=int, default=42,
                        help='Seed for FLUX generation (default: 42)')
+    parser.add_argument('--use-rf-solver', action='store_true',
+                       help='Use RF solver (second-order) instead of first-order denoising (default: False)')
     args = parser.parse_args()
     
     # Validate VLPart output directory
@@ -500,7 +503,8 @@ def main():
         pe_step_distortion=args.pe_step_distortion,
         guidance=args.guidance,
         num_steps=args.num_steps,
-        seed=args.seed
+        seed=args.seed,
+        use_rf_solver=args.use_rf_solver
     )
 
 
