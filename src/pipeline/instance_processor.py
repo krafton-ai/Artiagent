@@ -106,9 +106,11 @@ class InstanceProcessor:
         union = area1 + area2 - intersection
         
         return intersection / union if union > 0 else 0.0
-    
+
+
+
     @staticmethod
-    def generate_candidate_addition_region(reference_instance, predictions, img_shape, overlap_threshold: float = 0.05) -> Tuple[Optional[List], Optional[Dict]]:
+    def generate_candidate_addition_region(reference_instance, predictions, mask_patch_coords, img_shape, patch_size: int = 16, overlap_threshold: float = 0.05) -> Tuple[Optional[List], Optional[Dict]]:
         """
         Generate sophisticated bbox suggestion for addition artifacts using IoU calculations
         
@@ -147,7 +149,7 @@ class InstanceProcessor:
         
         # Find entity with highest overlap with reference
         best_entity = None
-        max_overlap = 0.0
+        max_overlap = 0.9
         
         for entity in entity_instances:
             # Calculate mask overlap
@@ -307,14 +309,17 @@ class InstanceProcessor:
         mask_patch_coords = [tuple(coord) for coord in mask_patch_coords]  # Convert to tuples for hashability
 
         if artifact_type == 'addition':
+
             # artifact_direction = addition_sugget_direction(openai_client, sampled_instance, f'{class_name} of {vocab[0]}', img_array)      
-            candidate_target_list, metadata = InstanceProcessor.generate_candidate_addition_region(sampled_instance, predictions, img_array.shape, overlap_threshold=0.05)
+            # candidate_target_list, metadata = InstanceProcessor.generate_candidate_addition_region(sampled_instance, predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, overlap_threshold=0.05)
+            offset, prob_map, metadata = InstanceProcessor.generate_addition_probability_map(sampled_instance, predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, alpha=2.0, max_entity_overlap=0.7, distance_penalty_weight=0.1)
+            InstanceProcessor.visualize_addition_probability_map(img_array, prob_map, sampled_instance, metadata, patch_size=patch_size, output_dir=output_dir, img_filename=img_filename)
             
             # Visualize all candidates overlaid on the original image
-            visualize_all_candidates(candidate_target_list, img_array, f'{class_name} of {vocab[0]}', output_dir=output_dir, img_filename=img_filename)
+            # visualize_all_candidates(candidate_target_list, img_array, f'{class_name} of {vocab[0]}', output_dir=output_dir, img_filename=img_filename)
             
-            addition_target = addition_select_candidate(openai_client, candidate_target_list, f'{class_name} of {vocab[0]}', img_array, output_dir=output_dir, img_filename=img_filename)
-            offset = addition_target['offset']
+            # addition_target = addition_select_candidate(openai_client, candidate_target_list, f'{class_name} of {vocab[0]}', img_array, output_dir=output_dir, img_filename=img_filename)
+            # offset = addition_target['offset']
             # offset = addition_suggest_offset(openai_client, sampled_instance, f'{class_name} of {vocab[0]}', img_array)
             # offset = (offset['offset_x'], offset['offset_y'])            
             # Convert offset to patch coordinates
@@ -993,3 +998,455 @@ class InstanceProcessor:
 
             
         return annotations
+
+    @staticmethod
+    def generate_addition_probability_map(reference_instance, predictions, mask_patch_coords, img_shape, patch_size: int = 16, alpha: float = 2.0, max_entity_overlap: float = 0.7, distance_penalty_weight: float = 0.1) -> Tuple[np.ndarray, Dict]:
+        """
+        Generate a 2D probability map for addition artifact candidates using perimeter patches
+        
+        Args:
+            reference_instance: The reference instance
+            predictions: VLPart model predictions  
+            mask_patch_coords: List of patch coordinates for the reference instance
+            img_shape: Image shape (height, width, channels)
+            patch_size: Size of patches (default 16)
+            alpha: Distance extension parameter for perimeter ring (default 2.0)
+            max_entity_overlap: Maximum acceptable entity overlap before penalty (default 0.7)
+            distance_penalty_weight: Weight for distance penalty (default 0.1)
+            
+        Returns:
+            Tuple of (probability_map, metadata_dict)
+            - probability_map: 2D array with normalized probabilities
+            - metadata_dict: Contains analysis results including sampled_patch and sampled_offset
+        """
+        H, W = img_shape[:2]
+        
+        patch_H = (H // patch_size) * patch_size
+        patch_W = (W // patch_size) * patch_size
+        patch_w = patch_W // patch_size
+        patch_h = patch_H // patch_size
+        
+        # Initialize probability map
+        probability_map = np.zeros((patch_h, patch_w), dtype=np.float32)
+        
+        # Get reference bbox and mask
+        ref_bbox = reference_instance['pred_box'].cpu().numpy()
+        ref_mask = reference_instance['pred_mask'].cpu().numpy()
+        
+        # Step 1: Find best entity (vocab[0]) with highest overlap with reference_instance
+        entity_instances = []
+        for i in range(len(predictions['pred_boxes'])):
+            if predictions['pred_classes'][i] == 0:
+                entity_instances.append({
+                    'idx': i,
+                    'bbox': predictions['pred_boxes'][i].cpu().numpy(),
+                    'mask': predictions['pred_masks'][i].cpu().numpy()
+                })
+        
+        if not entity_instances:
+            raise ValueError("No entity instances found")
+        
+        # Find entity with highest overlap with reference
+        best_entity = None
+        max_overlap = 0.9
+        
+        for entity in entity_instances:
+            intersection = np.sum(ref_mask & entity['mask'])
+            ref_area = np.sum(ref_mask)
+            overlap = intersection / ref_area if ref_area > 0 else 0.0
+            
+            if overlap > max_overlap:
+                max_overlap = overlap
+                best_entity = entity
+        
+        if best_entity is None:
+            raise ValueError("No overlapping entity found")
+        
+        # Step 2: Get same class instances (excluding reference)
+        reference_class_idx = reference_instance['pred_class'].item()
+        same_class_instances = []
+        
+        for i in range(len(predictions['pred_boxes'])):
+            if (predictions['pred_classes'][i] == reference_class_idx and 
+                not torch.equal(predictions['pred_boxes'][i], torch.from_numpy(ref_bbox).float())):
+                same_class_instances.append({
+                    'idx': i,
+                    'bbox': predictions['pred_boxes'][i].cpu().numpy(),
+                    'mask': predictions['pred_masks'][i].cpu().numpy()
+                })
+        
+        # Step 3: Calculate reference center directly in patch coordinates
+        ref_center_patch_y = int((ref_bbox[1] + ref_bbox[3]) / 2 // patch_size)
+        ref_center_patch_x = int((ref_bbox[0] + ref_bbox[2]) / 2 // patch_size)
+        
+        # Step 4: Find perimeter patches using outermost patches and center distance
+        reference_patch_set = set(mask_patch_coords)
+        
+        # Step 4-1: Find outermost patches of the reference segmentation
+        outermost_patches = set()
+        
+        for ref_py, ref_px in mask_patch_coords:
+            # Check if this patch is on the boundary (has at least one neighbor not in reference set)
+            is_outermost = False
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if dy == 0 and dx == 0:
+                        continue
+                    neighbor_py = ref_py + dy
+                    neighbor_px = ref_px + dx
+                    
+                    # If neighbor is within bounds and not in reference set, this is an outermost patch
+                    if (0 <= neighbor_py < patch_h and 0 <= neighbor_px < patch_w and 
+                        (neighbor_py, neighbor_px) not in reference_patch_set):
+                        is_outermost = True
+                        break
+                if is_outermost:
+                    break
+            
+            if is_outermost:
+                outermost_patches.add((ref_py, ref_px))
+        
+        # Step 4-2: Calculate distance from outermost patches to center patch
+        if not outermost_patches:
+            # If no outermost patches found, use all reference patches
+            outermost_patches = reference_patch_set
+        
+        # Step 4-3: Define perimeter patches using closest outermost patch approach
+        perimeter_patches = set()
+        
+        for py in range(patch_h):
+            for px in range(patch_w):
+                # Skip if this patch is already a reference patch
+                if (py, px) in reference_patch_set:
+                    continue
+                
+                # Find closest outermost patch to this (py, px)
+                min_distance_to_outermost = float('inf')
+                closest_outermost_patch = None
+                
+                for outer_py, outer_px in outermost_patches:
+                    distance_to_outermost = abs(py - outer_py) + abs(px - outer_px)
+                    if distance_to_outermost < min_distance_to_outermost:
+                        min_distance_to_outermost = distance_to_outermost
+                        closest_outermost_patch = (outer_py, outer_px)
+                
+                # Calculate distance from closest outermost patch to center
+                if closest_outermost_patch is not None:
+                    closest_outer_py, closest_outer_px = closest_outermost_patch
+                    outermost_to_center_distance = abs(closest_outer_py - ref_center_patch_y) + abs(closest_outer_px - ref_center_patch_x)
+                    
+                    # Calculate distance from current patch to center
+                    patch_to_center_distance = abs(py - ref_center_patch_y) + abs(px - ref_center_patch_x)
+                    
+                    # Check if current patch is in the perimeter ring relative to its closest outermost patch
+                    min_perimeter_distance = outermost_to_center_distance
+                    max_perimeter_distance = outermost_to_center_distance + alpha
+                    
+                    if min_perimeter_distance < patch_to_center_distance <= max_perimeter_distance:
+                        perimeter_patches.add((py, px))
+        
+        # Step 5: For each perimeter patch, calculate translation and probability
+        total_candidates = len(perimeter_patches)
+        valid_candidates = 0
+        
+        for perimeter_py, perimeter_px in perimeter_patches:
+            # Step 5-1: Calculate translation vector from reference center to perimeter patch
+            translation_y_patches = perimeter_py - ref_center_patch_y
+            translation_x_patches = perimeter_px - ref_center_patch_x
+            
+            # Convert to pixel translation
+            translation_y_pixels = translation_y_patches * patch_size
+            translation_x_pixels = translation_x_patches * patch_size
+            
+            # Step 5-2: Generate candidate target mask by translating reference mask
+            target_mask = np.zeros((H, W), dtype=np.uint8)
+            
+            # Find reference mask pixels
+            ref_y_coords, ref_x_coords = np.where(ref_mask > 0)
+            
+            # Apply translation to coordinates
+            target_y_coords = ref_y_coords + translation_y_pixels
+            target_x_coords = ref_x_coords + translation_x_pixels
+            
+            # Filter coordinates that are within image bounds
+            valid_mask = ((target_y_coords >= 0) & (target_y_coords < H) & 
+                         (target_x_coords >= 0) & (target_x_coords < W))
+            
+            valid_target_y = target_y_coords[valid_mask]
+            valid_target_x = target_x_coords[valid_mask]
+            
+            # Step 5-3: Check feasibility - skip if too few pixels remain
+            feasibility_ratio = len(valid_target_y) / np.sum(ref_mask > 0)
+            if feasibility_ratio < 0.5:  # Less than 50% of pixels are feasible
+                continue
+            
+            # Set target mask pixels
+            target_mask[valid_target_y, valid_target_x] = 255
+            target_area = np.sum(target_mask > 0)
+            
+            if target_area == 0:
+                continue
+            
+            # Step 5-4: Calculate three IoU-based scores
+            
+            # IoU with entity (positive contribution) - exclude reference mask area
+            entity_mask_excluding_ref = best_entity['mask'] & (~ref_mask)
+            entity_intersection = np.sum(target_mask & (entity_mask_excluding_ref > 0))
+            entity_area = np.sum(entity_mask_excluding_ref > 0)
+            entity_overlap = entity_intersection / entity_area if entity_area > 0 else 0.0
+            
+            if entity_overlap == 0.0:
+                continue
+
+            valid_candidates += 1
+            
+            # IoU with reference instance (negative contribution)
+            ref_intersection = np.sum(target_mask & (ref_mask > 0))
+            ref_overlap = ref_intersection / target_area
+            
+            # IoU with same class instances (negative contribution)
+            max_same_class_overlap = 0.0
+            for same_inst in same_class_instances:
+                same_intersection = np.sum(target_mask & (same_inst['mask'] > 0))
+                same_overlap = same_intersection / target_area
+                max_same_class_overlap = max(max_same_class_overlap, same_overlap)
+            
+            # Negative contributions (penalize overlap with reference and same class)
+            
+            # Step 5-7: Apply distance penalty based on moved distance
+            moved_distance = abs(perimeter_py - ref_center_patch_y) + abs(perimeter_px - ref_center_patch_x)
+            distance_penalty = 1 + (distance_penalty_weight * moved_distance)
+            
+            probability_score = (3 - ref_overlap - max_same_class_overlap - entity_overlap) / distance_penalty
+            # Ensure non-negative probability
+            # probability_score = max(0, probability_score)
+            
+            # Step 5-8: Update probability map at perimeter patch location
+            probability_map[perimeter_py, perimeter_px] = probability_score
+        
+        # Step 6: Apply min-max normalization to non-zero components only
+        non_zero_mask = probability_map > 0
+        if np.any(non_zero_mask):
+            non_zero_values = probability_map[non_zero_mask]
+            min_prob = np.min(non_zero_values)
+            max_prob = np.max(non_zero_values)
+            
+            if max_prob > min_prob:
+                # Apply min-max normalization: (x - min) / (max - min)
+                probability_map[non_zero_mask] = (non_zero_values - min_prob) / (max_prob - min_prob)
+            else:
+                # If all non-zero values are the same, set them to 1
+                probability_map[non_zero_mask] = 1.0
+        else:
+            max_prob = 0
+        
+        # Sample a patch coordinate from the probability map
+        sampled_patch = None
+        sampled_offset = None
+        if np.any(non_zero_mask):
+            # Flatten probability map and get valid indices
+            flat_prob_map = probability_map.flatten()
+            valid_indices = np.where(flat_prob_map > 0)[0]
+            valid_probabilities = flat_prob_map[valid_indices]
+            
+            # Normalize probabilities for sampling
+            prob_sum = np.sum(valid_probabilities)
+            if prob_sum > 0:
+                normalized_probs = valid_probabilities / prob_sum
+                
+                # Sample an index based on probabilities
+                sampled_flat_idx = np.random.choice(valid_indices, p=normalized_probs)
+                
+                # Convert flat index back to 2D coordinates
+                sampled_py, sampled_px = np.unravel_index(sampled_flat_idx, probability_map.shape)
+                sampled_patch = (sampled_py, sampled_px)
+                
+                # Calculate offset from reference center to sampled patch
+                offset_y_patches = sampled_py - ref_center_patch_y
+                offset_x_patches = sampled_px - ref_center_patch_x
+                offset_y_pixels = offset_y_patches * patch_size
+                offset_x_pixels = offset_x_patches * patch_size
+                sampled_offset = (offset_x_pixels, offset_y_pixels)
+        
+        # Step 7: Create metadata
+        metadata = {
+            'best_entity': best_entity,
+            'same_class_count': len(same_class_instances),
+            'total_candidates_tested': total_candidates,
+            'valid_candidates': valid_candidates,
+            'reference_center_patch': (ref_center_patch_y, ref_center_patch_x),
+            'alpha': alpha,
+            'max_entity_overlap': max_entity_overlap,
+            'distance_penalty_weight': distance_penalty_weight,
+            'num_outermost_patches': len(outermost_patches),
+            'num_perimeter_patches': len(perimeter_patches),
+            'probability_map_shape': probability_map.shape,
+            'max_probability': max_prob if np.any(non_zero_mask) else 0,
+            'min_probability': min_prob if np.any(non_zero_mask) else 0,
+            'num_non_zero_patches': np.sum(non_zero_mask),
+            'sampled_patch': sampled_patch,
+            'sampled_offset': sampled_offset
+        }
+        
+        return sampled_offset, probability_map, metadata
+
+    @staticmethod
+    def visualize_addition_probability_map(img_array: np.ndarray, probability_map: np.ndarray, 
+                                         reference_instance, metadata: Dict,
+                                         patch_size: int = 16, output_dir: str = None, 
+                                         img_filename: str = None, colormap: str = 'hot',
+                                         alpha: float = 0.6) -> None:
+        """
+        Visualize the addition probability map overlaid on the original image
+        
+        Args:
+            img_array: Original image array
+            probability_map: 2D probability map from generate_addition_probability_map
+            reference_instance: The reference instance used to generate the map
+            metadata: Metadata dictionary from generate_addition_probability_map
+            patch_size: Size of patches (default 16)
+            output_dir: Output directory for saving visualization
+            img_filename: Image filename for output naming
+            colormap: Matplotlib colormap for heatmap (default 'hot')
+            alpha: Transparency of heatmap overlay (default 0.6)
+        """
+        try:
+            H, W = img_array.shape[:2]
+            patch_h, patch_w = probability_map.shape
+            
+            # Create figure with subplots
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+            
+            # Panel 1: Original image with reference instance
+            axes[0].imshow(img_array)
+            
+            # Overlay reference instance bounding box
+            ref_bbox = reference_instance['pred_box'].cpu().numpy()
+            rect = patches.Rectangle(
+                (ref_bbox[0], ref_bbox[1]), 
+                ref_bbox[2] - ref_bbox[0], 
+                ref_bbox[3] - ref_bbox[1],
+                linewidth=2, edgecolor='red', facecolor='none', label='Reference Instance'
+            )
+            axes[0].add_patch(rect)
+            
+            # Show reference center point
+            ref_center_y, ref_center_x = metadata['reference_center_patch']
+            ref_center_pixel_y = ref_center_y * patch_size + patch_size // 2
+            ref_center_pixel_x = ref_center_x * patch_size + patch_size // 2
+            axes[0].plot(ref_center_pixel_x, ref_center_pixel_y, 'r*', markersize=15, label='Reference Center')
+            
+            axes[0].set_title('Original Image with Reference Instance')
+            axes[0].axis('off')
+            axes[0].legend()
+            
+            # Panel 2: Probability heatmap only
+            im1 = axes[1].imshow(probability_map, cmap=colormap, vmin=0, vmax=1)
+            non_zero_count = metadata.get('num_non_zero_patches', 0)
+            min_prob = metadata.get('min_probability', 0)
+            max_prob = metadata.get('max_probability', 0)
+            axes[1].set_title(f'Probability Heatmap (Min-Max Normalized)\nNon-zero patches: {non_zero_count}, Range: [{min_prob:.3f}, {max_prob:.3f}]')
+            
+            # Add patch grid lines
+            for i in range(patch_h + 1):
+                axes[1].axhline(y=i - 0.5, color='white', linewidth=0.5, alpha=0.3)
+            for j in range(patch_w + 1):
+                axes[1].axvline(x=j - 0.5, color='white', linewidth=0.5, alpha=0.3)
+            
+            # Mark reference center position
+            axes[1].plot(ref_center_x, ref_center_y, 'w*', markersize=15, label='Reference Center')
+            
+            # Mark sampled patch if available
+            if metadata.get('sampled_patch') is not None:
+                sampled_py, sampled_px = metadata['sampled_patch']
+                axes[1].plot(sampled_px, sampled_py, 'ko', markersize=12, markerfacecolor='yellow', 
+                           markeredgecolor='black', markeredgewidth=2, label='Sampled Patch')
+            
+            axes[1].legend()
+            
+            # Add colorbar for heatmap
+            cbar1 = plt.colorbar(im1, ax=axes[1], shrink=0.8)
+            cbar1.set_label('Probability', rotation=270, labelpad=20)
+            
+            # Panel 3: Overlay heatmap on original image
+            axes[2].imshow(img_array)
+            
+            # Overlay reference patches
+            ref_mask = reference_instance['pred_mask'].cpu().numpy()
+            axes[2].imshow(ref_mask, alpha=0.3, cmap='Greens', vmin=0, vmax=1)
+            
+            # Resize probability map to match image dimensions
+            probability_resized = np.zeros((H, W))
+            for py in range(patch_h):
+                for px in range(patch_w):
+                    y_start = py * patch_size
+                    y_end = min((py + 1) * patch_size, H)
+                    x_start = px * patch_size
+                    x_end = min((px + 1) * patch_size, W)
+                    probability_resized[y_start:y_end, x_start:x_end] = probability_map[py, px]
+            
+            # Create masked array to only show non-zero probabilities
+            probability_masked = np.ma.masked_where(probability_resized == 0, probability_resized)
+            
+            # Overlay heatmap
+            im2 = axes[2].imshow(probability_masked, cmap=colormap, alpha=alpha, vmin=0, vmax=1)
+            
+            # Overlay reference instance bounding box
+            rect2 = patches.Rectangle(
+                (ref_bbox[0], ref_bbox[1]), 
+                ref_bbox[2] - ref_bbox[0], 
+                ref_bbox[3] - ref_bbox[1],
+                linewidth=2, edgecolor='cyan', facecolor='none', label='Reference Instance'
+            )
+            axes[2].add_patch(rect2)
+            
+            # Show reference center point
+            axes[2].plot(ref_center_pixel_x, ref_center_pixel_y, 'c*', markersize=15, label='Reference Center')
+            
+            # Mark sampled patch if available
+            if metadata.get('sampled_patch') is not None:
+                sampled_py, sampled_px = metadata['sampled_patch']
+                sampled_pixel_y = sampled_py * patch_size + patch_size // 2
+                sampled_pixel_x = sampled_px * patch_size + patch_size // 2
+                axes[2].plot(sampled_pixel_x, sampled_pixel_y, 'ko', markersize=12, markerfacecolor='yellow', 
+                           markeredgecolor='black', markeredgewidth=2, label='Sampled Patch')
+            
+            axes[2].set_title(f'Min-Max Normalized Probability Overlay\n({metadata["valid_candidates"]}/{metadata["total_candidates_tested"]} valid candidates)\nGreen: Reference, Hot: Probability, Yellow: Sampled Patch')
+            axes[2].axis('off')
+            axes[2].legend()
+            
+            # Add colorbar for overlay
+            cbar2 = plt.colorbar(im2, ax=axes[2], shrink=0.8)
+            cbar2.set_label('Probability', rotation=270, labelpad=20)
+            
+            # Add overall title with metadata
+            sampled_info = ""
+            if metadata.get('sampled_offset') is not None:
+                offset_x, offset_y = metadata['sampled_offset']
+                sampled_info = f", Sampled Offset: ({offset_x:.1f}, {offset_y:.1f})"
+            
+            fig.suptitle(f'Addition Probability Map Analysis (Min-Max Normalized)\n'
+                        f'Alpha: {metadata["alpha"]}, Max Entity Overlap: {metadata["max_entity_overlap"]}, '
+                        f'Distance Penalty: {metadata["distance_penalty_weight"]}{sampled_info}\n'
+                        f'Valid Candidates: {metadata["valid_candidates"]}/{metadata["total_candidates_tested"]}, '
+                        f'Non-zero: {metadata["num_non_zero_patches"]}', 
+                        fontsize=11)
+            
+            plt.tight_layout()
+            
+            # Save visualization if output directory is provided
+            if output_dir and img_filename:
+                img_name = os.path.splitext(img_filename)[0]
+                viz_output_dir = os.path.join(output_dir, img_name)
+                os.makedirs(viz_output_dir, exist_ok=True)
+                
+                output_path = os.path.join(viz_output_dir, "04_addition_probability_map.png")
+                plt.savefig(output_path, dpi=150, bbox_inches='tight')
+                print(f"Probability map visualization saved to: {output_path}")
+            
+            plt.close()
+            
+        except Exception as e:
+            print(f"Error creating probability map visualization: {str(e)}")
+            if 'fig' in locals():
+                plt.close(fig)
