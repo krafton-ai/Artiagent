@@ -65,107 +65,25 @@ def load_processed_data(file_path: str) -> Optional[Dict]:
 
 
 def create_flux_visualizations(img_array: np.ndarray, generated_image: np.ndarray,
-                             annotation: Dict, artifact_type: str, 
+                             annotation: Dict, artifact_type: str, sampled_instance_info: Dict, class_name: str,
                              patch_data: Dict, img_filename: str, 
                              caption: str, output_dir: str, visualizer: ImageVisualizer):
     """Create visualizations for FLUX generation results"""
     # Save comparison
+    # import ipdb; ipdb.set_trace(context=10)
+    
     visualizer.show_comparison(
-        img_array, generated_image, caption,
-        titles=["Original", f"Generated ({artifact_type.title()})"],
-        image_name=img_filename, 
+        img_array, generated_image, sampled_instance_info, class_name, caption,
         base_dir=output_dir,
-        filename=f"04_comparison_{artifact_type}.png"
+        filename=f"04_comparison_{artifact_type}.png",
+        patch_data=patch_data,
+        artifact_type=artifact_type
     )
     
     # Save patch annotation visualizations
     # Use output_dir directly (no additional subdirectory creation)
     os.makedirs(output_dir, exist_ok=True)
-    save_patch_visualizations(
-        img_array, patch_data, artifact_type, img_filename, output_dir
-    )
-
-    generated_image.save(os.path.join(output_dir, f'07_injected_image_{artifact_type}.png'))
-
-
-def save_patch_visualizations(img_array: np.ndarray, patch_data: Dict,
-                            artifact_type: str, img_filename: str, output_dir: str):
-    """Save visualizations showing the patch annotations used"""
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
-    
-
-    # Get patch indices with None handling
-    reference_patches = patch_data.get('reference_patch_indices', []) or []
-    target_patches = patch_data.get('target_patch_indices', []) or []
-    
-    # Convert patch indices (subtract 512 offset if present)
-    reference_patches = [idx-512 for idx in reference_patches] if reference_patches else []
-    target_patches = [idx-512 for idx in target_patches] if target_patches else []
-    
-    # Assume 16x16 patches for visualization (this could be made configurable)
-    patch_size = 16
-    h, w = img_array.shape[:2]
-    patches_h = h // patch_size
-    patches_w = w // patch_size
-    # For addition artifacts, show 3 panels (original, reference patches, target patches)
-    # For other artifacts, show 2 panels (original, reference patches only)
-    if artifact_type == 'addition' and target_patches:
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-        
-        # Original image
-        axes[0].imshow(img_array)
-        axes[0].set_title('Original Image')
-        axes[0].axis('off')
-        
-        # Reference patches overlay
-        axes[1].imshow(img_array)
-        for patch_idx in reference_patches:
-            row = patch_idx // patches_w
-            col = patch_idx % patches_w
-            rect = patches.Rectangle((col * patch_size, row * patch_size), 
-                                   patch_size, patch_size, 
-                                   linewidth=2, edgecolor='red', facecolor='red', alpha=0.3)
-            axes[1].add_patch(rect)
-        axes[1].set_title(f'Reference Patches ({len(reference_patches)} patches)')
-        axes[1].axis('off')
-                # Target patches overlay
-
-        axes[2].imshow(img_array)
-        for patch_idx in target_patches:
-            row = patch_idx // patches_w
-            col = patch_idx % patches_w
-            rect = patches.Rectangle((col * patch_size, row * patch_size), 
-                                   patch_size, patch_size, 
-                                   linewidth=2, edgecolor='blue', facecolor='blue', alpha=0.3)
-            axes[2].add_patch(rect)
-        axes[2].set_title(f'Target Patches ({len(target_patches)} patches)')
-        axes[2].axis('off')
-    else:
-        # For removal and distortion, only show original and reference patches
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-
-        # Original image
-        axes[0].imshow(img_array)
-        axes[0].set_title('Original Image')
-        axes[0].axis('off')
-        
-        # Reference patches overlay
-        axes[1].imshow(img_array)
-        for patch_idx in reference_patches:
-            row = patch_idx // patches_w
-            col = patch_idx % patches_w
-            rect = patches.Rectangle((col * patch_size, row * patch_size), 
-                                   patch_size, patch_size, 
-                                   linewidth=2, edgecolor='red', facecolor='red', alpha=0.3)
-            axes[1].add_patch(rect)
-        axes[1].set_title(f'Reference Patches ({len(reference_patches)} patches)')
-        axes[1].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"06_patches_{artifact_type}.png"), 
-               dpi=150, bbox_inches='tight')
-    plt.close()
+    generated_image.save(os.path.join(output_dir, f'artifact_{artifact_type}.png'))
 
 
 def process_single_image(data_file: str, flux_generator: FluxGenerator,
@@ -234,6 +152,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
         annotation = artifact_data['annotation']
         class_name = artifact_data['class_name']
         patch_data = artifact_data['patch_data']
+        sampled_instance_info = artifact_data['sampled_instance_info']
         
         # Validate patch annotations
         if not patch_data or 'error' in patch_data:
@@ -269,7 +188,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
         
         # Create visualizations
         create_flux_visualizations(
-            img_array, generated_image, annotation, artifact_type,
+            img_array, generated_image, annotation, artifact_type, sampled_instance_info, class_name,
             patch_data, img_filename, caption, flux_output_path, 
             visualizer
         )

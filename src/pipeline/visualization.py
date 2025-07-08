@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import matplotlib.patches as patches
 import numpy as np
 import textwrap
 import os
@@ -84,52 +85,114 @@ class ImageVisualizer:
     @staticmethod
     def show_comparison(original_image: Union[np.ndarray, Image.Image],
                        generated_image: Union[np.ndarray, Image.Image],
+                       selected_instance_info: Optional[tuple] = None,
+                       class_name: Optional[str] = None,
                        prompt: str = "",
-                       titles: Optional[List[str]] = None,
-                       figsize: tuple = (12, 6),
-                       image_name: str = "unknown",
+                       figsize: tuple = (16, 8),
                        base_dir: str = "output",
-                       filename: str = "comparison_output.png"):
+                       filename: str = "comparison_output.png",
+                       patch_data: Optional[dict] = None,
+                       artifact_type: str = "addition"):
         """
-        Save original and generated images side by side
+        Save original image with selected instance overlay and generated image side by side,
+        with optional patch visualization based on artifact type
         
         Args:
             original_image: Original source image
             generated_image: Generated/modified image
+            selected_instance_info: Selected instance info
+            class_name: Class name of the selected instance
             prompt: Caption/prompt text to display
-            titles: List of titles for [original, generated] images
             figsize: Figure size tuple (width, height)
             image_name: Name of the image (used for directory creation)
             base_dir: Base output directory
             filename: Name of the output file
+            patch_data: Dictionary containing reference_patch_indices and target_patch_indices
+            artifact_type: Type of artifact ("addition", "removal", etc.)
         """
         # Use base_dir directly (no additional subdirectory creation)
         os.makedirs(base_dir, exist_ok=True)
         save_path = os.path.join(base_dir, filename)
+        
         # Convert PIL Images to numpy arrays if needed
         if isinstance(original_image, Image.Image):
             original_image = np.array(original_image)
         if isinstance(generated_image, Image.Image):
             generated_image = np.array(generated_image)
         
-        # Default titles
-        if titles is None:
-            titles = ["Original", "Generated"]
-        
+
         # Wrap caption text
-        wrapped_caption = "\n".join(textwrap.wrap(prompt, width=100)) if prompt else ""
+        wrapped_caption = "\n".join(textwrap.wrap(prompt, width=120)) if prompt else ""
         
         fig, axes = plt.subplots(1, 2, figsize=figsize)
         
-        # Display original image
+        # Display original image with selected instance overlay and patches
         axes[0].imshow(original_image)
         axes[0].axis('off')
-        axes[0].set_title(titles[0], fontsize=14, fontweight='bold')
+        axes[0].set_title("Original", fontsize=14, fontweight='bold')
+        
+        # Draw patch visualization if patch_data is provided
+        if patch_data:
+            # Extract patch data
+            reference_patches = patch_data.get('reference_patch_indices', []) or []
+            target_patches = patch_data.get('target_patch_indices', []) or []
+            
+            # Convert patch indices (subtract 512 offset if present)
+            reference_patches = [idx-512 for idx in reference_patches] if reference_patches else []
+            target_patches = [idx-512 for idx in target_patches] if target_patches else []
+            
+            # Assume 16x16 patches for visualization (this could be made configurable)
+            patch_size = 16
+            h, w = original_image.shape[:2]
+            patches_h = h // patch_size
+            patches_w = w // patch_size
+            
+            # Choose which patches to display based on artifact type
+            if artifact_type == "addition" and target_patches:
+                patches_to_show = target_patches
+                patch_color = 'blue'
+                patch_label = 'Target Patches'
+            else:
+                patches_to_show = reference_patches
+                patch_color = 'red'
+                patch_label = 'Reference Patches'
+            
+            # Draw patch rectangles
+            for i, patch_idx in enumerate(patches_to_show):
+                row = patch_idx // patches_w
+                col = patch_idx % patches_w
+                # Only add label to first patch to avoid cluttering legend
+                label = patch_label if i == 0 else None
+                rect = patches.Rectangle((col * patch_size, row * patch_size), 
+                                        patch_size, patch_size, 
+                                        linewidth=2, edgecolor=patch_color, 
+                                        facecolor=patch_color, alpha=0.3,
+                                        label=label)
+                axes[0].add_patch(rect)
+        
+        # Draw selected instance if provided
+        if selected_instance_info:
+            x1, y1, x2, y2 = selected_instance_info.get('bbox_coords', None)
+            instance_rect = plt.Rectangle(
+                (x1, y1),
+                x2 - x1,
+                y2 - y1,
+                linewidth=3,
+                edgecolor='yellow',
+                facecolor='none',
+                alpha=0.8,
+                label=class_name
+            )
+            axes[0].add_patch(instance_rect)
+        
+        # Add legend if we have patches or selected instance
+        if patch_data or selected_instance_info:
+            axes[0].legend(loc='upper right', fontsize=10)
         
         # Display generated image
         axes[1].imshow(generated_image)
         axes[1].axis('off')
-        axes[1].set_title(titles[1], fontsize=14, fontweight='bold')
+        axes[1].set_title('Generated', fontsize=14, fontweight='bold')
         
         # Add shared caption below the images
         if wrapped_caption:
