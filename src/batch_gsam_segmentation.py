@@ -310,6 +310,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     # Store results
                     annotations[artifact_type] = {
                         'annotation': annotation,
+                        'entity_name': vocab[0],
                         'class_name': class_name,
                         'part_detection_results': visualized_output,
                         'sampled_instance_info': {
