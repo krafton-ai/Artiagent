@@ -474,18 +474,6 @@ run_gsam_segmentation() {
         exit 1
     fi
     
-    # Verify GSAM output
-    if [[ ! -d "$OUTPUT_DIR/processed_data" ]]; then
-        print_error "GSAM output directory not created: $OUTPUT_DIR/processed_data"
-        exit 1
-    fi
-    
-    intermediate_count=$(find "$OUTPUT_DIR/processed_data" -name "image_*.pkl" | wc -l)
-    print_info "Generated $intermediate_count intermediate data files"
-    
-    if [[ $intermediate_count -eq 0 ]]; then
-        print_warning "No intermediate data files generated - this might indicate an issue"
-    fi
 }
 
 # Print final summary
