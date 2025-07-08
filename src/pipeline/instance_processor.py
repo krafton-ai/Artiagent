@@ -678,9 +678,8 @@ class InstanceProcessor:
         """
 
         
-        # Strip file extension from filename for directory naming
-        img_name = os.path.splitext(img_filename)[0]
-        viz_output_dir = os.path.join(output_dir, img_name)
+        # Use output_dir directly (no additional subdirectory creation)
+        viz_output_dir = output_dir
         os.makedirs(viz_output_dir, exist_ok=True)
         
         for artifact_type, masks in masks_data.items():
@@ -1428,11 +1427,10 @@ class InstanceProcessor:
         
         # Save visualization if output directory is provided
         if output_dir and img_filename:
-            img_name = os.path.splitext(img_filename)[0]
-            viz_output_dir = os.path.join(output_dir, img_name)
-            os.makedirs(viz_output_dir, exist_ok=True)
+            # Use output_dir directly (no additional subdirectory creation)
+            os.makedirs(output_dir, exist_ok=True)
             
-            output_path = os.path.join(viz_output_dir, "04_addition_probability_map.png")
+            output_path = os.path.join(output_dir, "04_addition_probability_map.png")
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
             print(f"Probability map visualization saved to: {output_path}")
         

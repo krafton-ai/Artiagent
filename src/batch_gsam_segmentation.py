@@ -58,10 +58,10 @@ def setup_logging(output_dir: str, supercategory: str):
     return logging.getLogger(__name__)
 
 
-def save_unified_data(img_id: int, data: Dict, output_dir: str):
-    """Save all data in a single unified format"""
-    output_file = os.path.join(output_dir, 'processed_data', f'image_{img_id}.pkl')
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+def save_unified_data(img_id: int, data: Dict, image_output_dir: str):
+    """Save all data in a single unified format to image-specific directory"""
+    output_file = os.path.join(image_output_dir, 'metadata.pkl')
+    os.makedirs(image_output_dir, exist_ok=True)
     
     # Convert numpy arrays in annotations to lists for better compatibility
     def convert_numpy(obj):
@@ -152,13 +152,13 @@ def create_target_mask_from_patches(target_patch_indices: List[int], img_shape: 
 
 def create_visualizations(img_array: np.ndarray, img_filename: str, caption: str, 
                         visualized_output: np.ndarray, artifacts: Dict, 
-                        output_dir: str, visualizer):
-    """Create all visualizations for an image"""
+                        image_output_dir: str, visualizer):
+    """Create all visualizations for an image in image-specific directory"""
     # Original image
     visualizer.show_image(
         img_array, caption, title="Original Image", 
         image_name=img_filename, 
-        base_dir=output_dir,
+        base_dir=image_output_dir,
         filename="01_original_image.png"
     )
     
@@ -166,7 +166,7 @@ def create_visualizations(img_array: np.ndarray, img_filename: str, caption: str
     visualizer.show_detection_results(
         img_array, visualized_output,
         image_name=img_filename, 
-        base_dir=output_dir,
+        base_dir=image_output_dir,
         filename="02_detection_results.png"
     )
     
@@ -190,7 +190,7 @@ def create_visualizations(img_array: np.ndarray, img_filename: str, caption: str
             # Create patch mask visualizations
             InstanceProcessor.visualize_patch_masks(
                 img_array, {artifact_type: masks}, 
-                img_filename, output_dir
+                img_filename, image_output_dir
             )
 
 
@@ -240,6 +240,10 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
         patch_annotations = {}
         artifact_count = 0
         successful_artifact_type = None
+        
+        # Create image-specific output directory early so it can be used by create_artifact_patches
+        image_output_dir = os.path.join(output_dir, f'image_{img_id}')
+        os.makedirs(image_output_dir, exist_ok=True)
 
         for artifact_type in artifact_types_to_try:
             logger.info(f"  Trying artifact type: {artifact_type}")
@@ -282,7 +286,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                         img_array, 
                         16, 
                         distortion_kernel=config['distortion_kernel'],
-                        output_dir=output_dir,
+                        output_dir=image_output_dir,
                         img_filename=img_filename
                     )
 
@@ -354,7 +358,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
         }
         
         # Save unified data
-        save_unified_data(img_id, unified_data, output_dir)
+        save_unified_data(img_id, unified_data, image_output_dir)
         
         # Create visualizations
         artifacts_for_viz = {}
@@ -368,7 +372,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
 
         create_visualizations(
             img_array, img_filename, '', visualized_output,
-            artifacts_for_viz, output_dir, visualizer
+            artifacts_for_viz, image_output_dir, visualizer
         )
         
         results['success'] = True

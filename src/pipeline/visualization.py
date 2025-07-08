@@ -48,9 +48,9 @@ class ImageVisualizer:
             base_dir: Base output directory
             filename: Name of the output file
         """
-        # Create output directory
-        output_dir = ImageVisualizer._create_output_dir(image_name, base_dir)
-        save_path = os.path.join(output_dir, filename)
+        # Use base_dir directly (no additional subdirectory creation)
+        os.makedirs(base_dir, exist_ok=True)
+        save_path = os.path.join(base_dir, filename)
         
         # Convert PIL Image to numpy array if needed
         if isinstance(image, Image.Image):
@@ -103,9 +103,9 @@ class ImageVisualizer:
             base_dir: Base output directory
             filename: Name of the output file
         """
-        # Create output directory
-        output_dir = ImageVisualizer._create_output_dir(image_name, base_dir)
-        save_path = os.path.join(output_dir, filename)
+        # Use base_dir directly (no additional subdirectory creation)
+        os.makedirs(base_dir, exist_ok=True)
+        save_path = os.path.join(base_dir, filename)
         # Convert PIL Images to numpy arrays if needed
         if isinstance(original_image, Image.Image):
             original_image = np.array(original_image)
@@ -161,9 +161,9 @@ class ImageVisualizer:
             base_dir: Base output directory
             filename: Name of the output file
         """
-        # Create output directory
-        output_dir = ImageVisualizer._create_output_dir(image_name, base_dir)
-        save_path = os.path.join(output_dir, filename)
+        # Use base_dir directly (no additional subdirectory creation)
+        os.makedirs(base_dir, exist_ok=True)
+        save_path = os.path.join(base_dir, filename)
         
         if hasattr(visualized_output, 'fig'):
             # If visualized_output has a figure attribute, save it
@@ -217,9 +217,9 @@ class ImageVisualizer:
             base_dir: Base output directory
             filename: Name of the output file
         """
-        # Create output directory
-        output_dir = ImageVisualizer._create_output_dir(image_name, base_dir)
-        save_path = os.path.join(output_dir, filename)
+        # Use base_dir directly (no additional subdirectory creation)
+        os.makedirs(base_dir, exist_ok=True)
+        save_path = os.path.join(base_dir, filename)
         # Convert PIL Image to numpy array if needed
         if isinstance(image, Image.Image):
             image = np.array(image)
@@ -293,9 +293,9 @@ class ImageVisualizer:
             base_dir: Base output directory
             filename: Name of the output file
         """
-        # Create output directory
-        output_dir = ImageVisualizer._create_output_dir(image_name, base_dir)
-        save_path = os.path.join(output_dir, filename)
+        # Use base_dir directly (no additional subdirectory creation)
+        os.makedirs(base_dir, exist_ok=True)
+        save_path = os.path.join(base_dir, filename)
         # Convert PIL Images to numpy arrays if needed
         if isinstance(real_image, Image.Image):
             real_image = np.array(real_image)
@@ -402,9 +402,9 @@ class ImageVisualizer:
             base_dir: Base output directory
             filename: Name of the output file
         """
-        # Create output directory
-        output_dir = ImageVisualizer._create_output_dir(image_name, base_dir)
-        save_path = os.path.join(output_dir, filename)
+        # Use base_dir directly (no additional subdirectory creation)
+        os.makedirs(base_dir, exist_ok=True)
+        save_path = os.path.join(base_dir, filename)
         n_images = len(images)
         
         # Auto-calculate grid size if not provided

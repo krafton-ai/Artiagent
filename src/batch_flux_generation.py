@@ -79,12 +79,13 @@ def create_flux_visualizations(img_array: np.ndarray, generated_image: np.ndarra
     )
     
     # Save patch annotation visualizations
-    flux_output_dir = visualizer._create_output_dir(img_filename, output_dir)
+    # Use output_dir directly (no additional subdirectory creation)
+    os.makedirs(output_dir, exist_ok=True)
     save_patch_visualizations(
-        img_array, patch_data, artifact_type, img_filename, flux_output_dir
+        img_array, patch_data, artifact_type, img_filename, output_dir
     )
 
-    generated_image.save(flux_output_dir+'/'+f'07_injected_image_{artifact_type}.png')
+    generated_image.save(os.path.join(output_dir, f'07_injected_image_{artifact_type}.png'))
 
 
 def save_patch_visualizations(img_array: np.ndarray, patch_data: Dict,
@@ -195,19 +196,19 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
     caption = data['caption']
 
     
-    # Copy original image and detection results from VLPart output if needed
-    segmentation_output_dir = os.path.dirname(os.path.dirname(data_file))  # Go up from processed_data
-    flux_output_path = os.path.join(output_dir, img_filename)
-    # os.makedirs(flux_output_path, exist_ok=True)
+    # Create image-specific output directory for FLUX results
+    flux_output_path = os.path.join(output_dir, f'image_{img_id}')
+    os.makedirs(flux_output_path, exist_ok=True)
     
-    # Copy visualizations from VLPart processing
+    # Copy visualizations from GSAM processing (they're in the same directory as metadata.pkl)
+    gsam_image_dir = os.path.dirname(data_file)  # Directory containing metadata.pkl
     for viz_file in ["01_original_image.png", "02_detection_results.png"]:
-        vlpart_viz_path = os.path.join(segmentation_output_dir, img_filename, viz_file)
+        gsam_viz_path = os.path.join(gsam_image_dir, viz_file)
         flux_viz_path = os.path.join(flux_output_path, viz_file)
         
-        if os.path.exists(vlpart_viz_path) and not os.path.exists(flux_viz_path):
+        if os.path.exists(gsam_viz_path) and not os.path.exists(flux_viz_path):
             import shutil
-            shutil.copy2(vlpart_viz_path, flux_viz_path)
+            shutil.copy2(gsam_viz_path, flux_viz_path)
     
     # Process each artifact type
     successful_artifacts = 0
@@ -261,7 +262,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
             target_prompt='',
             artifact_type=artifact_type,
             source_img=img_array.copy(),
-            output_dir=output_dir,
+            output_dir=flux_output_path,
             reference_patch_indices=reference_patch_indices,
             target_patch_indices=target_patch_indices,
         )
@@ -269,7 +270,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
         # Create visualizations
         create_flux_visualizations(
             img_array, generated_image, annotation, artifact_type,
-            patch_data, img_filename, caption, output_dir, 
+            patch_data, img_filename, caption, flux_output_path, 
             visualizer
         )
         results['artifacts'][artifact_type] = {
@@ -356,13 +357,19 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
     visualizer = ImageVisualizer()
     
     try:
-        # Get list of processed data files
-        processed_data_dir = os.path.join(segmentation_output_dir, 'processed_data')
-        if not os.path.exists(processed_data_dir):
-            logger.error(f"Processed data directory does not exist: {processed_data_dir}")
+        # Get list of processed data files from image directories
+        if not os.path.exists(segmentation_output_dir):
+            logger.error(f"Segmentation output directory does not exist: {segmentation_output_dir}")
             return
             
-        data_files = glob.glob(os.path.join(processed_data_dir, 'image_*.pkl'))
+        # Look for image_* directories containing metadata.pkl files
+        image_dirs = glob.glob(os.path.join(segmentation_output_dir, 'image_*'))
+        data_files = []
+        for image_dir in image_dirs:
+            metadata_file = os.path.join(image_dir, 'metadata.pkl')
+            if os.path.exists(metadata_file):
+                data_files.append(metadata_file)
+        
         stats['total_images'] = len(data_files)
         logger.info(f"Found {len(data_files)} processed data files")
         
@@ -370,7 +377,7 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
         if resume:
             processed_ids = set(stats['processed_image_ids'])
             data_files = [f for f in data_files 
-                         if int(os.path.basename(f).replace('image_', '').replace('.pkl', '')) not in processed_ids]
+                         if int(os.path.basename(os.path.dirname(f)).replace('image_', '')) not in processed_ids]
             logger.info(f"Remaining to process: {len(data_files)} files")
         
         if not data_files:
@@ -450,9 +457,9 @@ def main():
     """Main function for FLUX artifact generation"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Generate FLUX artifacts from VLPart processing results')
+    parser = argparse.ArgumentParser(description='Generate FLUX artifacts from GSAM processing results')
     parser.add_argument('segmentation_output_dir', type=str, 
-                       help='Directory containing VLPart processing results')
+                       help='Directory containing GSAM processing results (with image_* subdirectories)')
     parser.add_argument('--artifact-types', nargs='+', 
                        default=['distortion', 'removal', 'addition'],
                        help='Artifact types to generate')
@@ -480,15 +487,18 @@ def main():
                        help='Use RF solver (second-order) instead of first-order denoising (default: False)')
     args = parser.parse_args()
     
-    # Validate VLPart output directory
+    # Validate GSAM output directory
     if not os.path.exists(args.segmentation_output_dir):
-        print(f"❌ Error: VLPart output directory does not exist: {args.segmentation_output_dir}")
+        print(f"❌ Error: GSAM output directory does not exist: {args.segmentation_output_dir}")
         sys.exit(1)
         
-    processed_data_dir = os.path.join(args.segmentation_output_dir, 'processed_data')
-    if not os.path.exists(processed_data_dir):
-        print(f"❌ Error: Processed data directory does not exist: {processed_data_dir}")
-        print("   Please run VLPart processing first.")
+    # Check for image directories with metadata.pkl files
+    image_dirs = glob.glob(os.path.join(args.segmentation_output_dir, 'image_*'))
+    metadata_files = [os.path.join(d, 'metadata.pkl') for d in image_dirs if os.path.exists(os.path.join(d, 'metadata.pkl'))]
+    
+    if not metadata_files:
+        print(f"❌ Error: No image directories with metadata.pkl found in: {args.segmentation_output_dir}")
+        print("   Please run GSAM processing first.")
         sys.exit(1)
     
     run_flux_generation(

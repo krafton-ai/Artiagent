@@ -79,7 +79,7 @@ USAGE:
 
 ARGUMENTS:
     gsam_output_dir         Directory containing GSAM segmentation results
-                           (must contain processed_data/ subdirectory)
+                           (must contain image_*/ subdirectories with metadata.pkl files)
 
 OPTIONS:
     --artifact-types LIST   Artifact types to generate (default: "distortion removal addition")
@@ -122,7 +122,7 @@ EXAMPLES:
     ./run_flux.sh gsam_output_person --use-rf-solver
 
 REQUIREMENTS:
-    - GSAM results directory with processed_data/ subdirectory
+    - GSAM results directory with image_*/ subdirectories containing metadata.pkl files
     - OPENAI_API_KEY environment variable set
     - Python environment with required FLUX dependencies
 
@@ -221,11 +221,33 @@ if [[ ! -d "$GSAM_DIR" ]]; then
     exit 1
 fi
 
-if [[ ! -d "$GSAM_DIR/processed_data" ]]; then
-    print_error "GSAM intermediate data directory not found: $GSAM_DIR/processed_data"
+if [[ ! -d "$GSAM_DIR" ]]; then
+    print_error "GSAM output directory not found: $GSAM_DIR"
     print_error "Make sure to run GSAM segmentation first with run_gsam.sh"
     exit 1
 fi
+# Print GSAM_DIR for debugging
+print_info "GSAM directory: $GSAM_DIR"
+
+
+# Check for image directories with metadata.pkl files
+print_info "Checking for image directories with metadata.pkl files..."
+
+# Use a simpler approach to count metadata files
+metadata_count=$(find "$GSAM_DIR" -maxdepth 2 -name "metadata.pkl" -type f | wc -l)
+print_info "Found $metadata_count directories with metadata.pkl files"
+
+if [[ $metadata_count -eq 0 ]]; then
+    print_error "No image directories with metadata.pkl found in: $GSAM_DIR"
+    print_error "Make sure to run GSAM segmentation first with run_gsam.sh"
+    
+    # Show what directories exist for debugging
+    print_info "Available directories in $GSAM_DIR:"
+    ls -la "$GSAM_DIR" | grep "^d" || print_info "No directories found"
+    exit 1
+fi
+
+print_info "Validation passed! Found $metadata_count processed images. Proceeding with FLUX generation..."
 
 # Set output directory if not specified
 if [[ -z "$OUTPUT_DIR" ]]; then
@@ -262,10 +284,10 @@ check_dependencies() {
         exit 1
     fi
     
-    # Check GSAM intermediate data
-    intermediate_count=$(find "$GSAM_DIR/processed_data" -name "image_*.pkl" 2>/dev/null | wc -l)
+    # Check GSAM intermediate data (new structure: image_*/metadata.pkl)
+    intermediate_count=$(find "$GSAM_DIR" -maxdepth 2 -name "metadata.pkl" -type f 2>/dev/null | wc -l)
     if [[ $intermediate_count -eq 0 ]]; then
-        print_error "No GSAM intermediate data files found in $GSAM_DIR/processed_data"
+        print_error "No GSAM intermediate data files found in $GSAM_DIR"
         print_error "Make sure GSAM processing completed successfully"
         exit 1
     fi
@@ -295,7 +317,7 @@ print_configuration() {
 run_flux_generation() {
     print_header "FLUX ARTIFACT GENERATION PROCESSING"
     
-    intermediate_count=$(find "$GSAM_DIR/processed_data" -name "image_*.pkl" | wc -l)
+    intermediate_count=$(find "$GSAM_DIR" -maxdepth 2 -name "metadata.pkl" -type f | wc -l)
     print_info "Processing $intermediate_count intermediate data files with FLUX"
     
     # Build FLUX command
@@ -347,7 +369,7 @@ print_summary() {
     print_header "FLUX ARTIFACT GENERATION SUMMARY"
     
     # Input summary
-    intermediate_count=$(find "$GSAM_DIR/processed_data" -name "image_*.pkl" 2>/dev/null | wc -l)
+    intermediate_count=$(find "$GSAM_DIR" -maxdepth 2 -name "metadata.pkl" -type f 2>/dev/null | wc -l)
     echo "Input (GSAM Results):"
     echo "  Source directory:     $GSAM_DIR"
     echo "  Intermediate files:   $intermediate_count"
