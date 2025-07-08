@@ -1218,8 +1218,6 @@ class InstanceProcessor:
             distance_penalty = 1 + (distance_penalty_weight * moved_distance)
             
             probability_score = (3 - ref_overlap - max_same_class_overlap - entity_overlap) / distance_penalty
-            # Ensure non-negative probability
-            # probability_score = max(0, probability_score)
             
             # Step 5-8: Update probability map at perimeter patch location
             probability_map[perimeter_py, perimeter_px] = probability_score
@@ -1310,143 +1308,137 @@ class InstanceProcessor:
             colormap: Matplotlib colormap for heatmap (default 'hot')
             alpha: Transparency of heatmap overlay (default 0.6)
         """
-        try:
-            H, W = img_array.shape[:2]
-            patch_h, patch_w = probability_map.shape
+        H, W = img_array.shape[:2]
+        patch_h, patch_w = probability_map.shape
+        
+        # Create figure with subplots
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        
+        # Panel 1: Original image with reference instance
+        axes[0].imshow(img_array)
+        
+        # Overlay reference instance bounding box
+        ref_bbox = reference_instance['pred_box'].cpu().numpy()
+        rect = patches.Rectangle(
+            (ref_bbox[0], ref_bbox[1]), 
+            ref_bbox[2] - ref_bbox[0], 
+            ref_bbox[3] - ref_bbox[1],
+            linewidth=2, edgecolor='red', facecolor='none', label='Reference Instance'
+        )
+        axes[0].add_patch(rect)
+        
+        # Show reference center point
+        ref_center_y, ref_center_x = metadata['reference_center_patch']
+        ref_center_pixel_y = ref_center_y * patch_size + patch_size // 2
+        ref_center_pixel_x = ref_center_x * patch_size + patch_size // 2
+        axes[0].plot(ref_center_pixel_x, ref_center_pixel_y, 'r*', markersize=15, label='Reference Center')
+        
+        axes[0].set_title('Original Image with Reference Instance')
+        axes[0].axis('off')
+        axes[0].legend()
+        
+        # Panel 2: Probability heatmap only
+        im1 = axes[1].imshow(probability_map, cmap=colormap, vmin=0, vmax=1)
+        non_zero_count = metadata.get('num_non_zero_patches', 0)
+        min_prob = metadata.get('min_probability', 0)
+        max_prob = metadata.get('max_probability', 0)
+        axes[1].set_title(f'Probability Heatmap (Min-Max Normalized)\nNon-zero patches: {non_zero_count}, Range: [{min_prob:.3f}, {max_prob:.3f}]')
+        
+        # Add patch grid lines
+        for i in range(patch_h + 1):
+            axes[1].axhline(y=i - 0.5, color='white', linewidth=0.5, alpha=0.3)
+        for j in range(patch_w + 1):
+            axes[1].axvline(x=j - 0.5, color='white', linewidth=0.5, alpha=0.3)
+        
+        # Mark reference center position
+        axes[1].plot(ref_center_x, ref_center_y, 'w*', markersize=15, label='Reference Center')
+        
+        # Mark sampled patch if available
+        if metadata.get('sampled_patch') is not None:
+            sampled_py, sampled_px = metadata['sampled_patch']
+            axes[1].plot(sampled_px, sampled_py, 'ko', markersize=12, markerfacecolor='yellow', 
+                        markeredgecolor='black', markeredgewidth=2, label='Sampled Patch')
+        
+        axes[1].legend()
+        
+        # Add colorbar for heatmap
+        cbar1 = plt.colorbar(im1, ax=axes[1], shrink=0.8)
+        cbar1.set_label('Probability', rotation=270, labelpad=20)
+        
+        # Panel 3: Overlay heatmap on original image
+        axes[2].imshow(img_array)
+        
+        # Overlay reference patches
+        ref_mask = reference_instance['pred_mask'].cpu().numpy()
+        axes[2].imshow(ref_mask, alpha=0.3, cmap='Greens', vmin=0, vmax=1)
+        
+        # Resize probability map to match image dimensions
+        probability_resized = np.zeros((H, W))
+        for py in range(patch_h):
+            for px in range(patch_w):
+                y_start = py * patch_size
+                y_end = min((py + 1) * patch_size, H)
+                x_start = px * patch_size
+                x_end = min((px + 1) * patch_size, W)
+                probability_resized[y_start:y_end, x_start:x_end] = probability_map[py, px]
+        
+        # Create masked array to only show non-zero probabilities
+        probability_masked = np.ma.masked_where(probability_resized == 0, probability_resized)
+        
+        # Overlay heatmap
+        im2 = axes[2].imshow(probability_masked, cmap=colormap, alpha=alpha, vmin=0, vmax=1)
+        
+        # Overlay reference instance bounding box
+        rect2 = patches.Rectangle(
+            (ref_bbox[0], ref_bbox[1]), 
+            ref_bbox[2] - ref_bbox[0], 
+            ref_bbox[3] - ref_bbox[1],
+            linewidth=2, edgecolor='cyan', facecolor='none', label='Reference Instance'
+        )
+        axes[2].add_patch(rect2)
+        
+        # Show reference center point
+        axes[2].plot(ref_center_pixel_x, ref_center_pixel_y, 'c*', markersize=15, label='Reference Center')
+        
+        # Mark sampled patch if available
+        if metadata.get('sampled_patch') is not None:
+            sampled_py, sampled_px = metadata['sampled_patch']
+            sampled_pixel_y = sampled_py * patch_size + patch_size // 2
+            sampled_pixel_x = sampled_px * patch_size + patch_size // 2
+            axes[2].plot(sampled_pixel_x, sampled_pixel_y, 'ko', markersize=12, markerfacecolor='yellow', 
+                        markeredgecolor='black', markeredgewidth=2, label='Sampled Patch')
+        
+        axes[2].set_title(f'Min-Max Normalized Probability Overlay\n({metadata["valid_candidates"]}/{metadata["total_candidates_tested"]} valid candidates)\nGreen: Reference, Hot: Probability, Yellow: Sampled Patch')
+        axes[2].axis('off')
+        axes[2].legend()
+        
+        # Add colorbar for overlay
+        cbar2 = plt.colorbar(im2, ax=axes[2], shrink=0.8)
+        cbar2.set_label('Probability', rotation=270, labelpad=20)
+        
+        # Add overall title with metadata
+        sampled_info = ""
+        if metadata.get('sampled_offset') is not None:
+            offset_x, offset_y = metadata['sampled_offset']
+            sampled_info = f", Sampled Offset: ({offset_x:.1f}, {offset_y:.1f})"
+        
+        fig.suptitle(f'Addition Probability Map Analysis (Min-Max Normalized)\n'
+                    f'Alpha: {metadata["alpha"]}, Max Entity Overlap: {metadata["max_entity_overlap"]}, '
+                    f'Distance Penalty: {metadata["distance_penalty_weight"]}{sampled_info}\n'
+                    f'Valid Candidates: {metadata["valid_candidates"]}/{metadata["total_candidates_tested"]}, '
+                    f'Non-zero: {metadata["num_non_zero_patches"]}', 
+                    fontsize=11)
+        
+        plt.tight_layout()
+        
+        # Save visualization if output directory is provided
+        if output_dir and img_filename:
+            img_name = os.path.splitext(img_filename)[0]
+            viz_output_dir = os.path.join(output_dir, img_name)
+            os.makedirs(viz_output_dir, exist_ok=True)
             
-            # Create figure with subplots
-            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-            
-            # Panel 1: Original image with reference instance
-            axes[0].imshow(img_array)
-            
-            # Overlay reference instance bounding box
-            ref_bbox = reference_instance['pred_box'].cpu().numpy()
-            rect = patches.Rectangle(
-                (ref_bbox[0], ref_bbox[1]), 
-                ref_bbox[2] - ref_bbox[0], 
-                ref_bbox[3] - ref_bbox[1],
-                linewidth=2, edgecolor='red', facecolor='none', label='Reference Instance'
-            )
-            axes[0].add_patch(rect)
-            
-            # Show reference center point
-            ref_center_y, ref_center_x = metadata['reference_center_patch']
-            ref_center_pixel_y = ref_center_y * patch_size + patch_size // 2
-            ref_center_pixel_x = ref_center_x * patch_size + patch_size // 2
-            axes[0].plot(ref_center_pixel_x, ref_center_pixel_y, 'r*', markersize=15, label='Reference Center')
-            
-            axes[0].set_title('Original Image with Reference Instance')
-            axes[0].axis('off')
-            axes[0].legend()
-            
-            # Panel 2: Probability heatmap only
-            im1 = axes[1].imshow(probability_map, cmap=colormap, vmin=0, vmax=1)
-            non_zero_count = metadata.get('num_non_zero_patches', 0)
-            min_prob = metadata.get('min_probability', 0)
-            max_prob = metadata.get('max_probability', 0)
-            axes[1].set_title(f'Probability Heatmap (Min-Max Normalized)\nNon-zero patches: {non_zero_count}, Range: [{min_prob:.3f}, {max_prob:.3f}]')
-            
-            # Add patch grid lines
-            for i in range(patch_h + 1):
-                axes[1].axhline(y=i - 0.5, color='white', linewidth=0.5, alpha=0.3)
-            for j in range(patch_w + 1):
-                axes[1].axvline(x=j - 0.5, color='white', linewidth=0.5, alpha=0.3)
-            
-            # Mark reference center position
-            axes[1].plot(ref_center_x, ref_center_y, 'w*', markersize=15, label='Reference Center')
-            
-            # Mark sampled patch if available
-            if metadata.get('sampled_patch') is not None:
-                sampled_py, sampled_px = metadata['sampled_patch']
-                axes[1].plot(sampled_px, sampled_py, 'ko', markersize=12, markerfacecolor='yellow', 
-                           markeredgecolor='black', markeredgewidth=2, label='Sampled Patch')
-            
-            axes[1].legend()
-            
-            # Add colorbar for heatmap
-            cbar1 = plt.colorbar(im1, ax=axes[1], shrink=0.8)
-            cbar1.set_label('Probability', rotation=270, labelpad=20)
-            
-            # Panel 3: Overlay heatmap on original image
-            axes[2].imshow(img_array)
-            
-            # Overlay reference patches
-            ref_mask = reference_instance['pred_mask'].cpu().numpy()
-            axes[2].imshow(ref_mask, alpha=0.3, cmap='Greens', vmin=0, vmax=1)
-            
-            # Resize probability map to match image dimensions
-            probability_resized = np.zeros((H, W))
-            for py in range(patch_h):
-                for px in range(patch_w):
-                    y_start = py * patch_size
-                    y_end = min((py + 1) * patch_size, H)
-                    x_start = px * patch_size
-                    x_end = min((px + 1) * patch_size, W)
-                    probability_resized[y_start:y_end, x_start:x_end] = probability_map[py, px]
-            
-            # Create masked array to only show non-zero probabilities
-            probability_masked = np.ma.masked_where(probability_resized == 0, probability_resized)
-            
-            # Overlay heatmap
-            im2 = axes[2].imshow(probability_masked, cmap=colormap, alpha=alpha, vmin=0, vmax=1)
-            
-            # Overlay reference instance bounding box
-            rect2 = patches.Rectangle(
-                (ref_bbox[0], ref_bbox[1]), 
-                ref_bbox[2] - ref_bbox[0], 
-                ref_bbox[3] - ref_bbox[1],
-                linewidth=2, edgecolor='cyan', facecolor='none', label='Reference Instance'
-            )
-            axes[2].add_patch(rect2)
-            
-            # Show reference center point
-            axes[2].plot(ref_center_pixel_x, ref_center_pixel_y, 'c*', markersize=15, label='Reference Center')
-            
-            # Mark sampled patch if available
-            if metadata.get('sampled_patch') is not None:
-                sampled_py, sampled_px = metadata['sampled_patch']
-                sampled_pixel_y = sampled_py * patch_size + patch_size // 2
-                sampled_pixel_x = sampled_px * patch_size + patch_size // 2
-                axes[2].plot(sampled_pixel_x, sampled_pixel_y, 'ko', markersize=12, markerfacecolor='yellow', 
-                           markeredgecolor='black', markeredgewidth=2, label='Sampled Patch')
-            
-            axes[2].set_title(f'Min-Max Normalized Probability Overlay\n({metadata["valid_candidates"]}/{metadata["total_candidates_tested"]} valid candidates)\nGreen: Reference, Hot: Probability, Yellow: Sampled Patch')
-            axes[2].axis('off')
-            axes[2].legend()
-            
-            # Add colorbar for overlay
-            cbar2 = plt.colorbar(im2, ax=axes[2], shrink=0.8)
-            cbar2.set_label('Probability', rotation=270, labelpad=20)
-            
-            # Add overall title with metadata
-            sampled_info = ""
-            if metadata.get('sampled_offset') is not None:
-                offset_x, offset_y = metadata['sampled_offset']
-                sampled_info = f", Sampled Offset: ({offset_x:.1f}, {offset_y:.1f})"
-            
-            fig.suptitle(f'Addition Probability Map Analysis (Min-Max Normalized)\n'
-                        f'Alpha: {metadata["alpha"]}, Max Entity Overlap: {metadata["max_entity_overlap"]}, '
-                        f'Distance Penalty: {metadata["distance_penalty_weight"]}{sampled_info}\n'
-                        f'Valid Candidates: {metadata["valid_candidates"]}/{metadata["total_candidates_tested"]}, '
-                        f'Non-zero: {metadata["num_non_zero_patches"]}', 
-                        fontsize=11)
-            
-            plt.tight_layout()
-            
-            # Save visualization if output directory is provided
-            if output_dir and img_filename:
-                img_name = os.path.splitext(img_filename)[0]
-                viz_output_dir = os.path.join(output_dir, img_name)
-                os.makedirs(viz_output_dir, exist_ok=True)
-                
-                output_path = os.path.join(viz_output_dir, "04_addition_probability_map.png")
-                plt.savefig(output_path, dpi=150, bbox_inches='tight')
-                print(f"Probability map visualization saved to: {output_path}")
-            
-            plt.close()
-            
-        except Exception as e:
-            print(f"Error creating probability map visualization: {str(e)}")
-            if 'fig' in locals():
-                plt.close(fig)
+            output_path = os.path.join(viz_output_dir, "04_addition_probability_map.png")
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            print(f"Probability map visualization saved to: {output_path}")
+        
+        plt.close()
