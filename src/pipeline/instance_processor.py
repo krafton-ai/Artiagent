@@ -312,7 +312,7 @@ class InstanceProcessor:
 
             # artifact_direction = addition_sugget_direction(openai_client, sampled_instance, f'{class_name} of {vocab[0]}', img_array)      
             # candidate_target_list, metadata = InstanceProcessor.generate_candidate_addition_region(sampled_instance, predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, overlap_threshold=0.05)
-            offset, prob_map, metadata = InstanceProcessor.generate_addition_probability_map(sampled_instance, predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, alpha=2.0, max_entity_overlap=0.7, distance_penalty_weight=0.1)
+            offset, prob_map, metadata = InstanceProcessor.generate_addition_probability_map(sampled_instance, predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, alpha=2.0, max_entity_overlap=0.7, distance_penalty_weight=0.05)
             InstanceProcessor.visualize_addition_probability_map(img_array, prob_map, sampled_instance, metadata, patch_size=patch_size, output_dir=output_dir, img_filename=img_filename)
             
             # Visualize all candidates overlaid on the original image
@@ -1247,24 +1247,20 @@ class InstanceProcessor:
             valid_indices = np.where(flat_prob_map > 0)[0]
             valid_probabilities = flat_prob_map[valid_indices]
             
-            # Normalize probabilities for sampling
-            prob_sum = np.sum(valid_probabilities)
-            if prob_sum > 0:
-                normalized_probs = valid_probabilities / prob_sum
-                
-                # Sample an index based on probabilities
-                sampled_flat_idx = np.random.choice(valid_indices, p=normalized_probs)
-                
-                # Convert flat index back to 2D coordinates
-                sampled_py, sampled_px = np.unravel_index(sampled_flat_idx, probability_map.shape)
-                sampled_patch = (sampled_py, sampled_px)
-                
-                # Calculate offset from reference center to sampled patch
-                offset_y_patches = sampled_py - ref_center_patch_y
-                offset_x_patches = sampled_px - ref_center_patch_x
-                offset_y_pixels = offset_y_patches * patch_size
-                offset_x_pixels = offset_x_patches * patch_size
-                sampled_offset = (offset_x_pixels, offset_y_pixels)
+            # Select the index with maximum probability
+            max_prob_idx = np.argmax(valid_probabilities)
+            sampled_flat_idx = valid_indices[max_prob_idx]
+            
+            # Convert flat index back to 2D coordinates
+            sampled_py, sampled_px = np.unravel_index(sampled_flat_idx, probability_map.shape)
+            sampled_patch = (sampled_py, sampled_px)
+            
+            # Calculate offset from reference center to sampled patch
+            offset_y_patches = sampled_py - ref_center_patch_y
+            offset_x_patches = sampled_px - ref_center_patch_x
+            offset_y_pixels = offset_y_patches * patch_size
+            offset_x_pixels = offset_x_patches * patch_size
+            sampled_offset = (offset_x_pixels, offset_y_pixels)
         
         # Step 7: Create metadata
         metadata = {
@@ -1356,9 +1352,8 @@ class InstanceProcessor:
         # Mark sampled patch if available
         if metadata.get('sampled_patch') is not None:
             sampled_py, sampled_px = metadata['sampled_patch']
-            axes[1].plot(sampled_px, sampled_py, 'ko', markersize=12, markerfacecolor='yellow', 
+            axes[1].plot(sampled_px, sampled_py, 'o', markersize=12, markerfacecolor='none', 
                         markeredgecolor='black', markeredgewidth=2, label='Sampled Patch')
-        
         axes[1].legend()
         
         # Add colorbar for heatmap
