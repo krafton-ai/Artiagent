@@ -467,6 +467,36 @@ class InstanceProcessor:
             raise ValueError(f"Unknown artifact type: {artifact_type}")
 
     @staticmethod
+    def patch_coords_to_bbox(patch_coords: List[Tuple[int, int]], patch_size: int = 16) -> Tuple[int, int, int, int]:
+        """
+        Convert patch coordinates to bounding box coordinates in real image dimensions.
+        
+        Args:
+            patch_coords: List of tuples (py, px) representing patch coordinates
+            patch_size: Size of each patch in pixels (default 16)
+            
+        Returns:
+            Tuple of (xmin, ymin, xmax, ymax) in pixel coordinates
+        """
+        if not patch_coords:
+            return (0, 0, 0, 0)
+        
+        # Extract patch coordinates
+        patch_ys, patch_xs = zip(*patch_coords)
+        
+        # Convert to pixel coordinates
+        min_patch_y, max_patch_y = min(patch_ys), max(patch_ys)
+        min_patch_x, max_patch_x = min(patch_xs), max(patch_xs)
+        
+        # Calculate bounding box in pixel coordinates
+        xmin = min_patch_x * patch_size
+        ymin = min_patch_y * patch_size
+        xmax = (max_patch_x + 1) * patch_size  # +1 because we want to include the entire patch
+        ymax = (max_patch_y + 1) * patch_size
+        
+        return (xmin, ymin, xmax, ymax)
+
+    @staticmethod
     def create_annotation_dict(instance, vocab: List[str], patch_annot: Dict) -> Tuple[Dict, Optional[Dict]]:
         """
         Create annotation dictionary for artifact injection
