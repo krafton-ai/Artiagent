@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+"""
+Data Filtering Pipeline for GSAM and FLUX Generated Datasets
+
+This script processes GSAM and FLUX generated data, applies overlap/covering filters
+based on artifact type, and saves filtered datasets to an output directory.
+
+Usage:
+    python data_filter_pipeline.py --gsam_dir <path> --flux_dir <path> --output_dir <path>
+"""
+
+import os
+import sys
+import glob
+import pickle
+import argparse
+import shutil
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Any
+import warnings
+warnings.filterwarnings('ignore')
+
+import numpy as np
+import torch
+from PIL import Image
+import cv2
+
+# Add pipeline to path for GSAM detector
+sys.path.append('pipeline')
+from pipeline.gsam_detector import GSAMDetector
+
+
+class DataFilterPipeline:
+    """Pipeline for filtering GSAM and FLUX generated datasets based on overlap/covering criteria"""
+    
+    def __init__(self, gsam_dir: str, flux_dir: str, output_dir: str):
+        """
+        Initialize the data filtering pipeline.
+        
+        Args:
+            gsam_dir: Directory containing GSAM generated data
+            flux_dir: Directory containing FLUX generated data  
+            output_dir: Directory to save filtered datasets
+        """
+        self.gsam_dir = Path(gsam_dir)
+        self.flux_dir = Path(flux_dir)
+        self.output_dir = Path(output_dir)
+        
+        # Validate directories
+        if not self.gsam_dir.exists():
+            raise ValueError(f"GSAM directory does not exist: {gsam_dir}")
+        if not self.flux_dir.exists():
+            raise ValueError(f"FLUX directory does not exist: {flux_dir}")
+            
+        # Create output directory if it doesn't exist
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize GSAM detector
+        self._init_gsam_detector()
+        
+        self.experiment_data = {}
+        self.filtered_results = {}
+        
+    def _init_gsam_detector(self):
+        """Initialize GSAM detector with pre-trained weights"""
+        self.gsam_detector = GSAMDetector(
+            grounding_checkpoint="weight/groundingdino_swint_ogc.pth",
+            sam_checkpoint="weight/sam_vit_h_4b8939.pth",    
+            sam_hq_checkpoint="weight/sam_hq_vit_h.pth",
+            use_sam_hq=True,
+            box_threshold=0.3,
+            text_threshold=0.25,
+            device="cuda:0" if torch.cuda.is_available() else "cpu"
+        )
+        print("GSAM detector initialized successfully")
+
+    
+    def find_matching_experiments(self) -> Dict[str, Dict]:
+        """Find matching directories that start with 'image' between GSAM and FLUX experiments"""
+        # Only consider directories that start with "image"
+        gsam_image_dirs = {d.name: d for d in self.gsam_dir.iterdir() 
+                          if d.is_dir() and d.name.startswith('image')}
+        flux_image_dirs = {d.name: d for d in self.flux_dir.iterdir() 
+                          if d.is_dir() and d.name.startswith('image')}
+        
+        # Find exact matches between image directories
+        matching_ids = set(gsam_image_dirs.keys()) & set(flux_image_dirs.keys())
+        
+        print(f"GSAM image directories: {sorted(gsam_image_dirs.keys())}")
+        print(f"FLUX image directories: {sorted(flux_image_dirs.keys())}")
+        print(f"Found matching image directories: {sorted(matching_ids)}")
+        
+        self.experiment_data = {}
+        
+        # Process matching image directories
+        for exp_id in matching_ids:
+            # Get files from experiment directories
+            gsam_files = self._get_files(gsam_image_dirs[exp_id])
+            flux_files = self._get_files(flux_image_dirs[exp_id])
+            
+            # Find GSAM pickle files
+            gsam_pickle_extensions = {'.pkl', '.pickle'}
+            gsam_pickles = []
+            for file_path in gsam_image_dirs[exp_id].rglob('*'):
+                if file_path.is_file() and file_path.suffix.lower() in gsam_pickle_extensions:
+                    gsam_pickles.append(file_path)
+            gsam_files['pickles'] = gsam_pickles
+            
+            self.experiment_data[exp_id] = {
+                'gsam_path': gsam_image_dirs[exp_id],
+                'flux_path': flux_image_dirs[exp_id],
+                'gsam_files': gsam_files,
+                'flux_files': flux_files
+            }
+        
+        total_matches = len(self.experiment_data)
+        print(f"Found {total_matches} total matching experiments")
+        print(f"Experiment IDs: {sorted(self.experiment_data.keys())}")
+        
+        return self.experiment_data
+    
+    def _get_files(self, directory: Path) -> Dict[str, List[Path]]:
+        """Get all images and pickle files from a directory"""
+        files = {'images': [], 'pickles': [], 'all_files': []}
+        img_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'}
+        
+        for file_path in directory.rglob('*'):
+            if file_path.is_file():
+                files['all_files'].append(file_path)
+                if file_path.suffix.lower() in img_extensions:
+                    files['images'].append(file_path)
+        
+        return files
+    
+    def load_image_safely(self, image_path: Path) -> Optional[np.ndarray]:
+        """Safely load an image file"""
+        try:
+            img = Image.open(image_path)
+            return np.array(img.convert('RGB'))
+        except Exception as e:
+            print(f"Error loading image {image_path}: {e}")
+            return None
+    
+    def load_pickle_safely(self, pickle_path: Path) -> Optional[Any]:
+        """Safely load a pickle file"""
+        try:
+            with open(pickle_path, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            print(f"Error loading pickle {pickle_path}: {e}")
+            return None
+    
+    def check_prediction_covers_bbox(self, gsam_metadata: Dict, artifact_type: str, 
+                                           predictions: Dict, confidence_threshold: float = 0.3, 
+                                           coverage_threshold: float = 0.4) -> bool:
+        """
+        Check if a prediction with target class covers more than the coverage threshold of target bbox.
+        Used for addition type artifacts.
+        """
+
+        target_class_name = gsam_metadata['artifacts'][artifact_type]['class_name']
+        vocab = gsam_metadata['vocab']
+        target_class_idx = vocab.index(target_class_name)
+        
+        # Get target bbox
+        target_bbox = gsam_metadata['artifacts'][artifact_type]['patch_data']['target_bbox']
+        target_xmin, target_ymin, target_xmax, target_ymax = target_bbox
+        
+        # Check predictions
+        for i, class_idx in enumerate(predictions['pred_classes']):
+            if (class_idx.item() == target_class_idx and 
+                predictions['scores'][i].item() >= confidence_threshold):
+                
+                # Get the prediction mask
+                pred_mask = predictions['pred_masks'][i]
+                
+                # Create target bbox mask
+                mask_height, mask_width = pred_mask.shape
+                target_mask = torch.zeros((mask_height, mask_width), dtype=torch.bool)
+                
+                # Convert bbox coordinates to integer pixel coordinates
+                bbox_xmin = max(0, int(target_xmin))
+                bbox_ymin = max(0, int(target_ymin))
+                bbox_xmax = min(mask_width, int(target_xmax))
+                bbox_ymax = min(mask_height, int(target_ymax))
+                
+                # Fill target bbox area in mask
+                target_mask[bbox_ymin:bbox_ymax, bbox_xmin:bbox_xmax] = True
+                
+                # Calculate intersection and coverage ratio
+                intersection_area = torch.sum(pred_mask & target_mask).item()
+                target_bbox_area = torch.sum(target_mask).item()
+                coverage_ratio = intersection_area / target_bbox_area if target_bbox_area > 0 else 0
+                
+                if coverage_ratio >= coverage_threshold:
+                    return True
+        
+        return False
+
+    
+    def check_no_prediction_overlaps_bbox(self, gsam_metadata: Dict, artifact_type: str, 
+                                         predictions: Dict, confidence_threshold: float = 0.3, 
+                                         overlap_threshold: float = 0.1) -> bool:
+        """
+        Check if NO predictions with target class name overlap with the target bbox above a minimal threshold.
+        Used for removal type artifacts.
+        """
+
+        target_class_name = gsam_metadata['artifacts'][artifact_type]['class_name']
+        vocab = gsam_metadata['vocab']
+        target_class_idx = vocab.index(target_class_name)
+        
+        # Get target bbox
+        target_bbox = gsam_metadata['artifacts'][artifact_type]['patch_data']['target_bbox']
+        target_xmin, target_ymin, target_xmax, target_ymax = target_bbox
+        
+        # Check predictions
+        for i, class_idx in enumerate(predictions['pred_classes']):
+            if (class_idx.item() == target_class_idx and 
+                predictions['scores'][i].item() >= confidence_threshold):
+                
+                # Get the prediction mask
+                pred_mask = predictions['pred_masks'][i]
+                
+                # Create target bbox mask
+                mask_height, mask_width = pred_mask.shape
+                target_mask = torch.zeros((mask_height, mask_width), dtype=torch.bool)
+                
+                # Convert bbox coordinates to integer pixel coordinates
+                bbox_xmin = max(0, int(target_xmin))
+                bbox_ymin = max(0, int(target_ymin))
+                bbox_xmax = min(mask_width, int(target_xmax))
+                bbox_ymax = min(mask_height, int(target_ymax))
+                
+                # Fill target bbox area in mask
+                target_mask[bbox_ymin:bbox_ymax, bbox_xmin:bbox_xmax] = True
+                
+                # Calculate intersection and overlap ratio
+                intersection_area = torch.sum(pred_mask & target_mask).item()
+                target_bbox_area = torch.sum(target_mask).item()
+                overlap_ratio = intersection_area / target_bbox_area if target_bbox_area > 0 else 0
+                
+                # If ANY prediction overlaps above threshold, return False
+                if overlap_ratio >= overlap_threshold:
+                    return False
+        
+        # If no predictions overlap above threshold, return True
+        return True
+    
+    def process_experiment(self, exp_id: str) -> bool:
+        """
+        Process a single experiment and determine if it passes the filtering criteria.
+        
+        Args:
+            exp_id: Experiment identifier
+            
+        Returns:
+            bool: True if experiment passes filtering criteria
+        """
+
+        data = self.experiment_data[exp_id]
+        gsam_metadata = self.load_pickle_safely(data['gsam_files']['pickles'][0])
+        artifact_type = list(gsam_metadata['artifacts'].keys())[0]
+
+        # Find artifact images in FLUX data
+        
+        artifact_images = [img for img in data['flux_files']['images'] 
+                            if f'artifact_{artifact_type}' in img.name.lower()]
+        
+        # Process each artifact image
+        passed_images = []
+        
+        for img_path in artifact_images:
+            # Load image
+            img_array = self.load_image_safely(img_path)
+            # Run GSAM detection
+            predictions, _ = self.gsam_detector.detect_parts(
+                image=img_array, 
+                vocab=gsam_metadata['vocab']
+            )
+            
+            # Apply appropriate filtering function
+            if artifact_type == 'addition':
+                passed = self.check_prediction_covers_bbox(
+                    gsam_metadata, artifact_type, predictions
+                )
+                print(f"Addition artifact {img_path.name}: {'PASSED' if passed else 'FAILED'} (coverage test)")
+            else:  # removal
+                passed = self.check_no_prediction_overlaps_bbox(
+                    gsam_metadata, artifact_type, predictions
+                )
+                print(f"Removal artifact {img_path.name}: {'PASSED' if passed else 'FAILED'} (no overlap test)")
+            
+            if passed:
+                passed_images.append(img_path)
+        
+        # Experiment passes if at least one image passes
+        experiment_passed = len(passed_images) > 0
+        
+        if experiment_passed:
+            self.filtered_results[exp_id] = {
+                'passed_images': passed_images,
+                'gsam_metadata': gsam_metadata,
+                'total_images': len(artifact_images),
+                'passed_count': len(passed_images)
+            }
+        
+        print(f"Experiment {exp_id}: {len(passed_images)}/{len(artifact_images)} images passed")
+        return experiment_passed
+
+    def save_single_experiment(self, exp_id: str, results: Dict) -> None:
+        """Save a single filtered experiment to output directory"""
+        print(f"Saving experiment {exp_id}...")
+        
+        # Create experiment directory in output
+        exp_output_dir = self.output_dir / f"filtered_{exp_id}"
+        exp_output_dir.mkdir(exist_ok=True)
+        
+        # Get artifact type from metadata
+        gsam_metadata = results['gsam_metadata']
+        artifact_types = list(gsam_metadata['artifacts'].keys())
+        if not artifact_types:
+            print(f"No artifact types found for experiment {exp_id}, skipping")
+            return
+        
+        artifact_type = artifact_types[0]  # Take first artifact type
+        
+        # Copy only specific GSAM files: 04_comparison_{artifact_type}*
+        # Note: metadata.pkl files are excluded
+        comparison_pattern = f"04_comparison_{artifact_type}"
+        gsam_path = self.experiment_data[exp_id]['gsam_path']
+        
+        # Search for comparison files in GSAM directory
+        for file_path in gsam_path.rglob('*'):
+            if file_path.is_file() and comparison_pattern in file_path.name:
+                # Copy directly to experiment directory (flatten structure)
+                shutil.copy2(file_path, exp_output_dir / file_path.name)
+                print(f"  Copied GSAM file: {file_path.name}")
+        
+        # Copy filtered FLUX images directly to experiment directory
+        # Only copy artifact_{artifact_type}.png files from passed images
+        artifact_pattern = f"artifact_{artifact_type}.png"
+        
+        for img_path in results['passed_images']:
+            if img_path.name == artifact_pattern:
+                shutil.copy2(img_path, exp_output_dir / img_path.name)
+                print(f"  Copied FLUX file: {img_path.name}")
+        
+        print(f"Saved filtered data for experiment {exp_id}")
+
+    def update_summary_file(self, exp_id: str, results: Dict, passed_experiments: int, total_experiments: int):
+        """Update the summary file with results from a single experiment"""
+        summary_file = self.output_dir / "filtering_summary.txt"
+        
+        # Create or append to summary file
+        mode = 'w' if passed_experiments == 1 else 'a'
+        with open(summary_file, mode) as f:
+            if passed_experiments == 1:  # First experiment, write header
+                f.write("Data Filtering Summary\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(f"Total experiments to process: {total_experiments}\n\n")
+            
+            f.write(f"Experiment {exp_id}:\n")
+            f.write(f"  - Images passed: {results['passed_count']}/{results['total_images']}\n")
+            f.write(f"  - Passed images: {[img.name for img in results['passed_images']]}\n\n")
+            
+            # Update final summary at the end
+            if passed_experiments == len([e for e in self.experiment_data.keys() if self.filtered_results.get(e)]):
+                f.write(f"Final Summary: {passed_experiments} experiments passed filtering\n")
+
+    def save_filtered_data(self):
+        """Save filtered datasets to output directory"""
+        if not self.filtered_results:
+            print("No filtered data to save")
+            return
+        
+        print(f"Saving filtered data to {self.output_dir}")
+        
+        # Create summary file
+        summary_file = self.output_dir / "filtering_summary.txt"
+        with open(summary_file, 'w') as f:
+            f.write("Data Filtering Summary\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"Total experiments processed: {len(self.experiment_data)}\n")
+            f.write(f"Experiments passed filtering: {len(self.filtered_results)}\n\n")
+            
+            for exp_id, results in self.filtered_results.items():
+                f.write(f"Experiment {exp_id}:\n")
+                f.write(f"  - Images passed: {results['passed_count']}/{results['total_images']}\n")
+                f.write(f"  - Passed images: {[img.name for img in results['passed_images']]}\n\n")
+        # Copy filtered datasets
+        for exp_id, results in self.filtered_results.items():
+            # Create experiment directory in output
+            exp_output_dir = self.output_dir / f"filtered_{exp_id}"
+            exp_output_dir.mkdir(exist_ok=True)
+            
+            # Get artifact type from metadata
+            gsam_metadata = results['gsam_metadata']
+            artifact_types = list(gsam_metadata['artifacts'].keys())
+            if not artifact_types:
+                print(f"No artifact types found for experiment {exp_id}, skipping")
+                continue
+            
+            artifact_type = artifact_types[0]  # Take first artifact type
+            
+            # Copy only specific GSAM files: 04_comparison_{artifact_type}*
+            # Note: metadata.pkl files are excluded
+            comparison_pattern = f"04_comparison_{artifact_type}"
+            gsam_path = self.experiment_data[exp_id]['gsam_path']
+            
+            # Search for comparison files in GSAM directory
+            for file_path in gsam_path.rglob('*'):
+                if file_path.is_file() and comparison_pattern in file_path.name:
+                    # Copy directly to experiment directory (flatten structure)
+                    shutil.copy2(file_path, exp_output_dir / file_path.name)
+                    print(f"  Copied GSAM file: {file_path.name}")
+            
+            # Copy filtered FLUX images directly to experiment directory
+            # Only copy artifact_{artifact_type}.png files from passed images
+            artifact_pattern = f"artifact_{artifact_type}.png"
+            
+            for img_path in results['passed_images']:
+                if img_path.name == artifact_pattern:
+                    shutil.copy2(img_path, exp_output_dir / img_path.name)
+                    print(f"  Copied FLUX file: {img_path.name}")
+            
+            print(f"Saved filtered data for experiment {exp_id}")
+        
+        print(f"Filtering complete. Results saved to {self.output_dir}")
+    
+    def run_pipeline(self):
+        """Run the complete data filtering pipeline"""
+        print("Starting data filtering pipeline...")
+        
+            # Step 1: Find matching experiments
+        print("\n1. Finding matching experiments...")
+        self.find_matching_experiments()
+        
+        if not self.experiment_data:
+            print("No matching experiments found!")
+            return
+        
+        # Step 2: Process each experiment and save immediately
+        print("\n2. Processing experiments...")
+        total_experiments = len(self.experiment_data)
+        passed_experiments = 0
+        
+        for exp_id in self.experiment_data.keys():
+            try:
+                print(f"\nProcessing experiment {exp_id}...")
+                
+                # Process the experiment
+                if self.process_experiment(exp_id):
+                    passed_experiments += 1
+                    
+                    # Get the results for this experiment
+                    results = self.filtered_results[exp_id]
+                    
+                    # Save this experiment immediately
+                    self.save_single_experiment(exp_id, results)
+                    
+                    # Update summary file
+                    self.update_summary_file(exp_id, results, passed_experiments, total_experiments)
+                    
+                    # Clear this experiment from memory to save space
+                    del self.filtered_results[exp_id]
+                    print(f"Experiment {exp_id} saved and cleared from memory")
+                else:
+                    print(f"Experiment {exp_id} did not pass filtering criteria")
+                    
+            except Exception as e:
+                print(f"Error processing experiment {exp_id}: {e}")
+                print(f"Skipping experiment {exp_id} and continuing with next...")
+                continue
+        
+        # Step 3: Final summary
+        print(f"\n3. Processing complete: {passed_experiments}/{total_experiments} experiments passed")
+        
+        # Update final summary in the file
+        summary_file = self.output_dir / "filtering_summary.txt"
+        with open(summary_file, 'a') as f:
+            f.write(f"\nFinal Summary: {passed_experiments}/{total_experiments} experiments passed filtering\n")
+        
+        print(f"\nPipeline complete! Check {self.output_dir} for results.")
+
+
+def main():
+    """Main function to run the data filtering pipeline"""
+    parser = argparse.ArgumentParser(description='Filter GSAM and FLUX datasets based on overlap/covering criteria')
+    parser.add_argument('--gsam_dir', help='Directory containing GSAM generated data')
+    parser.add_argument('--flux_dir', help='Directory containing FLUX generated data')
+    parser.add_argument('--output_dir', help='Directory to save filtered datasets')
+    
+    args = parser.parse_args()
+            
+    gsam_dir = args.gsam_dir
+    flux_dir = args.flux_dir
+    output_dir = args.output_dir
+    
+    print("Data Filtering Pipeline - Custom Configuration")
+    print("=" * 50)
+    print(f"GSAM directory: {gsam_dir}")
+    print(f"FLUX directory: {flux_dir}")
+    print(f"Output directory: {output_dir}")
+    print()
+    
+    # Initialize the pipeline
+    print("Initializing pipeline...")
+    pipeline = DataFilterPipeline(gsam_dir, flux_dir, output_dir)
+    
+    # Run the complete pipeline
+    pipeline.run_pipeline()
+    
+    print("\n" + "=" * 50)
+    print("Pipeline completed successfully!")
+    print(f"Check the output directory: {output_dir}")
+
+
+
+if __name__ == "__main__":
+    main() 

@@ -82,6 +82,7 @@ class GSAMDetector:
         self.grounding_checkpoint = grounding_checkpoint
         self.sam_version = sam_version
         self.sam_checkpoint = sam_checkpoint
+        self.sam_hq_checkpoint = sam_hq_checkpoint
         self.nms_threshold = nms_threshold
         self.box_threshold = box_threshold
         self.text_threshold = text_threshold
@@ -90,7 +91,10 @@ class GSAMDetector:
         
         # Model components
         self.grounding_model = Model(model_config_path=self.grounding_config_file, model_checkpoint_path=self.grounding_checkpoint)
-        self.sam_predictor = SamPredictor(sam_model_registry[self.sam_version](checkpoint=self.sam_checkpoint).to(self.device))
+        if use_sam_hq:
+            self.sam_predictor = SamPredictor(sam_hq_model_registry[self.sam_version](checkpoint=self.sam_hq_checkpoint).to(self.device))
+        else:
+            self.sam_predictor = SamPredictor(sam_model_registry[self.sam_version](checkpoint=self.sam_checkpoint).to(self.device))
         
         # Set multiprocessing start method
         mp.set_start_method('spawn', force=True)
