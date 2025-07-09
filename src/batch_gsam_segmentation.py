@@ -191,7 +191,6 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
 
 
         for artifact_type in artifact_types_to_try:
-            
             try:
                 logger.info(f"  Trying artifact type: {artifact_type}")
                 image_output_dir = os.path.join(output_dir, f'image_{img_id}')
@@ -287,12 +286,14 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     logger.info(f"  ✅ {artifact_type} artifact created")
                     break  # Exit the loop once artifact is successfully created
                 else:
-                    logger.info(f"    No valid target parts found for {artifact_type}")
-                    
+                    logger.info(f"No valid target parts found for {artifact_type}")
+                    shutil.rmtree(image_output_dir)
+                    continue
             except Exception as e:
-                logger.info(f"    Error with {artifact_type}: {str(e)}")
+                logger.info(f"Error with {artifact_type}: {str(e)}")
                 shutil.rmtree(image_output_dir)
                 continue
+
 
         if successful_artifact_type is None:
             results['error'] = "No valid target parts found for any artifact type after filtering"
