@@ -199,7 +199,7 @@ class GSAMDetector:
         detections.class_id = detections.class_id[nms_idx]
 
         detections.mask = self.segment(
-            image=cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+            image=image,
             xyxy=detections.xyxy
         )
 
@@ -213,7 +213,7 @@ class GSAMDetector:
         annotated_image = mask_annotator.annotate(scene=image.copy(), detections=detections)
         annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
         # Convert annotated image to PIL Image
-        annotated_image = Image.fromarray(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB))
+        annotated_image = Image.fromarray(annotated_image)
 
         # Create predictions structure directly from detections
         # Convert detections to torch tensors for consistency with expected format

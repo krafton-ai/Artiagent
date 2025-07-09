@@ -21,6 +21,7 @@ import logging
 import pickle
 import random
 
+import shutil
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import traceback
@@ -57,61 +58,6 @@ def setup_logging(output_dir: str, supercategory: str):
     
     return logging.getLogger(__name__)
 
-
-def save_unified_data(img_id: int, data: Dict, output_dir: str):
-    """Save all data in a single unified format"""
-    output_file = os.path.join(output_dir, 'processed_data', f'image_{img_id}.pkl')
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    
-    # Convert numpy arrays in annotations to lists for better compatibility
-    def convert_numpy(obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, dict):
-            return {key: convert_numpy(value) for key, value in obj.items()}
-        elif isinstance(obj, list):
-            return [convert_numpy(item) for item in obj]
-        elif isinstance(obj, tuple):
-            return tuple(convert_numpy(item) for item in obj)
-        else:
-            return obj
-
-    # Prepare unified data structure
-    unified_data = {
-        'image_info': data['image_info'],
-        'image_array': data['image_array'],
-        'vocab': data['vocab'],
-        'predictions': data['predictions'],
-        'caption': data['caption'],
-        'visualized_output': data['visualized_output'],
-        'artifacts': {}  # Unified artifact data
-    }
-    
-    # Combine annotations, masks, and patch data per artifact type
-    for artifact_type in data.get('annotations', {}):
-        if 'error' not in data['annotations'][artifact_type]:
-            unified_data['artifacts'][artifact_type] = {
-                'annotation': convert_numpy(data['annotations'][artifact_type]['annotation']),
-                'class_name': data['annotations'][artifact_type]['class_name'],
-                'masks': data['masks_data'][artifact_type],
-                'patch_data': convert_numpy(data['patch_annotations'][artifact_type]),
-                'sampled_instance_info': convert_numpy(data['annotations'][artifact_type]['sampled_instance_info'])
-            }
-        else:
-            # remove error case
-            unified_data['artifacts'][artifact_type] = {
-                'error': data['annotations'][artifact_type]['error']
-            }
-    
-    unified_data['processing_timestamp'] = datetime.now().isoformat()
-    
-    # Save as pickle for efficiency
-    with open(output_file, 'wb') as f:
-        pickle.dump(unified_data, f)
 
 
 def create_target_mask_from_patches(target_patch_indices: List[int], img_shape: Tuple, patch_size: int = 16) -> np.ndarray:
@@ -152,13 +98,13 @@ def create_target_mask_from_patches(target_patch_indices: List[int], img_shape: 
 
 def create_visualizations(img_array: np.ndarray, img_filename: str, caption: str, 
                         visualized_output: np.ndarray, artifacts: Dict, 
-                        output_dir: str, visualizer):
-    """Create all visualizations for an image"""
+                        image_output_dir: str, visualizer):
+    """Create all visualizations for an image in image-specific directory"""
     # Original image
     visualizer.show_image(
         img_array, caption, title="Original Image", 
         image_name=img_filename, 
-        base_dir=output_dir,
+        base_dir=image_output_dir,
         filename="01_original_image.png"
     )
     
@@ -166,7 +112,7 @@ def create_visualizations(img_array: np.ndarray, img_filename: str, caption: str
     visualizer.show_detection_results(
         img_array, visualized_output,
         image_name=img_filename, 
-        base_dir=output_dir,
+        base_dir=image_output_dir,
         filename="02_detection_results.png"
     )
     
@@ -174,23 +120,24 @@ def create_visualizations(img_array: np.ndarray, img_filename: str, caption: str
     for artifact_type, artifact_data in artifacts.items():
         if 'error' not in artifact_data:
 
-            masks = artifact_data['masks'].copy()  # Make a copy to avoid modifying original
             patch_data = artifact_data.get('patch_data', {})
             
-            # For addition artifacts, generate target mask from patch indices
-            if artifact_type == 'addition' and 'target_patch_indices' in patch_data:
-                target_patch_indices = patch_data['target_patch_indices']
-                if target_patch_indices:
-                    target_mask = create_target_mask_from_patches(
-                        target_patch_indices, img_array.shape, patch_size=16
-                    )
-                    masks['target_mask'] = target_mask
-                    print(f"Generated target mask from {len(target_patch_indices)} patch indices for {artifact_type}")
+            if 'target_patch_indices' in patch_data:
+                target_mask = create_target_mask_from_patches(
+                    patch_data['target_patch_indices'], img_array.shape, patch_size=16
+                )
+            if 'reference_patch_indices' in patch_data:
+                reference_mask = create_target_mask_from_patches(
+                    patch_data['reference_patch_indices'], img_array.shape, patch_size=16
+            )
             
             # Create patch mask visualizations
             InstanceProcessor.visualize_patch_masks(
-                img_array, {artifact_type: masks}, 
-                img_filename, output_dir
+                img_array, {artifact_type: {
+                    'reference_mask': reference_mask,
+                    'target_mask': target_mask
+                }}, 
+                img_filename, image_output_dir
             )
 
 
@@ -240,11 +187,15 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
         patch_annotations = {}
         artifact_count = 0
         successful_artifact_type = None
+        
+
 
         for artifact_type in artifact_types_to_try:
-            logger.info(f"  Trying artifact type: {artifact_type}")
             
             try:
+                logger.info(f"  Trying artifact type: {artifact_type}")
+                image_output_dir = os.path.join(output_dir, f'image_{img_id}')
+                os.makedirs(image_output_dir, exist_ok=True)
                 # Step 1: Generate subpart vocabulary from the image
                 logger.info(f"    Step 1: Generating subpart vocabulary for {artifact_type}...")
                 vocab = gsam_detector.generate_subpart_vocab(img_array, artifact_type)
@@ -282,9 +233,20 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                         img_array, 
                         16, 
                         distortion_kernel=config['distortion_kernel'],
-                        output_dir=output_dir,
+                        output_dir=image_output_dir,
                         img_filename=img_filename
                     )
+
+                    # Map patches to bounding box coordinates in real image dimensions
+                    target_bbox = InstanceProcessor.patch_coords_to_bbox(target_patches, patch_size=16)
+                    reference_bbox = InstanceProcessor.patch_coords_to_bbox(reference_patches, patch_size=16)
+                    
+                    logger.info(f"    Target patches: {len(target_patches)} patches -> BBox: {target_bbox}")
+                    logger.info(f"    Reference patches: {len(reference_patches)} patches -> BBox: {reference_bbox}")
+                    
+                    # Store bounding box information for later use
+                    patch_annot['target_bbox'] = target_bbox
+                    patch_annot['reference_bbox'] = reference_bbox
 
                     # Create patch mapping first
                     target_patch_indices, reference_patch_indices = InstanceProcessor.patch_coords_to_indices(
@@ -295,7 +257,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                         img_shape=img_array.shape,
                         patch_size=16
                     )
-                    
+
                     # Update patch annotations with mapping
                     patch_annot['target_patch_indices'] = target_patch_indices
                     patch_annot['reference_patch_indices'] = reference_patch_indices
@@ -310,20 +272,16 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     # Store results
                     annotations[artifact_type] = {
                         'annotation': annotation,
+                        'entity_name': vocab[0],
                         'class_name': class_name,
-                        'part_detection_results': visualized_output,
                         'sampled_instance_info': {
                             'sampled_idx': sampled_idx,
                             'bbox_coords': sampled_instance['pred_box'].cpu().numpy().tolist(),
                             'score': sampled_instance['score'].item(),
                             'class_idx': sampled_instance['pred_class'].item()
-                        }
+                        },
+                        'patch_data': patch_annot
                     }
-                    masks_data[artifact_type] = {
-                        'reference_mask': patch_annot['mask'],
-                        'target_mask': patch_annot.get('target_mask', None)  # Will be None for removal/distortion
-                    }
-                    patch_annotations[artifact_type] = patch_annot
                     artifact_count += 1
                     
                     logger.info(f"  ✅ {artifact_type} artifact created")
@@ -333,41 +291,73 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     
             except Exception as e:
                 logger.info(f"    Error with {artifact_type}: {str(e)}")
+                shutil.rmtree(image_output_dir)
                 continue
 
         if successful_artifact_type is None:
             results['error'] = "No valid target parts found for any artifact type after filtering"
             return results
-        
-        # Prepare unified data structure
+                # Create image-specific output directory early so it can be used by create_artifact_patches
+
+        # Prepare unified data structure directly in final format
         unified_data = {
             'image_info': img_info,
             'image_array': img_array,
             'vocab': vocab,
-            'predictions': predictions,
             'caption': caption,
-            'visualized_output': visualized_output,
-            'annotations': annotations,
-            'masks_data': masks_data,
-            'patch_annotations': patch_annotations
+            'artifacts': {}  # Unified artifact data
         }
         
-        # Save unified data
-        save_unified_data(img_id, unified_data, output_dir)
+        # Convert numpy arrays for better compatibility
+        def convert_numpy(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, dict):
+                return {key: convert_numpy(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy(item) for item in obj]
+            elif isinstance(obj, tuple):
+                return tuple(convert_numpy(item) for item in obj)
+            else:
+                return obj
+        
+        # Combine annotations, masks, and patch data per artifact type
+        for artifact_type in annotations:
+            if 'error' not in annotations[artifact_type]:
+                unified_data['artifacts'][artifact_type] = {
+                    'annotation': convert_numpy(annotations[artifact_type]['annotation']),
+                    'class_name': annotations[artifact_type]['class_name'],
+                    'masks': masks_data.get(artifact_type, {}),
+                    'patch_data': convert_numpy(annotations[artifact_type]['patch_data']),
+                    'sampled_instance_info': convert_numpy(annotations[artifact_type]['sampled_instance_info'])
+                }
+            else:
+                unified_data['artifacts'][artifact_type] = {
+                    'error': annotations[artifact_type]['error']
+                }
+        
+        unified_data['processing_timestamp'] = datetime.now().isoformat()
+        
+        # Save unified data directly
+        output_file = os.path.join(image_output_dir, 'metadata.pkl')
+        with open(output_file, 'wb') as f:
+            pickle.dump(unified_data, f)
         
         # Create visualizations
         artifacts_for_viz = {}
 
         artifacts_for_viz[artifact_type] = {
             'annotation': annotations[artifact_type]['annotation'],
-            'part_detection_results': annotations[artifact_type]['part_detection_results'],
-            'masks': masks_data[artifact_type],
-            'patch_data': patch_annotations[artifact_type]
+            'patch_data': annotations[artifact_type]['patch_data']
         }
 
         create_visualizations(
             img_array, img_filename, '', visualized_output,
-            artifacts_for_viz, output_dir, visualizer
+            artifacts_for_viz, image_output_dir, visualizer
         )
         
         results['success'] = True
@@ -461,7 +451,7 @@ def run_gsam_processing(categories: List[str], artifact_types: List[str],
     # Initialize visualizer
     visualizer = ImageVisualizer()
     
-# Get image list
+    # Get image list
     logger.info("Loading image list...")
     if dataset_type == "coco":
         cat_ids = data_loader.get_category_ids(categories)
