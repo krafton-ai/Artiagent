@@ -9,7 +9,6 @@ import cv2
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-
 def get_entity_subparts_by_type(client, image, artifact_type):
 
     # Encode image to base64
@@ -497,49 +496,45 @@ def visualize_all_candidates(candidate_target_list, image, class_name, output_di
                   f"intra_overlap={candidate.get('intra_overlap', 'N/A'):.3f}")
     
     # Add text labels using matplotlib if available
-    if MATPLOTLIB_AVAILABLE:
-        # Create matplotlib figure
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-        ax.imshow(vis_image)
-        ax.set_title(f'Candidate Addition Regions for {class_name}', fontsize=14, fontweight='bold')
+    # Create matplotlib figure
+    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+    ax.imshow(vis_image)
+    ax.set_title(f'Candidate Addition Regions for {class_name}', fontsize=14, fontweight='bold')
         
-        # Add numbered labels at candidate centers
-        for center_x, center_y, idx in label_positions:
-            ax.text(center_x, center_y, str(idx), fontsize=16, fontweight='bold', 
-                   ha='center', va='center', color='white',
-                   bbox=dict(boxstyle='circle,pad=0.3', facecolor='black', alpha=0.8))
+    # Add numbered labels at candidate centers
+    for center_x, center_y, idx in label_positions:
+        ax.text(center_x, center_y, str(idx), fontsize=16, fontweight='bold', 
+               ha='center', va='center', color='white',
+               bbox=dict(boxstyle='circle,pad=0.3', facecolor='black', alpha=0.8))
         
-        # Create legend
-        legend_elements = []
-        for i in range(min(len(candidate_target_list), len(candidate_colors))):
-            color_norm = [c/255.0 for c in candidate_colors[i]]  # Normalize to [0,1]
-            legend_elements.append(patches.Patch(color=color_norm, label=f'Candidate {i}'))
-        
-        ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.15, 1))
-        ax.axis('off')
-        
-        # Save the enhanced visualization
-        if output_dir and img_filename:
-            img_base = os.path.splitext(img_filename)[0]
-            img_dir = os.path.join(output_dir, img_base)
-            os.makedirs(img_dir, exist_ok=True)
-            
-            vis_path = os.path.join(img_dir, "00_candidate_visualization.png")
-            plt.tight_layout()
-            plt.savefig(vis_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            print(f"Enhanced candidate visualization saved to: {vis_path}")
-            
-            # Also save the simple overlay version
-            simple_vis_path = os.path.join(img_dir, "00_candidate_overlay.png")
-            cv2.imwrite(simple_vis_path, cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
+    # Create legend
+    legend_elements = []
+    for i in range(min(len(candidate_target_list), len(candidate_colors))):
+        color_norm = [c/255.0 for c in candidate_colors[i]]  # Normalize to [0,1]
+        legend_elements.append(patches.Patch(color=color_norm, label=f'Candidate {i}'))
     
-    else:
-        # Fallback to simple version if matplotlib not available
-        print("Matplotlib not available, using simple visualization")
+    ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.15, 1))
+    ax.axis('off')
+        
+    # Save the enhanced visualization
+    if output_dir and img_filename:
+        img_base = os.path.splitext(img_filename)[0]
+        img_dir = os.path.join(output_dir, img_base)
+        os.makedirs(img_dir, exist_ok=True)
+            
+        vis_path = os.path.join(img_dir, "00_candidate_visualization.png")
+        plt.tight_layout()
+        plt.savefig(vis_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"Enhanced candidate visualization saved to: {vis_path}")
+            
+        # Also save the simple overlay version
+        simple_vis_path = os.path.join(img_dir, "00_candidate_overlay.png")
+        cv2.imwrite(simple_vis_path, cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
+
     
     # Save visualization if output path is provided (for both cases)
-    if output_dir and img_filename and not MATPLOTLIB_AVAILABLE:
+    if output_dir and img_filename:
         img_base = os.path.splitext(img_filename)[0]
         img_dir = os.path.join(output_dir, img_base)
         os.makedirs(img_dir, exist_ok=True)
@@ -576,55 +571,53 @@ def visualize_candidate_images_for_api(candidate_images, class_name, output_dir=
         img_array = np.array(pil_img)
         candidate_arrays.append(img_array)
     
-    if MATPLOTLIB_AVAILABLE:
-        # Create a grid visualization
-        n_candidates = len(candidate_arrays)
+    # Create a grid visualization
+    n_candidates = len(candidate_arrays)
         
-        if n_candidates <= 2:
-            rows, cols = 1, n_candidates
-            figsize = (6 * cols, 6)
-        elif n_candidates <= 4:
-            rows, cols = 2, 2
-            figsize = (12, 12)
-        else:
-            rows = (n_candidates + 3) // 4  # Round up division
-            cols = 4
-            figsize = (16, 4 * rows)
-        
-        fig, axes = plt.subplots(rows, cols, figsize=figsize)
-        if rows == 1 and cols == 1:
-            axes = [axes]
-        elif rows == 1 or cols == 1:
-            axes = axes.flatten()
-        else:
-            axes = axes.flatten()
-        
-        for i, img_array in enumerate(candidate_arrays):
-            axes[i].imshow(img_array)
-            axes[i].set_title(f'Candidate {i}\n(Sent to OpenAI API)', fontsize=12, fontweight='bold')
-            axes[i].axis('off')
-        
-        # Hide unused subplots
-        for i in range(len(candidate_arrays), len(axes)):
-            axes[i].axis('off')
-        
-        plt.suptitle(f'OpenAI API Input: Candidate Images for {class_name}', fontsize=16, fontweight='bold')
-        plt.tight_layout()
-        
-        # Save the visualization
-        if output_dir and img_filename:
-            img_base = os.path.splitext(img_filename)[0]
-            img_dir = os.path.join(output_dir, img_base)
-            os.makedirs(img_dir, exist_ok=True)
-            
-            api_vis_path = os.path.join(img_dir, "00_openai_api_candidates.png")
-            plt.savefig(api_vis_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            print(f"OpenAI API candidate images visualization saved to: {api_vis_path}")
-        else:
-            plt.show()
+    if n_candidates <= 2:
+        rows, cols = 1, n_candidates
+        figsize = (6 * cols, 6)
+    elif n_candidates <= 4:
+        rows, cols = 2, 2
+        figsize = (12, 12)
     else:
-        print(f"Created {len(candidate_images)} candidate images for OpenAI API (matplotlib not available for visualization)")
+        rows = (n_candidates + 3) // 4  # Round up division
+        cols = 4
+        figsize = (16, 4 * rows)
+        
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    if rows == 1 and cols == 1:
+        axes = [axes]
+    elif rows == 1 or cols == 1:
+        axes = axes.flatten()
+    else:
+        axes = axes.flatten()
+        
+    for i, img_array in enumerate(candidate_arrays):
+        axes[i].imshow(img_array)
+        axes[i].set_title(f'Candidate {i}\n(Sent to OpenAI API)', fontsize=12, fontweight='bold')
+        axes[i].axis('off')
+        
+    # Hide unused subplots
+    for i in range(len(candidate_arrays), len(axes)):
+        axes[i].axis('off')
+        
+    plt.suptitle(f'OpenAI API Input: Candidate Images for {class_name}', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+        
+    # Save the visualization
+    if output_dir and img_filename:
+        img_base = os.path.splitext(img_filename)[0]
+        img_dir = os.path.join(output_dir, img_base)
+        os.makedirs(img_dir, exist_ok=True)
+            
+        api_vis_path = os.path.join(img_dir, "00_openai_api_candidates.png")
+        plt.savefig(api_vis_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"OpenAI API candidate images visualization saved to: {api_vis_path}")
+    else:
+        plt.show()
+    
 
 def addition_select_candidate(client, candidate_target_list, class_name, image, output_dir=None, img_filename=None):
     """

@@ -36,15 +36,15 @@ OUTPUT_DIR=""
 PREDEFINED_VOCAB=""
 
 # Dataset selection defaults
-DATASET="custom"
-DATASET_PATH=""
-IMAGE_PATH="/home/jhpark/image-artifacts/data/eval_coco_animals"
-IMAGENET_SPLIT="train"
-
-# DATASET="coco"
-# DATASET_PATH="/home/jovyan/data/coco_2017_extracted/annotations"
-# IMAGE_PATH="/home/jovyan/data/coco_2017_extracted/train2017"
+# DATASET="custom"
+# DATASET_PATH=""
+# IMAGE_PATH="/home/jhpark/image-artifacts/data/eval_coco_animals"
 # IMAGENET_SPLIT="train"
+
+DATASET="coco"
+DATASET_PATH="/home/jovyan/data/coco_2017_extracted/annotations"
+IMAGE_PATH="/home/jovyan/data/coco_2017_extracted/train2017"
+IMAGENET_SPLIT="train"
 
 # GSAM-specific defaults
 GROUNDING_CONFIG=""
