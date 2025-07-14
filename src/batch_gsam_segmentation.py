@@ -221,8 +221,6 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     patch_annot = InstanceProcessor.create_masks_and_patch_annotations_from_instance(
                         sampled_instance, img_array.shape, artifact_type, patch_size=16
                     )
-
-                    masks_data[artifact_type] = patch_annot['mask']
                     
                     if config['distortion_kernel'] == 'none':
                         distortion_kernel = random.choice(['none', 'jitter', 'swirl', 'voronoi', 'flip'])
@@ -344,6 +342,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     'class_name': annotations[artifact_type]['class_name'],
                     'masks': masks_data.get(artifact_type, {}),
                     'patch_data': convert_numpy(annotations[artifact_type]['patch_data']),
+                    'kernel_type': distortion_kernel,
                     'sampled_instance_info': convert_numpy(annotations[artifact_type]['sampled_instance_info'])
                 }
             else:
