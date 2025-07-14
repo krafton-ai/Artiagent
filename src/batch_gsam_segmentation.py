@@ -223,7 +223,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     )
                     
                     if config['distortion_kernel'] == 'none':
-                        distortion_kernel = random.choice(['none', 'jitter', 'swirl', 'voronoi', 'flip'])
+                        distortion_kernel = random.choice(['none', 'jitter', 'swirl', 'voronoi', 'flip', 'bend'])
                     else:
                         distortion_kernel = config['distortion_kernel']
 
@@ -699,7 +699,7 @@ def main():
     parser.add_argument('--bert-base-uncased-path', type=str, default=None,
                        help='Path to BERT base uncased model')
     parser.add_argument('--distortion-kernel', type=str, default='none', 
-                       choices=['none', 'jitter', 'swirl', 'voronoi', 'flip'],
+                       choices=['none', 'jitter', 'swirl', 'voronoi', 'flip', 'bend'],
                        help='Type of distortion kernel to apply for distortion artifacts (default: none)')
     
     args = parser.parse_args()
