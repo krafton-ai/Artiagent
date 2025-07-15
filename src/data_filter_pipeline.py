@@ -24,11 +24,35 @@ import numpy as np
 import torch
 from PIL import Image
 import cv2
+from transformers import AutoImageProcessor, AutoModel
+
+import logging
+from datetime import datetime
+import torch.nn.functional as F
 
 # Add pipeline to path for GSAM detector
 sys.path.append('pipeline')
 from pipeline.gsam_detector import GSAMDetector
 
+
+def setup_logging(output_dir: str, supercategory: str):
+    """Setup logging configuration"""
+    log_dir = os.path.join(output_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f'data_filtering_{timestamp}.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    return logging.getLogger(__name__)
 
 class DataFilterPipeline:
     """Pipeline for filtering GSAM and FLUX generated datasets based on overlap/covering criteria"""
@@ -58,8 +82,12 @@ class DataFilterPipeline:
         # Initialize GSAM detector
         self._init_gsam_detector()
         
+        # Initialize DINO embedding
+        self._init_dino_embedding()
+        
         self.experiment_data = {}
         self.filtered_results = {}
+        self.kernel_stats = {} 
         
     def _init_gsam_detector(self):
         """Initialize GSAM detector with pre-trained weights"""
@@ -74,6 +102,17 @@ class DataFilterPipeline:
         )
         print("GSAM detector initialized successfully")
 
+    def _init_dino_embedding(self):
+        """Initialize DINOv2 embedding with pre-trained weights"""
+        self.dino_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+        self.dino_model = AutoModel.from_pretrained("facebook/dinov2-base")
+        self.patch_size = self.dino_model.config.patch_size
+
+        self.dino_model.eval()
+
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.dino_model.to(device)
+        print("DINOv2 model initialized successfully")
     
     def find_matching_experiments(self) -> Dict[str, Dict]:
         """Find matching directories that start with 'image' between GSAM and FLUX experiments"""
@@ -246,8 +285,137 @@ class DataFilterPipeline:
         
         # If no predictions overlap above threshold, return True
         return True
+
+    def check_distortion_with_dino(self, gsam_metadata: Dict, artifact_type: str,
+                                  orig_img: np.ndarray, img: np.ndarray, exp_id: str, logger) -> bool: 
+        """
+        Use DINO to check if two images are similar as a distortion artifact.
+        Returns a dict with pass/fail, similarity, and classification.
+        """
+        # Set default thresholds
+        thresholds = {
+            'same': 0.9,      # Very high similarity
+            'similar': 0.7,    # Moderate similarity
+            'strange': 0.5,
+            'different': 0.0   # Low similarity
+        }
+
+        mask = gsam_metadata['artifacts'][artifact_type]['patch_data'].get('masks', None)
+        
+        # Extract embeddings
+        print("Extracting embeddings...")
+        if mask is not None:
+            print(f"Using mask for patch similarity: {mask.shape}")
+            
+        cls1, patches1 = self._extract_embeddings(orig_img, mask)
+        cls2, patches2 = self._extract_embeddings(img, mask)
+        
+        # Compute similarities
+        cls_similarity = self.compute_cosine_similarity(cls1, cls2)
+        
+        # Flatten patch embeddings for comparison
+        patches1_flat = patches1.flatten(0, 1)  # [num_patches, hidden_size]
+        patches2_flat = patches2.flatten(0, 1)  # [num_patches, hidden_size]
+        
+        # Use minimum number of patches for comparison
+        min_patches = min(patches1_flat.shape[0], patches2_flat.shape[0])
+        patches1_flat = patches1_flat[:min_patches]
+        patches2_flat = patches2_flat[:min_patches]
+        
+        patch_similarity = self.compute_cosine_similarity(patches1_flat, patches2_flat)
+        
+        # Use average of CLS and patch similarities
+        avg_similarity = (cls_similarity + patch_similarity) / 2
+        
+        logger.info(f"CLS similarity: {cls_similarity:.3f}, Patch similarity: {patch_similarity:.3f}, Avg: {avg_similarity:.3f}")
+
+        # if avg_similarity < thresholds['same'] and avg_similarity >= thresholds['similar']:
+        if cls_similarity < thresholds['same'] and patch_similarity < 0.8 and patch_similarity >= thresholds['strange']:
+            passed = True
+        else:
+            passed = False
+        # else:
+        #     passed = False 
+
+        return passed
     
-    def process_experiment(self, exp_id: str) -> bool:
+    def _extract_embeddings(self, image: Image.Image, mask: np.ndarray = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Extract DINO embeddings from image
+        """
+        # Process image
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        inputs = self.dino_processor(images=image, return_tensors="pt").to(device)
+        
+        # Get image dimensions
+        batch_size, rgb, img_height, img_width = inputs.pixel_values.shape
+        num_patches_height = img_height // self.patch_size
+        num_patches_width = img_width // self.patch_size
+        num_patches_flat = num_patches_height * num_patches_width
+        
+        # Extract features
+        with torch.no_grad():
+            outputs = self.dino_model(**inputs)
+            last_hidden_states = outputs[0]
+        
+        # Separate CLS token and patch embeddings
+        cls_token = last_hidden_states[:, 0, :]  # [1, hidden_size]
+        patch_features = last_hidden_states[:, 1:, :].unflatten(1, (num_patches_height, num_patches_width))
+        
+        # If mask is provided, filter patches
+        if mask is not None:
+            # Resize mask to patch grid
+            mask_resized = self._resize_mask_to_patches(mask, num_patches_height, num_patches_width)
+            # Get masked patch indices
+            masked_patches = self._get_masked_patches(patch_features.squeeze(0), mask_resized)
+            return cls_token.squeeze(0), masked_patches
+        
+        return cls_token.squeeze(0), patch_features.squeeze(0)  # Remove batch dimension
+    
+    def _resize_mask_to_patches(self, mask: np.ndarray, num_patches_height: int, num_patches_width: int) -> np.ndarray:
+        """Resize mask to patch grid dimensions"""
+        from PIL import Image
+        mask_pil = Image.fromarray(mask.astype(np.uint8))
+        mask_resized = mask_pil.resize((num_patches_width, num_patches_height), Image.NEAREST)
+        return np.array(mask_resized) > 0
+    
+    def _get_masked_patches(self, patch_features: torch.Tensor, mask: np.ndarray) -> torch.Tensor:
+        """Extract patches where mask is True"""
+        # Convert mask to boolean tensor
+        mask_tensor = torch.from_numpy(mask).bool()
+        
+        # Get indices where mask is True
+        masked_indices = torch.where(mask_tensor.flatten())[0]
+        
+        # Extract masked patches
+        patch_features_flat = patch_features.flatten(0, 1)  # [num_patches, hidden_size]
+        masked_patches = patch_features_flat[masked_indices]
+        
+        return masked_patches
+    
+    def normalize_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Normalize embeddings using L2 norm"""
+        return F.normalize(embeddings, p=2, dim=-1)
+    
+    def compute_cosine_similarity(self, emb1: torch.Tensor, emb2: torch.Tensor) -> float:
+        """Compute cosine similarity between two normalized embeddings"""
+        # Ensure embeddings are normalized
+        emb1_norm = self.normalize_embeddings(emb1)
+        emb2_norm = self.normalize_embeddings(emb2)
+        
+        # Compute cosine similarity
+        # If embeddings are 1D, compute directly
+        if emb1_norm.dim() == 1 and emb2_norm.dim() == 1:
+            similarity = F.cosine_similarity(emb1_norm.unsqueeze(0), emb2_norm.unsqueeze(0), dim=1)
+        else:
+            # For multi-dimensional embeddings, flatten and compute
+            emb1_flat = emb1_norm.flatten()
+            emb2_flat = emb2_norm.flatten()
+            similarity = F.cosine_similarity(emb1_flat.unsqueeze(0), emb2_flat.unsqueeze(0), dim=1)
+        
+        return similarity.item()
+    
+    def process_experiment(self, exp_id: str, logger) -> bool:
         """
         Process a single experiment and determine if it passes the filtering criteria.
         
@@ -261,9 +429,10 @@ class DataFilterPipeline:
         data = self.experiment_data[exp_id]
         gsam_metadata = self.load_pickle_safely(data['gsam_files']['pickles'][0])
         artifact_type = list(gsam_metadata['artifacts'].keys())[0]
+        if artifact_type == 'distortion':
+            kernel_type = gsam_metadata['artifacts'][artifact_type].get('kernel_type')
 
         # Find artifact images in FLUX data
-        
         artifact_images = [img for img in data['flux_files']['images'] 
                             if f'artifact_{artifact_type}' in img.name.lower()]
         
@@ -273,26 +442,45 @@ class DataFilterPipeline:
         for img_path in artifact_images:
             # Load image
             img_array = self.load_image_safely(img_path)
-            # Run GSAM detection
-            predictions, _ = self.gsam_detector.detect_parts(
-                image=img_array, 
-                vocab=gsam_metadata['vocab']
-            )
             
             # Apply appropriate filtering function
             if artifact_type == 'addition':
+                # Run GSAM detection
+                predictions, _ = self.gsam_detector.detect_parts(
+                    image=img_array, 
+                    vocab=gsam_metadata['vocab']
+                )
                 passed = self.check_prediction_covers_bbox(
                     gsam_metadata, artifact_type, predictions
                 )
                 print(f"Addition artifact {img_path.name}: {'PASSED' if passed else 'FAILED'} (coverage test)")
-            else:  # removal
+            elif artifact_type == 'removal':
+                # Run GSAM detection
+                predictions, _ = self.gsam_detector.detect_parts(
+                    image=img_array, 
+                    vocab=gsam_metadata['vocab']
+                )
                 passed = self.check_no_prediction_overlaps_bbox(
                     gsam_metadata, artifact_type, predictions
                 )
                 print(f"Removal artifact {img_path.name}: {'PASSED' if passed else 'FAILED'} (no overlap test)")
-            
-            if passed:
-                passed_images.append(img_path)
+            else:   # distortion
+                original_path = [img for img in data['flux_files']['images'] if '01_original_image' in img.name.lower()]
+                for orig_path in original_path:
+                    original_img = self.load_image_safely(orig_path)
+                passed = self.check_distortion_with_dino(
+                    gsam_metadata, artifact_type, original_img, img_array, exp_id, logger
+                )
+                logger.info(f"Distortion artifact {exp_id} with {kernel_type}: {'PASSED' if passed else 'FAILED'} (similarity test)")
+
+                if kernel_type not in self.kernel_stats:
+                    self.kernel_stats[kernel_type] = {'total': 0, 'passed': 0}
+                self.kernel_stats[kernel_type]['total'] += 1
+                if passed:
+                    self.kernel_stats[kernel_type]['passed'] += 1
+                    passed_images.append(img_path)
+            # if passed:
+            #     passed_images.append(img_path)
         
         # Experiment passes if at least one image passes
         experiment_passed = len(passed_images) > 0
@@ -431,6 +619,9 @@ class DataFilterPipeline:
     def run_pipeline(self):
         """Run the complete data filtering pipeline"""
         print("Starting data filtering pipeline...")
+
+        logger = setup_logging(self.output_dir, f"")
+        logger.info(f"Starting filtering pipeline for {self.flux_dir}")
         
             # Step 1: Find matching experiments
         print("\n1. Finding matching experiments...")
@@ -446,38 +637,46 @@ class DataFilterPipeline:
         passed_experiments = 0
         
         for exp_id in self.experiment_data.keys():
-            try:
-                print(f"\nProcessing experiment {exp_id}...")
+            # try:
+            print(f"\nProcessing experiment {exp_id}...")
+            
+            # Process the experiment
+            if self.process_experiment(exp_id, logger):
+                passed_experiments += 1
                 
-                # Process the experiment
-                if self.process_experiment(exp_id):
-                    passed_experiments += 1
-                    
-                    # Get the results for this experiment
-                    results = self.filtered_results[exp_id]
-                    
-                    # Save this experiment immediately
-                    self.save_single_experiment(exp_id, results)
-                    
-                    # Update summary file
-                    self.update_summary_file(exp_id, results, passed_experiments, total_experiments)
-                    
-                    # Clear this experiment from memory to save space
-                    del self.filtered_results[exp_id]
-                    print(f"Experiment {exp_id} saved and cleared from memory")
-                else:
-                    print(f"Experiment {exp_id} did not pass filtering criteria")
-                    
-            except Exception as e:
-                print(f"Error processing experiment {exp_id}: {e}")
-                print(f"Skipping experiment {exp_id} and continuing with next...")
-                continue
+                # Get the results for this experiment
+                results = self.filtered_results[exp_id]
+                
+                # Save this experiment immediately
+                self.save_single_experiment(exp_id, results)
+                
+                # Update summary file
+                self.update_summary_file(exp_id, results, passed_experiments, total_experiments)
+                
+                # Clear this experiment from memory to save space
+                del self.filtered_results[exp_id]
+                print(f"Experiment {exp_id} saved and cleared from memory")
+            else:
+                print(f"Experiment {exp_id} did not pass filtering criteria")
+                
+            # except Exception as e:
+            #     print(f"Error processing experiment {exp_id}: {e}")
+            #     print(f"Skipping experiment {exp_id} and continuing with next...")
+            #     continue
         
         # Step 3: Final summary
         print(f"\n3. Processing complete: {passed_experiments}/{total_experiments} experiments passed")
-        
+
         # Update final summary in the file
         summary_file = self.output_dir / "filtering_summary.txt"
+        with open(summary_file, 'a') as f:
+            f.write("\nSuccess rate per kernel_type:")
+            for ktype, stats in self.kernel_stats.items():
+                total = stats['total']
+                passed = stats['passed']
+                rate = (passed / total) if total > 0 else 0.0
+                f.write(f"  {ktype}: {passed}/{total} ({rate:.2%})")
+
         with open(summary_file, 'a') as f:
             f.write(f"\nFinal Summary: {passed_experiments}/{total_experiments} experiments passed filtering\n")
         

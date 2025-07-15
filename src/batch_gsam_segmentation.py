@@ -102,7 +102,8 @@ def create_visualizations(img_array: np.ndarray, img_filename: str, caption: str
     """Create all visualizations for an image in image-specific directory"""
     # Original image
     visualizer.show_image(
-        img_array, caption, title="Original Image", 
+        # img_array, caption, title="Original Image", 
+        img_array, caption,
         image_name=img_filename, 
         base_dir=image_output_dir,
         filename="01_original_image.png"
@@ -221,6 +222,14 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                         sampled_instance, img_array.shape, artifact_type, patch_size=16
                     )
                     
+                    if artifact_type == 'distortion':
+                        if config['distortion_kernel'] == 'none':
+                            distortion_kernel = random.choice(['none', 'jitter', 'swirl', 'voronoi'])
+                        else:
+                            distortion_kernel = config['distortion_kernel']
+
+                    logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
+                    
                     target_patches, reference_patches = InstanceProcessor.create_artifact_patches(
                         artifact_type, 
                         sampled_instance, 
@@ -231,7 +240,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                         class_name, 
                         img_array, 
                         16, 
-                        distortion_kernel=config['distortion_kernel'],
+                        distortion_kernel=distortion_kernel,
                         output_dir=image_output_dir,
                         img_filename=img_filename
                     )
@@ -334,6 +343,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     'class_name': annotations[artifact_type]['class_name'],
                     'masks': masks_data.get(artifact_type, {}),
                     'patch_data': convert_numpy(annotations[artifact_type]['patch_data']),
+                    'kernel_type': distortion_kernel,
                     'sampled_instance_info': convert_numpy(annotations[artifact_type]['sampled_instance_info'])
                 }
             else:
@@ -693,7 +703,7 @@ def main():
     parser.add_argument('--bert-base-uncased-path', type=str, default=None,
                        help='Path to BERT base uncased model')
     parser.add_argument('--distortion-kernel', type=str, default='none', 
-                       choices=['none', 'jitter', 'swirl', 'voronoi'],
+                       choices=['none', 'jitter', 'swirl', 'voronoi', 'flip'],
                        help='Type of distortion kernel to apply for distortion artifacts (default: none)')
     parser.add_argument('--seed', type=int, default=None,
                        help='Random seed for reproducibility')
@@ -713,7 +723,7 @@ def main():
         dataset_path = args.dataset_path or "../../data/coco_2017_extracted/annotations/"
         image_path = args.image_path or "../../data/coco_2017_extracted/train2017/"
         output_dir = args.output_dir or f'gsam_output_coco_{"-".join(args.categories)}'
-        
+
         # Setup config for COCO
         config = {
             'dataset_type': 'coco',

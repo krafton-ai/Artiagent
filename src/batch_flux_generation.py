@@ -214,7 +214,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
 
 def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
                        resume: bool = False, device: str = 'cuda',
-                       output_dir: Optional[str] = None, inject_step: int=25,
+                       output_dir: Optional[str] = None, inject_step: int=20,
                        pe_step_addition: float=0.3, pe_step_removal: float=0.3, pe_step_distortion: float=0.5,
                        guidance: float=5.0, num_steps: int=25, seed: int=42, use_rf_solver: bool=False):
     """Run FLUX artifact generation on processed data"""
@@ -394,8 +394,8 @@ def main():
                        help='PE step for addition artifacts (default: 0.3)')
     parser.add_argument('--pe-step-removal', type=float, default=0.3,
                        help='PE step for removal artifacts (default: 0.3)')
-    parser.add_argument('--pe-step-distortion', type=float, default=0.5,
-                       help='PE step for distortion artifacts (default: 0.5)')
+    parser.add_argument('--pe-step-distortion', type=float, default=0.3,
+                       help='PE step for distortion artifacts (default: 0.3)')
     parser.add_argument('--guidance', type=float, default=5.0,
                        help='Guidance for FLUX generation (default: 5.0)')
     parser.add_argument('--num-steps', type=int, default=25,

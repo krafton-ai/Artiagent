@@ -410,6 +410,11 @@ class InstanceProcessor:
                 reference_patches = InstanceProcessor.voronoi_seed_kernel(
                     mask_patch_coords, seed_fraction=0.15, patch_h=patch_h, patch_w=patch_w
                 )
+            elif distortion_kernel == 'flip':
+                # Apply flip kernel
+                reference_patches = InstanceProcessor.flip_kernel(
+                    mask_patch_coords, patch_h=patch_h, patch_w=patch_w
+                )
             else:
                 raise ValueError(f"Unknown distortion kernel: {distortion_kernel}")
             
@@ -914,7 +919,7 @@ class InstanceProcessor:
         for py, px in mask_patch_coords:
             dy, dx = py - cy, px - cx
             r = np.hypot(dy, dx)
-            theta = np.arctan2(dy, dx) + strength * (r / max_r)
+            theta = np.arctan2(dy, dx) + strength / max(0.1, (r / max_r))
             n_py = int(round(cy + r * np.sin(theta)))
             n_px = int(round(cx + r * np.cos(theta)))
             n_py = max(0, min(n_py, patch_h - 1))
@@ -962,6 +967,45 @@ class InstanceProcessor:
 
         new_coords = [tuple(seeds[idx]) for idx in nearest_idx]
         return new_coords
+    
+
+    @staticmethod
+    def flip_kernel(
+        mask_patch_coords: List[Tuple[int, int]],
+        direction: Optional[str] = None,  # Unused in new logic
+        patch_h: Optional[int] = None,    # Unused in new logic
+        patch_w: Optional[int] = None,    # Unused in new logic
+    ) -> List[Tuple[int, int]]:
+        """
+        Flip patch coordinates by mirroring across the centroid, always mapping to a coordinate within the region.
+        If the mirrored coordinate is not in the region, use the nearest coordinate in the region.
+        Args:
+            mask_patch_coords: List of (py, px) coordinates to be flipped.
+            direction: Ignored in this version; always mirrors across centroid.
+        Returns:
+            List of flipped (py, px) coordinates, one-to-one with input order, always within the region.
+        """
+        if not mask_patch_coords:
+            return []
+
+        coords_arr = np.array(mask_patch_coords)
+        centroid_y = np.mean(coords_arr[:, 0])
+        centroid_x = np.mean(coords_arr[:, 1])
+        region_set = set(mask_patch_coords)
+        flipped = []
+        for py, px in mask_patch_coords:
+            # Mirror across centroid
+            mirrored_y = int(round(2 * centroid_y - py))
+            mirrored_x = int(round(2 * centroid_x - px))
+            candidate = (mirrored_y, mirrored_x)
+            if candidate in region_set:
+                flipped.append(candidate)
+            else:
+                # Find nearest coordinate in region
+                dists = np.sum((coords_arr - np.array([mirrored_y, mirrored_x])) ** 2, axis=1)
+                nearest_idx = np.argmin(dists)
+                flipped.append(tuple(coords_arr[nearest_idx]))
+        return flipped
 
     # Patch Processing Methods
     @staticmethod

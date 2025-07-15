@@ -45,7 +45,7 @@ SEED="2026"
 DATASET="coco"
 DATASET_PATH="/home/jovyan/data/coco_2017_extracted/annotations"
 IMAGE_PATH="/home/jovyan/data/coco_2017_extracted/train2017"
-IMAGENET_SPLIT="val"/
+IMAGENET_SPLIT="train"
 
 # GSAM-specific defaults
 GROUNDING_CONFIG=""
@@ -331,7 +331,7 @@ if [[ "$DATASET" != "coco" && "$DATASET" != "imagenet" && "$DATASET" != "custom"
 fi
 
 # Validate distortion kernel type
-if [[ "$DISTORTION_KERNEL" != "none" && "$DISTORTION_KERNEL" != "jitter" && "$DISTORTION_KERNEL" != "swirl" && "$DISTORTION_KERNEL" != "voronoi" ]]; then
+if [[ "$DISTORTION_KERNEL" != "none" && "$DISTORTION_KERNEL" != "jitter" && "$DISTORTION_KERNEL" != "swirl" && "$DISTORTION_KERNEL" != "voronoi" && "$DISTORTION_KERNEL" != "flip" ]]; then
     print_error "Invalid distortion kernel: $DISTORTION_KERNEL. Must be one of: none, jitter, swirl, voronoi"
     exit 1
 fi
