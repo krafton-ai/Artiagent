@@ -112,7 +112,6 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
     start_time = time.time()
     img_array = data['image_array']
     caption = data['caption']
-
     
     # Create image-specific output directory for FLUX results
     flux_output_path = os.path.join(output_dir, f'image_{img_id}')
@@ -177,13 +176,14 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
                 
         # Run artifact injection with patch annotations only
         generated_image = flux_generator.inject_artifacts(
-            source_prompt='',
-            target_prompt='',
+            source_prompt=caption,
+            target_prompt=caption,
             artifact_type=artifact_type,
             source_img=img_array.copy(),
-            output_dir=flux_output_path,
             reference_patch_indices=reference_patch_indices,
             target_patch_indices=target_patch_indices,
+            pe_step=0.0,
+            inject_step=20,
         )
         
         # Create visualizations

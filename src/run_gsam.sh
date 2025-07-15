@@ -34,7 +34,7 @@ DEVICE="cuda"
 RESUME=false
 OUTPUT_DIR=""
 PREDEFINED_VOCAB=""
-SEED=""
+SEED="2026"
 
 # Dataset selection defaults
 # DATASET="custom"
@@ -43,8 +43,8 @@ SEED=""
 # IMAGENET_SPLIT="train"
 
 DATASET="coco"
-DATASET_PATH="/data2/jhpark/coco_2017/annotations"
-IMAGE_PATH="/data2/jhpark/coco_2017/val2017"
+DATASET_PATH="/home/jovyan/data/coco_2017_extracted/annotations"
+IMAGE_PATH="/home/jovyan/data/coco_2017_extracted/train2017"
 IMAGENET_SPLIT="val"/
 
 # GSAM-specific defaults

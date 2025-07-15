@@ -276,6 +276,7 @@ class SingleStreamBlock(nn.Module):
                 keep_indices = torch.tensor(list(all_indices - set(patch_ids)-set(range(0,512))))
                 v[:,:,keep_indices,:] = info['feature'][feature_name][:,:,keep_indices,:].cuda()
                 # Get intersecting indices between patch_ids and patch_ref_ids
+                target_ids = patch_ids
                 reference_patch_ids = info['patch_ref_ids']
                 if info['artifact_type'] == 'addition':
                     patch_ids_set = set(patch_ids)
