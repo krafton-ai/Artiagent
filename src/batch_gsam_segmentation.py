@@ -388,7 +388,8 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
 def run_gsam_processing(categories: List[str], artifact_types: List[str],
                         max_images: Optional[int] = None, resume: bool = False,
                         config: Dict = None,
-                        openai_client: Optional[openai.OpenAI] = None):
+                        openai_client: Optional[openai.OpenAI] = None,
+                        seed: Optional[int] = None):
     """Run GSAM segmentation processing on all images"""
     
     # Determine dataset type based on config
@@ -553,6 +554,8 @@ def run_gsam_processing(categories: List[str], artifact_types: List[str],
     
     # Shuffle and limit
     import random
+    if seed is not None:
+        random.seed(seed)
     random.shuffle(image_list)
     if max_images:
         image_list = image_list[:max_images]
@@ -702,6 +705,8 @@ def main():
     parser.add_argument('--distortion-kernel', type=str, default='none', 
                        choices=['none', 'jitter', 'swirl', 'voronoi', 'flip', 'bend'],
                        help='Type of distortion kernel to apply for distortion artifacts (default: none)')
+    parser.add_argument('--seed', type=int, default=None,
+                       help='Random seed for reproducibility')
     
     args = parser.parse_args()
 
@@ -824,10 +829,30 @@ def main():
         max_images=args.max_images,
         resume=args.resume,
         config=config,
-        openai_client=openai.OpenAI()
+        openai_client=openai.OpenAI(),
+        seed=args.seed
     )
 
 
 
 if __name__ == "__main__":
+    def set_seed(seed):
+        import random
+        import numpy as np
+        import torch
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        # For deterministic behavior (may slow down)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--seed', type=int, default=None)
+    args, _ = parser.parse_known_args()
+    if args.seed is not None:
+        set_seed(args.seed)
     main() 

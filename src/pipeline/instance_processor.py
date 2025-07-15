@@ -342,9 +342,9 @@ class InstanceProcessor:
             ref_patch_set = set(mask_patch_coords)  # Convert to set for fast lookup
             
             for ref_py, ref_px in mask_patch_coords:
-                for dy in range(-3, 4):  # -3 to 3
-                    for dx in range(-3, 4):
-                        if abs(dy) + abs(dx) <= 3:  # Hamilton distance <= 3
+                for dy in range(-1, 2):  # -3 to 3
+                    for dx in range(-1, 2):
+                        if abs(dy) + abs(dx) <= 1:  # Hamilton distance <= 3
                             surr_py = ref_py + dy
                             surr_px = ref_px + dx
                             # Only add if within bounds AND not in reference patches
@@ -355,25 +355,37 @@ class InstanceProcessor:
             # Remove duplicates
             surrounding_patches = list(set(surrounding_patches))
             
-            # Get reference class from sampled instance
-            reference_class_idx = sampled_instance['pred_class'].item()
-            
-            # Pre-compute set of patches that contain same-class-different-instance pixels
+            # Pre-compute set of patches that contain ANY prediction instance pixels (foreground patches)
             conflicting_patches = set()
             for i in range(len(predictions['pred_boxes'])):
-                if (predictions['pred_classes'][i] == reference_class_idx and 
-                    not torch.equal(predictions['pred_boxes'][i], sampled_instance['pred_box'])):
-                    
-                    # Get instance mask and find all patches it overlaps with
-                    instance_mask = predictions['pred_masks'][i].cpu().numpy()
-                    instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
-                    instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
-                    instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
-                    conflicting_patches.update(instance_patch_coords)
+                # Include ALL prediction instances, not just same-class ones
+                # Get instance mask and find all patches it overlaps with
+                instance_mask = predictions['pred_masks'][i].cpu().numpy()
+                instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
+                instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
+                instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
+                conflicting_patches.update(instance_patch_coords)
             
+                        # Get reference class from sampled instance
+            # reference_class_idx = sampled_instance['pred_class'].item()
+            
+            # # Pre-compute set of patches that contain same-class-different-instance pixels
+            # conflicting_patches = set()
+            # for i in range(len(predictions['pred_boxes'])):
+            #     if (predictions['pred_classes'][i] == reference_class_idx and 
+            #         not torch.equal(predictions['pred_boxes'][i], sampled_instance['pred_box'])):
+                    
+            #         # Get instance mask and find all patches it overlaps with
+            #         instance_mask = predictions['pred_masks'][i].cpu().numpy()
+            #         instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
+            #         instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
+            #         instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
+            #         conflicting_patches.update(instance_patch_coords)
             # Filter out conflicting patches using set operations
             surrounding_patches_set = set(surrounding_patches)
             filtered_surrounding_patches = list(surrounding_patches_set - conflicting_patches)
+            if len(filtered_surrounding_patches) == 0:
+                raise ValueError("No valid surrounding patches found")
             
             target_patches = mask_patch_coords
             reference_patches = filtered_surrounding_patches

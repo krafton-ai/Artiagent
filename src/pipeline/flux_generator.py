@@ -109,63 +109,43 @@ class FluxGenerator:
         self._models_loaded = True
         print("FLUX models loaded successfully.")
     
-    def setup_flux_args(self, 
-                       source_prompt: str,
-                       target_prompt: str,
-                       artifact_type: str,
-                       source_img: Union[np.ndarray, str],
-                       output_dir: str = 'output',
-                       patch_mapping: Optional[List] = None,
-                       reference_patch_indices: Optional[List] = None,
-                       target_patch_indices: Optional[List] = None) -> argparse.Namespace:
+    def create_default_flux_args(self) -> argparse.Namespace:
         """
-        Setup FLUX arguments for artifact injection
+        Create default FLUX arguments based on current configuration
         
-        Args:
-            source_prompt: Source image prompt/caption
-            target_prompt: Target prompt for generation
-            artifact_type: Type of artifact ('addition', 'removal', 'distortion')
-            source_img: Source image array or path
-            output_dir: Output directory for generated images
-            patch_mapping: List of (ref_idx, target_idx) tuples for addition artifacts
-            reference_patch_indices: List of reference patch indices
-            target_patch_indices: List of target patch indices
-            
         Returns:
-            Configured argparse.Namespace object
+            Default argparse.Namespace object with config values
         """
         # Create parser and args
         parser = argparse.ArgumentParser()
         flux_args = parser.parse_args(args=[])
         
-        # Set FLUX configuration
+        # Set FLUX configuration defaults
         flux_args.name = self.config.name
         flux_args.feature_path = self.config.feature_path
         flux_args.guidance = self.config.guidance
         flux_args.num_steps = self.config.num_steps
         flux_args.inject_step = self.config.inject_step
-        flux_args.pe_step = self.config.get_pe_step(artifact_type)
         flux_args.attn_mask_step = self.config.attn_mask_step
+        flux_args.pe_step = self.config.pe_step
         flux_args.seed = self.config.seed
         flux_args.masks = self.config.masks.copy()
         flux_args.alpha = self.config.alpha
         flux_args.percentage_of_steps = self.config.percentage_of_steps
         flux_args.offload = self.config.offload
         
-        # Set task-specific arguments
-        flux_args.source_prompt = source_prompt
-        flux_args.target_prompt = target_prompt
-        flux_args.artifact_type = artifact_type
-        flux_args.output_dir = output_dir
-        flux_args.source_img = source_img
+        # Initialize task-specific arguments to None
+        flux_args.source_prompt = None
+        flux_args.target_prompt = None
+        flux_args.artifact_type = None
+        flux_args.output_dir = None
+        flux_args.source_img = None
+        flux_args.pe_step = None
         
-        # Set patch mapping information if provided
-        if patch_mapping is not None:
-            flux_args.patch_mapping = patch_mapping
-        if reference_patch_indices is not None:
-            flux_args.reference_patch_indices = reference_patch_indices
-        if target_patch_indices is not None:
-            flux_args.target_patch_indices = target_patch_indices
+        # Initialize optional patch mapping information
+        flux_args.patch_mapping = None
+        flux_args.reference_patch_indices = None
+        flux_args.target_patch_indices = None
         
         return flux_args
 
@@ -175,9 +155,11 @@ class FluxGenerator:
         target_prompt: str,
         artifact_type: str,
         source_img: Union[np.ndarray, str],
-        output_dir: str = 'output',
+        output_dir: str = None,
         reference_patch_indices: Optional[List] = None,
         target_patch_indices: Optional[List] = None,
+        pe_step: Optional[float] = None,
+        inject_step: Optional[int] = None,
     ):
         """
         Sample the flux model with artifact injection supporting arbitrary shapes.
@@ -193,16 +175,19 @@ class FluxGenerator:
         """
         torch.set_grad_enabled(False)
 
-        flux_args = self.setup_flux_args(
-            source_prompt=source_prompt,
-            target_prompt=target_prompt,
-            artifact_type=artifact_type,
-            source_img=source_img,
-            output_dir=output_dir,
-            reference_patch_indices=reference_patch_indices,
-            target_patch_indices=target_patch_indices,
-        )
-
+        # Create default flux args and update with passed parameters
+        flux_args = self.create_default_flux_args()
+        
+        # Update with required parameters
+        flux_args.source_prompt = source_prompt
+        flux_args.target_prompt = target_prompt
+        flux_args.artifact_type = artifact_type
+        flux_args.source_img = source_img
+        flux_args.pe_step = pe_step if pe_step is not None else self.config.get_pe_step(artifact_type)
+        flux_args.output_dir = output_dir
+        flux_args.reference_patch_indices = reference_patch_indices
+        flux_args.target_patch_indices = target_patch_indices
+        flux_args.inject_step = inject_step
         torch_device = torch.device(self.device)
 
         init_image = None
@@ -240,7 +225,6 @@ class FluxGenerator:
         info['pe_step'] = flux_args.pe_step
         info['artifact_type'] = flux_args.artifact_type
         info['guidance'] = flux_args.guidance
-        
         if not os.path.exists(flux_args.feature_path):
             os.mkdir(flux_args.feature_path)
 
@@ -326,16 +310,17 @@ class FluxGenerator:
 
         x = unpack(x.float(), width, height)
 
-        output_name = os.path.join(output_dir, "img.jpg")
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-            idx = 0
-        else:
-            fns = [fn for fn in iglob(output_name.format(idx="*")) if re.search(r"img_[0-9]+\.jpg$", fn)]
-            if len(fns) > 0:
-                idx = max(int(fn.split("_")[-1].split(".")[0]) for fn in fns) + 1
-            else:
+        if output_dir is not None:
+            output_name = os.path.join(output_dir, "img.jpg")
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
                 idx = 0
+            else:
+                fns = [fn for fn in iglob(output_name.format(idx="*")) if re.search(r"img_[0-9]+\.jpg$", fn)]
+                if len(fns) > 0:
+                    idx = max(int(fn.split("_")[-1].split(".")[0]) for fn in fns) + 1
+                else:
+                    idx = 0
 
         with torch.autocast(device_type=torch_device.type, dtype=torch.bfloat16):
             x = self.ae.decode(x)
@@ -344,8 +329,8 @@ class FluxGenerator:
             torch.cuda.synchronize()
         t1 = time.perf_counter()
 
-        fn = output_name.format(idx=idx)
-        print(f"Done in {t1 - t0:.1f}s. Saving {fn}")
+        print(f"Done in {t1 - t0:.1f}s.")
+
         # bring into PIL format and save
         x = x.clamp(-1, 1)
         x = rearrange(x[0], "c h w -> h w c")

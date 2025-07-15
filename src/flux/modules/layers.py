@@ -262,7 +262,7 @@ class SingleStreamBlock(nn.Module):
 
         # Save the features in the memory
 
-        if info['inject'] and info['id'] > 19:
+        if info['inject'] and info['id'] < 37:
             # Use pre-computed mask for feature injection if available
             mask = info.get('precomputed_single_mask', None)
             if mask is None:
@@ -272,8 +272,8 @@ class SingleStreamBlock(nn.Module):
                 info['feature'][feature_name] = v.cpu()
             else:
                 all_indices = set(range(v.shape[2]))
-                keep_indices = torch.tensor(list(all_indices - set(patch_ids)))
-                # keep_indices = torch.tensor(list(all_indices - set(patch_ids)-set(range(0,512))))
+                # keep_indices = torch.tensor(list(all_indices - set(patch_ids)))
+                keep_indices = torch.tensor(list(all_indices - set(patch_ids)-set(range(0,512))))
                 v[:,:,keep_indices,:] = info['feature'][feature_name][:,:,keep_indices,:].cuda()
 
         if info['attn_mask']:

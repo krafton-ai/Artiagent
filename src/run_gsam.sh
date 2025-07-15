@@ -34,6 +34,7 @@ DEVICE="cuda"
 RESUME=false
 OUTPUT_DIR=""
 PREDEFINED_VOCAB=""
+SEED=""
 
 # Dataset selection defaults
 # DATASET="custom"
@@ -110,6 +111,7 @@ BASIC OPTIONS:
     --output-dir DIR        Output directory (default: gsam_output_<supercategory>)
     --resume                Resume processing from previous run
     --predefined-vocab LIST Pre-defined vocabulary (e.g., --predefined-vocab "person head" "person arm")
+    --seed SEED             Random seed for reproducible results
 
 DATASET OPTIONS:
     --dataset TYPE          Dataset type: coco, imagenet, custom (default: custom)
@@ -294,6 +296,10 @@ while [[ $# -gt 0 ]]; do
             show_help
             exit 0
             ;;
+        --seed)
+            SEED="$2"
+            shift 2
+            ;;
         -*)
             print_error "Unknown option: $1"
             show_help
@@ -373,6 +379,7 @@ print_configuration() {
     echo "Output directory:        $OUTPUT_DIR"
     echo "Resume:                  $RESUME"
     echo "Predefined vocab:        ${PREDEFINED_VOCAB:-using OpenAI}"
+    echo "Seed:                    ${SEED:-none}"
     echo ""
     echo "Dataset Configuration:"
     echo "  Dataset type:          $DATASET"
@@ -390,6 +397,7 @@ print_configuration() {
     echo "  Box threshold:         $BOX_THRESHOLD"
     echo "  Text threshold:        $TEXT_THRESHOLD"
     echo "  BERT path:             ${BERT_BASE_UNCASED_PATH:-default}"
+    echo "  Seed:                   ${SEED:-none}"
     echo ""
 }
 
@@ -444,6 +452,10 @@ run_gsam_segmentation() {
     
     if [[ -n "$BERT_BASE_UNCASED_PATH" ]]; then
         gsam_cmd="$gsam_cmd --bert-base-uncased-path $BERT_BASE_UNCASED_PATH"
+    fi
+
+    if [[ -n "$SEED" ]]; then
+        gsam_cmd="$gsam_cmd --seed $SEED"
     fi
     
     # Add dataset-specific arguments
