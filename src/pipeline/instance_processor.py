@@ -356,31 +356,31 @@ class InstanceProcessor:
             surrounding_patches = list(set(surrounding_patches))
             
             # Pre-compute set of patches that contain ANY prediction instance pixels (foreground patches)
-            conflicting_patches = set()
-            for i in range(len(predictions['pred_boxes'])):
-                # Include ALL prediction instances, not just same-class ones
-                # Get instance mask and find all patches it overlaps with
-                instance_mask = predictions['pred_masks'][i].cpu().numpy()
-                instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
-                instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
-                instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
-                conflicting_patches.update(instance_patch_coords)
-            
-                        # Get reference class from sampled instance
-            # reference_class_idx = sampled_instance['pred_class'].item()
-            
-            # # Pre-compute set of patches that contain same-class-different-instance pixels
             # conflicting_patches = set()
             # for i in range(len(predictions['pred_boxes'])):
-            #     if (predictions['pred_classes'][i] == reference_class_idx and 
-            #         not torch.equal(predictions['pred_boxes'][i], sampled_instance['pred_box'])):
+            #     # Include ALL prediction instances, not just same-class ones
+            #     # Get instance mask and find all patches it overlaps with
+            #     instance_mask = predictions['pred_masks'][i].cpu().numpy()
+            #     instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
+            #     instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
+            #     instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
+            #     conflicting_patches.update(instance_patch_coords)
+            
+            # Get reference class from sampled instance
+            reference_class_idx = sampled_instance['pred_class'].item()
+            
+            # Pre-compute set of patches that contain same-class-different-instance pixels
+            conflicting_patches = set()
+            for i in range(len(predictions['pred_boxes'])):
+                if (predictions['pred_classes'][i] == reference_class_idx and 
+                    not torch.equal(predictions['pred_boxes'][i], sampled_instance['pred_box'])):
                     
-            #         # Get instance mask and find all patches it overlaps with
-            #         instance_mask = predictions['pred_masks'][i].cpu().numpy()
-            #         instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
-            #         instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
-            #         instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
-            #         conflicting_patches.update(instance_patch_coords)
+                    # Get instance mask and find all patches it overlaps with
+                    instance_mask = predictions['pred_masks'][i].cpu().numpy()
+                    instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
+                    instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
+                    instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
+                    conflicting_patches.update(instance_patch_coords)
             # Filter out conflicting patches using set operations
             surrounding_patches_set = set(surrounding_patches)
             filtered_surrounding_patches = list(surrounding_patches_set - conflicting_patches)
@@ -534,6 +534,39 @@ class InstanceProcessor:
         reference_mask = patch_annot['mask']
         artifact_type = patch_annot['artifact_type']
 
+        img_height, img_width = reference_mask.shape
+        
+        # Get patch indices from patch_annot
+        target_patch_indices = patch_annot.get('target_patch_indices', [])
+        reference_patch_indices = patch_annot.get('reference_patch_indices', [])
+        patch_size = patch_annot.get('patch_size', 16)
+        
+        # Calculate patch grid dimensions
+        patch_w = img_width // patch_size
+        patch_h = img_height // patch_size
+        
+        # Create target mask from target_patch_indices
+        target_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+        if target_patch_indices:
+            target_patch_coords = patch_indices_to_coords(target_patch_indices, patch_w, txt_len=512)
+            for py, px in target_patch_coords:
+                y_start = py * patch_size
+                y_end = min((py + 1) * patch_size, img_height)
+                x_start = px * patch_size
+                x_end = min((px + 1) * patch_size, img_width)
+                target_mask[y_start:y_end, x_start:x_end] = 1
+        
+        # Create reference mask from reference_patch_indices  
+        reference_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+        if reference_patch_indices:
+            reference_patch_coords = patch_indices_to_coords(reference_patch_indices, patch_w, txt_len=512)
+            for py, px in reference_patch_coords:
+                y_start = py * patch_size
+                y_end = min((py + 1) * patch_size, img_height)
+                x_start = px * patch_size
+                x_end = min((px + 1) * patch_size, img_width)
+                reference_mask[y_start:y_end, x_start:x_end] = 1
+        
         # Create base annotation
         anno = {
             'bounding_box_ref': {
@@ -546,6 +579,7 @@ class InstanceProcessor:
         }
         
         # Add reference mask to annotation
+        anno['target_mask'] = target_mask
         anno['reference_mask'] = reference_mask
         return anno, patch_annot
 

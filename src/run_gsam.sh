@@ -34,7 +34,7 @@ DEVICE="cuda"
 RESUME=false
 OUTPUT_DIR=""
 PREDEFINED_VOCAB=""
-SEED=""
+SEED="2026"
 
 # Dataset selection defaults
 # DATASET="custom"

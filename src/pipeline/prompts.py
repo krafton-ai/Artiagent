@@ -6,8 +6,14 @@ import numpy as np
 import re
 import os
 import cv2
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+
+# Try to import matplotlib
+try:
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
 
 def get_entity_subparts_by_type(client, image, artifact_type):
 
@@ -947,3 +953,224 @@ def caption_image_with_openai(image):
     except Exception as e:
         print(f"Error generating caption: {e}")
         return None
+
+def query_addition_artifact_success(client, img_array, mask_image, part_entity_name):
+    """
+    Query GPT-4 Vision to check if addition artifact injection was successful.
+    
+    Args:
+        client: OpenAI client
+        img_array: Original image as numpy array
+        mask_image: PIL Image of the target mask region
+        part_entity_name: Description of the part entity (e.g., "a hand of a person")
+        
+    Returns:
+        dict: Contains 'success' boolean and 'reasoning' string
+    """
+    # Encode images to base64
+    base64_image = encode_image_to_base64(img_array)
+    base64_mask = encode_image_to_base64(mask_image)
+    
+    prompt = f"""
+    You are an expert at detecting addition-type artifacts in AI-generated images.
+
+    Addition artifacts occur when a part of an object is duplicated and placed adjacent to the original, 
+    creating anatomically or structurally implausible duplications (e.g., extra fingers, duplicate ears, etc.).
+
+    You will be shown:
+    1. An original image
+    2. A mask highlighting a specific region of interest
+    
+    Your task is to determine if there is "{part_entity_name}" present in the masked region of the image.
+    
+    Look carefully at the masked region and determine:
+    - Is there a clear presence of "{part_entity_name}" within the highlighted area?
+    - Does it appear to be a plausible duplication/addition of the specified part?
+    
+    Consider that addition artifacts should:
+    - Show the specified part type in the masked region
+    - Appear anatomically/structurally similar to other instances of the same part
+    - Be positioned adjacent to where such parts would naturally occur
+    
+    Return your analysis in this exact JSON format:
+    {{
+        "success": true/false,
+        "reasoning": "Brief explanation of what you observe in the masked region"
+    }}
+    
+    Set "success" to true if you can clearly identify "{part_entity_name}" in the masked region.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        },
+                        {
+                            "type": "image_url", 
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_mask}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=500,
+            temperature=0.2
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Try to extract JSON from the response
+        try:
+            import re
+            json_match = re.search(r'\{[^{}]*\}', response_text)
+            if json_match:
+                result = json.loads(json_match.group())
+                return result
+            else:
+                # Fallback parsing
+                return {
+                    "success": False,
+                    "confidence": 0.0,
+                    "reasoning": "Could not parse response",
+                    "raw_response": response_text
+                }
+        except json.JSONDecodeError:
+            return {
+                "success": False,
+                "confidence": 0.0, 
+                "reasoning": "JSON parsing failed",
+                "raw_response": response_text
+            }
+            
+    except Exception as e:
+        print(f"Error in addition artifact query: {e}")
+        return {
+            "success": False,
+            "confidence": 0.0,
+            "reasoning": f"API error: {str(e)}"
+        }
+
+
+def query_removal_artifact_success(client, img_array, mask_image, part_entity_name):
+    """
+    Query GPT-4 Vision to check if removal artifact injection was successful.
+    
+    Args:
+        client: OpenAI client
+        img_array: Original image as numpy array
+        mask_image: PIL Image of the target mask region
+        part_entity_name: Description of the part entity (e.g., "a hand of a person")
+        
+    Returns:
+        dict: Contains 'success' boolean and 'reasoning' string
+    """
+    # Encode images to base64
+    base64_image = encode_image_to_base64(img_array)
+    base64_mask = encode_image_to_base64(mask_image)
+    
+    prompt = f"""
+    You are an expert at detecting removal-type artifacts in AI-generated images.
+
+    Removal artifacts occur when a part of an object is deleted and the area is inpainted with background, 
+    resulting in missing parts that should be present (e.g., missing fingers, absent ears, etc.).
+
+    You will be shown:
+    1. An original image  
+    2. A mask highlighting a specific region of interest
+    
+    Your task is to determine if there is NO "{part_entity_name}" present in the masked region of the image.
+    
+    Look carefully at the masked region and determine:
+    - Is the specified part clearly absent from the highlighted area?
+    - Does the region show signs of inpainting or background fill instead of the expected part?
+    
+    Consider that successful removal artifacts should:
+    - Show absence of the specified part in the masked region
+    - Display background textures or inpainting in place of the missing part
+    - Leave the surrounding anatomy/structure intact but incomplete
+    
+    Return your analysis in this exact JSON format:
+    {{
+        "success": true/false,
+        "reasoning": "Brief explanation of what you observe in the masked region"
+    }}
+    
+    Set "success" to true if you can confirm that "{part_entity_name}" is clearly absent from the masked region.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_mask}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=500,
+            temperature=0.2
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Try to extract JSON from the response
+        try:
+            import re
+            json_match = re.search(r'\{[^{}]*\}', response_text)
+            if json_match:
+                result = json.loads(json_match.group())
+                return result
+            else:
+                # Fallback parsing
+                return {
+                    "success": False,
+                    "confidence": 0.0,
+                    "reasoning": "Could not parse response",
+                    "raw_response": response_text
+                }
+        except json.JSONDecodeError:
+            return {
+                "success": False,
+                "confidence": 0.0,
+                "reasoning": "JSON parsing failed", 
+                "raw_response": response_text
+            }
+            
+    except Exception as e:
+        print(f"Error in removal artifact query: {e}")
+        return {
+            "success": False,
+            "confidence": 0.0,
+            "reasoning": f"API error: {str(e)}"
+        }

@@ -262,7 +262,8 @@ class SingleStreamBlock(nn.Module):
 
         # Save the features in the memory
 
-        if info['inject'] and info['id'] > 19 and info['id'] < 35:
+
+        if info['inject'] and info['id'] > 19:
             # Use pre-computed mask for feature injection if available
             mask = info.get('precomputed_single_mask', None)
             if mask is None:
@@ -275,6 +276,27 @@ class SingleStreamBlock(nn.Module):
                 # keep_indices = torch.tensor(list(all_indices - set(patch_ids)))
                 keep_indices = torch.tensor(list(all_indices - set(patch_ids)-set(range(0,512))))
                 v[:,:,keep_indices,:] = info['feature'][feature_name][:,:,keep_indices,:].cuda()
+                # Get intersecting indices between patch_ids and patch_ref_ids
+                target_ids = patch_ids
+                reference_patch_ids = info['patch_ref_ids']
+                if info['artifact_type'] == 'addition':
+                    patch_ids_set = set(patch_ids)
+                    patch_ref_ids_set = set(info['patch_ref_ids'])
+                    intersecting_indices = patch_ids_set & patch_ref_ids_set
+                    
+                    # Iterate through both lists and remove elements at positions where patch_ids contains intersecting indices
+                    patch_ref_ids = info['patch_ref_ids']
+                    filtered_patch_ids = []
+                    filtered_patch_ref_ids = []
+                    
+                    for i in range(len(patch_ids)):
+                        if patch_ids[i] not in intersecting_indices:
+                            filtered_patch_ids.append(patch_ids[i])
+                            filtered_patch_ref_ids.append(patch_ref_ids[i])
+                    
+                    target_ids = filtered_patch_ids
+                    reference_patch_ids = filtered_patch_ref_ids
+                v[:,:,target_ids,:] = v[:,:,reference_patch_ids,:]
 
         if info['attn_mask']:
             # Use pre-computed mask if available, otherwise fallback to dynamic computation
