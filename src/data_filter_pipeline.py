@@ -109,7 +109,6 @@ class DataFilterPipeline:
         self.patch_size = self.dino_model.config.patch_size
 
         self.dino_model.eval()
-        self.dino_thresholds = {'same': 0.95, 'similar': 0.7, 'different': 0.0} # TODO: modify threshold
 
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.dino_model.to(device)
@@ -295,8 +294,9 @@ class DataFilterPipeline:
         """
         # Set default thresholds
         thresholds = {
-            'same': 0.95,      # Very high similarity
+            'same': 0.9,      # Very high similarity
             'similar': 0.7,    # Moderate similarity
+            'strange': 0.5,
             'different': 0.0   # Low similarity
         }
 
@@ -329,10 +329,13 @@ class DataFilterPipeline:
         
         logger.info(f"CLS similarity: {cls_similarity:.3f}, Patch similarity: {patch_similarity:.3f}, Avg: {avg_similarity:.3f}")
 
-        if avg_similarity < thresholds['same'] and avg_similarity >= thresholds['similar']:
+        # if avg_similarity < thresholds['same'] and avg_similarity >= thresholds['similar']:
+        if cls_similarity < thresholds['same'] and cls_similarity >= thresholds['similar'] and patch_similarity < 0.8 and patch_similarity >= thresholds['strange']:
             passed = True
         else:
-            passed = False 
+            passed = False
+        # else:
+        #     passed = False 
 
         return passed
     

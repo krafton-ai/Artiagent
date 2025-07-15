@@ -222,10 +222,11 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                         sampled_instance, img_array.shape, artifact_type, patch_size=16
                     )
                     
-                    if config['distortion_kernel'] == 'none':
-                        distortion_kernel = random.choice(['none', 'jitter', 'swirl', 'voronoi', 'flip', 'bend'])
-                    else:
-                        distortion_kernel = config['distortion_kernel']
+                    if artifact_type == 'distortion':
+                        if config['distortion_kernel'] == 'none':
+                            distortion_kernel = random.choice(['none', 'jitter', 'swirl', 'bend'])
+                        else:
+                            distortion_kernel = config['distortion_kernel']
 
                     logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
                     
