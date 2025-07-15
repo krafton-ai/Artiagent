@@ -331,7 +331,7 @@ if [[ "$DATASET" != "coco" && "$DATASET" != "imagenet" && "$DATASET" != "custom"
 fi
 
 # Validate distortion kernel type
-if [[ "$DISTORTION_KERNEL" != "none" && "$DISTORTION_KERNEL" != "jitter" && "$DISTORTION_KERNEL" != "swirl" && "$DISTORTION_KERNEL" != "voronoi" && "$DISTORTION_KERNEL" != "flip"  && "$DISTORTION_KERNEL" != "bend"  ]]; then
+if [[ "$DISTORTION_KERNEL" != "none" && "$DISTORTION_KERNEL" != "jitter" && "$DISTORTION_KERNEL" != "swirl" && "$DISTORTION_KERNEL" != "voronoi" && "$DISTORTION_KERNEL" != "flip" ]]; then
     print_error "Invalid distortion kernel: $DISTORTION_KERNEL. Must be one of: none, jitter, swirl, voronoi"
     exit 1
 fi
