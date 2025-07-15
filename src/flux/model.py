@@ -109,11 +109,12 @@ class Flux(nn.Module):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
         inject_pe = pe.clone()
-        
+        target_patch_ref_ids = None
         # Handle positional encoding manipulation for artifacts
         if (not info['inverse']) and (timesteps > info['pe_step']):
             if info['artifact_type'] == 'addition':
-                inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,patch_ref_ids,:,:,:]
+                target_patch_ref_ids = patch_ref_ids
+                inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,target_patch_ref_ids,:,:,:]
             elif info['artifact_type'] == 'removal':
                 # Use shape-based approach for removal
                 target_patch_ref_ids = sample_closest_patch_ind(
@@ -134,9 +135,21 @@ class Flux(nn.Module):
                     np.random.shuffle(target_patch_ref_ids)
                     inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,target_patch_ref_ids,:,:,:]
                 else:
-                    inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,patch_ref_ids,:,:,:]
+                    target_patch_ref_ids = patch_ref_ids
+                    inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,target_patch_ref_ids,:,:,:]
             else:
                 raise AttributeError('Artifact type is either not defined or unidentified')
+
+        if target_patch_ref_ids is None:
+            if info['artifact_type'] == 'removal':
+                target_patch_ref_ids = sample_closest_patch_ind(
+                        info['patch_h'], info['patch_w'], patch_ids, patch_ref_ids,
+                        patch_size=16, txt_len=512
+                    )
+        info['patch_ids'] = patch_ids
+        info['patch_ref_ids'] = target_patch_ref_ids
+        info['timesteps'] = timesteps
+
 
         for block in self.double_blocks:
             img, txt = block(img=img, txt=txt, vec=vec, pe=pe, info=info, patch_ids=patch_ids)
@@ -146,8 +159,12 @@ class Flux(nn.Module):
         info['type'] = 'single'
         for block in self.single_blocks:
             info['id'] = cnt
-            img, info = block(img, vec=vec, pe=inject_pe, info=info, patch_ids=patch_ids)
+            if cnt < 19:
+                img, info = block(img, vec=vec, pe=inject_pe, info=info, patch_ids=patch_ids)
+            else:
+                img, info = block(img, vec=vec, pe=pe, info=info, patch_ids=patch_ids)
             cnt += 1
+            
 
         img = img[:, txt.shape[1] :, ...]
 
