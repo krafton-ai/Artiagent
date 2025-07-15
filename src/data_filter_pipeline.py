@@ -330,7 +330,7 @@ class DataFilterPipeline:
         logger.info(f"CLS similarity: {cls_similarity:.3f}, Patch similarity: {patch_similarity:.3f}, Avg: {avg_similarity:.3f}")
 
         # if avg_similarity < thresholds['same'] and avg_similarity >= thresholds['similar']:
-        if cls_similarity < thresholds['same'] and cls_similarity >= thresholds['similar'] and patch_similarity < 0.8 and patch_similarity >= thresholds['strange']:
+        if cls_similarity < thresholds['same'] and patch_similarity < 0.8 and patch_similarity >= thresholds['strange']:
             passed = True
         else:
             passed = False
