@@ -529,6 +529,39 @@ class InstanceProcessor:
         reference_mask = patch_annot['mask']
         artifact_type = patch_annot['artifact_type']
 
+        img_height, img_width = reference_mask.shape
+        
+        # Get patch indices from patch_annot
+        target_patch_indices = patch_annot.get('target_patch_indices', [])
+        reference_patch_indices = patch_annot.get('reference_patch_indices', [])
+        patch_size = patch_annot.get('patch_size', 16)
+        
+        # Calculate patch grid dimensions
+        patch_w = img_width // patch_size
+        patch_h = img_height // patch_size
+        
+        # Create target mask from target_patch_indices
+        target_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+        if target_patch_indices:
+            target_patch_coords = patch_indices_to_coords(target_patch_indices, patch_w, txt_len=512)
+            for py, px in target_patch_coords:
+                y_start = py * patch_size
+                y_end = min((py + 1) * patch_size, img_height)
+                x_start = px * patch_size
+                x_end = min((px + 1) * patch_size, img_width)
+                target_mask[y_start:y_end, x_start:x_end] = 1
+        
+        # Create reference mask from reference_patch_indices  
+        reference_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+        if reference_patch_indices:
+            reference_patch_coords = patch_indices_to_coords(reference_patch_indices, patch_w, txt_len=512)
+            for py, px in reference_patch_coords:
+                y_start = py * patch_size
+                y_end = min((py + 1) * patch_size, img_height)
+                x_start = px * patch_size
+                x_end = min((px + 1) * patch_size, img_width)
+                reference_mask[y_start:y_end, x_start:x_end] = 1
+        
         # Create base annotation
         anno = {
             'bounding_box_ref': {
@@ -541,6 +574,7 @@ class InstanceProcessor:
         }
         
         # Add reference mask to annotation
+        anno['target_mask'] = target_mask
         anno['reference_mask'] = reference_mask
         return anno, patch_annot
 
