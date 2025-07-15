@@ -146,8 +146,12 @@ class Flux(nn.Module):
         info['type'] = 'single'
         for block in self.single_blocks:
             info['id'] = cnt
-            img, info = block(img, vec=vec, pe=inject_pe, info=info, patch_ids=patch_ids)
+            if cnt < 35:
+                img, info = block(img, vec=vec, pe=inject_pe, info=info, patch_ids=patch_ids)
+            else:
+                img, info = block(img, vec=vec, pe=pe, info=info, patch_ids=patch_ids)
             cnt += 1
+            
 
         img = img[:, txt.shape[1] :, ...]
 

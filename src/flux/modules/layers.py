@@ -262,7 +262,7 @@ class SingleStreamBlock(nn.Module):
 
         # Save the features in the memory
 
-        if info['inject'] and info['id'] > 19:
+        if info['inject'] and info['id'] < 30:
             # Use pre-computed mask for feature injection if available
             mask = info.get('precomputed_single_mask', None)
             if mask is None:
