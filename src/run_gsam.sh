@@ -27,6 +27,7 @@ fi
 SUPERCATEGORY=""
 ARTIFACT_TYPES="addition removal distortion"
 DISTORTION_KERNEL="none"
+RANDOM_DISTORTION=false
 MAX_IMAGES=""
 MIN_AREA_RATIO="0.005"
 MAX_AREA_RATIO="0.5"
@@ -34,7 +35,7 @@ DEVICE="cuda"
 RESUME=false
 OUTPUT_DIR=""
 PREDEFINED_VOCAB=""
-SEED="2026"
+SEED=""
 
 # Dataset selection defaults
 # DATASET="custom"
@@ -104,6 +105,7 @@ ARGUMENTS:
 BASIC OPTIONS:
     --artifact-types LIST   Artifact types to generate (default: "distortion removal addition")
     --distortion-kernel TYPE Distortion kernel type: none, jitter, swirl, voronoi (default: none)
+    --random-distortion     Randomly sample distortion kernel for each image (jitter, swirl, voronoi)
     --max-images N          Maximum number of images to process
     --min-area-ratio FLOAT  Minimum area ratio for part filtering (default: 0.05)
     --max-area-ratio FLOAT  Maximum area ratio for part filtering (default: 0.5)
@@ -157,6 +159,9 @@ EXAMPLES:
     # Generate distortion artifacts with swirl kernel
     ./run_gsam.sh animal --artifact-types "distortion" --distortion-kernel swirl
 
+    # Randomly sample distortion kernel for each image
+    ./run_gsam.sh animal --artifact-types "distortion" --random-distortion
+
     # Resume interrupted processing
     ./run_gsam.sh person --resume
 
@@ -208,6 +213,10 @@ while [[ $# -gt 0 ]]; do
         --distortion-kernel)
             DISTORTION_KERNEL="$2"
             shift 2
+            ;;
+        --random-distortion)
+            RANDOM_DISTORTION=true
+            shift
             ;;
         --max-images)
             MAX_IMAGES="$2"
@@ -331,7 +340,7 @@ if [[ "$DATASET" != "coco" && "$DATASET" != "imagenet" && "$DATASET" != "custom"
 fi
 
 # Validate distortion kernel type
-if [[ "$DISTORTION_KERNEL" != "none" && "$DISTORTION_KERNEL" != "jitter" && "$DISTORTION_KERNEL" != "swirl" && "$DISTORTION_KERNEL" != "voronoi" && "$DISTORTION_KERNEL" != "flip" ]]; then
+if [[ "$DISTORTION_KERNEL" != "none" && "$DISTORTION_KERNEL" != "jitter" && "$DISTORTION_KERNEL" != "swirl" && "$DISTORTION_KERNEL" != "voronoi" ]]; then
     print_error "Invalid distortion kernel: $DISTORTION_KERNEL. Must be one of: none, jitter, swirl, voronoi"
     exit 1
 fi
@@ -371,7 +380,11 @@ print_configuration() {
     print_header "GSAM SEGMENTATION CONFIGURATION"
     echo "Supercategory:           $SUPERCATEGORY"
     echo "Artifact types:          $ARTIFACT_TYPES"
-    echo "Distortion kernel:       $DISTORTION_KERNEL"
+    if [[ "$RANDOM_DISTORTION" == true ]]; then
+        echo "Distortion kernel:       random sampling (jitter, swirl, voronoi)"
+    else
+        echo "Distortion kernel:       $DISTORTION_KERNEL"
+    fi
     echo "Max images:              ${MAX_IMAGES:-unlimited}"
     echo "Min area ratio:          $MIN_AREA_RATIO"
     echo "Max area ratio:          $MAX_AREA_RATIO"
@@ -424,6 +437,10 @@ run_gsam_segmentation() {
     
     if [[ "$RESUME" == true ]]; then
         gsam_cmd="$gsam_cmd --resume"
+    fi
+    
+    if [[ "$RANDOM_DISTORTION" == true ]]; then
+        gsam_cmd="$gsam_cmd --random-distortion"
     fi
     
     if [[ -n "$PREDEFINED_VOCAB" ]]; then
@@ -518,7 +535,9 @@ print_summary() {
     echo "  - Check the log files for detailed processing information"
     echo "  - Use the results with run_flux.sh for artifact generation"
     echo "  - Command: ./run_flux.sh $OUTPUT_DIR --artifact-types \"$ARTIFACT_TYPES\""
-    if [[ "$DISTORTION_KERNEL" != "none" ]]; then
+    if [[ "$RANDOM_DISTORTION" == true ]]; then
+        echo "  - Note: Used random distortion kernels (jitter, swirl, voronoi) for distortion artifacts"
+    elif [[ "$DISTORTION_KERNEL" != "none" ]]; then
         echo "  - Note: Used distortion kernel '$DISTORTION_KERNEL' for distortion artifacts"
     fi
     echo ""

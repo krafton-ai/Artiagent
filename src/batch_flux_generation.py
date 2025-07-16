@@ -390,9 +390,9 @@ def main():
                        help='Output directory (default: flux_output_{supercategory})')
     parser.add_argument('--inject', type=int, default=25,
                        help='Inject step for FLUX generation (default: 25)')
-    parser.add_argument('--pe-step-addition', type=float, default=0.3,
+    parser.add_argument('--pe-step-addition', type=float, default=0.0,
                        help='PE step for addition artifacts (default: 0.3)')
-    parser.add_argument('--pe-step-removal', type=float, default=0.3,
+    parser.add_argument('--pe-step-removal', type=float, default=0.0,
                        help='PE step for removal artifacts (default: 0.3)')
     parser.add_argument('--pe-step-distortion', type=float, default=0.3,
                        help='PE step for distortion artifacts (default: 0.3)')

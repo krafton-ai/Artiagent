@@ -6,12 +6,12 @@ source ~/.bashrc
 # Initialize conda for shell use
 eval "$(conda shell.bash hook)"
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 # Your command here
 conda activate gsam
-./run_gsam.sh animal --artifact-types "removal" --output-dir ../exps/1k/removal --max-images 20
+./run_gsam.sh animal --max-images 200 --output-dir ../exps/1k/removal --artifact-types "removal" 
 conda activate rf-solver
 ./run_flux.sh  ../exps/1k/removal --output-dir ../exps/1k/removal
 conda activate gsam
-python data_filter_pipeline.py --gsam_dir ../exps/1k/removal --flux_dir ../exps/1k/removal --output_dir ../exps/filtering/removal
+python data_filter_query_pipeline.py --gsam_dir ../exps/1k/removal --flux_dir ../exps/1k/removal --output_dir ../exps/filtering/removal

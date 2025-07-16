@@ -28,6 +28,30 @@ class ImageVisualizer:
         output_dir = os.path.join(base_dir, clean_name)
         os.makedirs(output_dir, exist_ok=True)
         return output_dir
+
+    @staticmethod
+    def save_raw_image(image: Union[np.ndarray, Image.Image],
+                       base_dir: str = "output",
+                       filename: str = "raw_image.png"):
+        """
+        Save a raw PIL image without any matplotlib formatting
+        
+        Args:
+            image: Image to save (numpy array or PIL Image)
+            base_dir: Base output directory
+            filename: Name of the output file
+        """
+        # Use base_dir directly (no additional subdirectory creation)
+        os.makedirs(base_dir, exist_ok=True)
+        save_path = os.path.join(base_dir, filename)
+        
+        # Convert numpy array to PIL Image if needed
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        
+        # Save the raw PIL image
+        image.save(save_path)
+        print(f"Raw image saved to {save_path}")
     
     @staticmethod
     def show_image(image: Union[np.ndarray, Image.Image], 
