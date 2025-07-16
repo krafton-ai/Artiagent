@@ -181,9 +181,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
             artifact_type=artifact_type,
             source_img=img_array.copy(),
             reference_patch_indices=reference_patch_indices,
-            target_patch_indices=target_patch_indices,
-            pe_step=0.0,
-            inject_step=20,
+            target_patch_indices=target_patch_indices
         )
         
         # Create visualizations
