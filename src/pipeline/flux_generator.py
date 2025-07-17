@@ -187,7 +187,7 @@ class FluxGenerator:
         flux_args.output_dir = output_dir
         flux_args.reference_patch_indices = reference_patch_indices
         flux_args.target_patch_indices = target_patch_indices
-        flux_args.inject_step = inject_step
+        flux_args.inject_step = inject_step if inject_step is not None else self.config.inject_step
         torch_device = torch.device(self.device)
 
         init_image = None
