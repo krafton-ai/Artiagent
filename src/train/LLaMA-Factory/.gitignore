@@ -1,24 +1,3 @@
-# Compiled Python files
-*.pyc
-*.pyo
-*.pyd
-*.pth
-__pycache__/
-*.egg-info
-src/examples/
-output
-src/flux/_version.py
-exp/
-exps/
-assets/
-data/
-src/GroundingDINO/build/
-# Environment files (contains sensitive data)
-.env
-.env.local
-.env.*.local
-*.so
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
