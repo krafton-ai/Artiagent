@@ -270,12 +270,16 @@ class SingleStreamBlock(nn.Module):
                 mask = get_attn_mask(info['single_stream_block_mask'], q, patch_ids, txt_len=3)
             feature_name = str(info['t']) + '_' + str(info['second_order']) + '_' + str(info['id']) + '_' + info['type'] + '_' + 'V'
             if info['inverse']:
-                info['feature'][feature_name] = v.cpu()
+                info['feature'][feature_name] = v.clone()
             else:
-                all_indices = set(range(v.shape[2]))
-                # keep_indices = torch.tensor(list(all_indices - set(patch_ids)))
-                keep_indices = torch.tensor(list(all_indices - set(patch_ids)-set(range(0,512))))
-                v[:,:,keep_indices,:] = info['feature'][feature_name][:,:,keep_indices,:].cuda()
+                num_patches = v.size(2)
+                mask = torch.ones(num_patches, dtype=torch.bool, device='cuda')
+                mask[patch_ids] = False
+                mask[:512] = False
+                keep_indices = mask.nonzero(as_tuple=True)[0]
+
+                backup = info['feature'][feature_name]
+                v[:, :, keep_indices, :] = backup[:, :, keep_indices, :]
                 # Get intersecting indices between patch_ids and patch_ref_ids
                 target_ids = patch_ids
                 reference_patch_ids = info['patch_ref_ids']
