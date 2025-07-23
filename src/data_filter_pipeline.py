@@ -294,52 +294,77 @@ class DataFilterPipeline:
         """
         # Set default thresholds
         thresholds = {
-            'same': 0.9,      # Very high similarity
-            'similar': 0.7,    # Moderate similarity
-            'strange': 0.5,
-            'different': 0.0   # Low similarity
+            'same': 0.97,      # Very high similarity
+            'similar': 0.8,    # Moderate similarity
+            'strange': 0.7,
+            'different': 0.5   # Low similarity
         }
-
-        mask = gsam_metadata['artifacts'][artifact_type]['patch_data'].get('masks', None)
         
         # Extract embeddings
         print("Extracting embeddings...")
-        if mask is not None:
-            print(f"Using mask for patch similarity: {mask.shape}")
             
-        cls1, patches1 = self._extract_embeddings(orig_img, mask)
-        cls2, patches2 = self._extract_embeddings(img, mask)
+        cls1, _ = self._extract_embeddings(orig_img)
+        cls2, _ = self._extract_embeddings(img)
         
-        # Compute similarities
         cls_similarity = self.compute_cosine_similarity(cls1, cls2)
         
-        # Flatten patch embeddings for comparison
-        patches1_flat = patches1.flatten(0, 1)  # [num_patches, hidden_size]
-        patches2_flat = patches2.flatten(0, 1)  # [num_patches, hidden_size]
-        
-        # Use minimum number of patches for comparison
-        min_patches = min(patches1_flat.shape[0], patches2_flat.shape[0])
-        patches1_flat = patches1_flat[:min_patches]
-        patches2_flat = patches2_flat[:min_patches]
-        
-        patch_similarity = self.compute_cosine_similarity(patches1_flat, patches2_flat)
-        
-        # Use average of CLS and patch similarities
-        avg_similarity = (cls_similarity + patch_similarity) / 2
-        
-        logger.info(f"CLS similarity: {cls_similarity:.3f}, Patch similarity: {patch_similarity:.3f}, Avg: {avg_similarity:.3f}")
+        target_bbox = gsam_metadata['artifacts'][artifact_type]['patch_data']['target_bbox']
+        orig_bbox = self._scale_bbox_to_image_size(target_bbox, orig_img.shape, img.shape)
 
-        # if avg_similarity < thresholds['same'] and avg_similarity >= thresholds['similar']:
-        if cls_similarity < thresholds['same'] and patch_similarity < 0.8 and patch_similarity >= thresholds['strange']:
+        orig_crop = self._crop_to_bbox(orig_img, orig_bbox)
+        img_crop = self._crop_to_bbox(img, target_bbox)
+
+        cls1, _ = self._extract_embeddings(orig_crop)
+        cls2, _ = self._extract_embeddings(img_crop)
+
+        bbox_similarity = self.compute_cosine_similarity(cls1, cls2)
+
+        logger.info(f"CLS similarity: {cls_similarity:.3f}, Bbox similarity: {bbox_similarity:.3f}")
+
+        if cls_similarity < thresholds['same'] and cls_similarity >= thresholds['strange'] and bbox_similarity < thresholds['similar'] and bbox_similarity >= thresholds['different']:
             passed = True
         else:
             passed = False
-        # else:
-        #     passed = False 
 
         return passed
     
-    def _extract_embeddings(self, image: Image.Image, mask: np.ndarray = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _scale_bbox_to_image_size(self, bbox, target_img_shape, source_img_shape):
+        """
+        Scale bounding box coordinates from source image size to target image size.
+        """
+        xmin, ymin, xmax, ymax = bbox
+        source_h, source_w = source_img_shape[:2]
+        target_h, target_w = target_img_shape[:2]
+        
+        # Calculate scaling ratios
+        scale_x = target_w / source_w
+        scale_y = target_h / source_h
+        
+        # Scale coordinates
+        scaled_xmin = int(round(xmin * scale_x))
+        scaled_ymin = int(round(ymin * scale_y))
+        scaled_xmax = int(round(xmax * scale_x))
+        scaled_ymax = int(round(ymax * scale_y))
+        
+        # Ensure coordinates are within bounds
+        scaled_xmin = max(0, scaled_xmin)
+        scaled_ymin = max(0, scaled_ymin)
+        scaled_xmax = min(target_w, scaled_xmax)
+        scaled_ymax = min(target_h, scaled_ymax)
+        
+        return [scaled_xmin, scaled_ymin, scaled_xmax, scaled_ymax]
+
+    def _crop_to_bbox(self, image: np.ndarray, bbox) -> np.ndarray:
+        """Crop image to bounding box coordinates"""
+        h, w = image.shape[:2]
+        xmin, ymin, xmax, ymax = [int(round(x)) for x in bbox]
+        xmin = max(0, xmin)
+        ymin = max(0, ymin)
+        xmax = min(w, xmax)
+        ymax = min(h, ymax)
+        return image[ymin:ymax, xmin:xmax]
+    
+    def _extract_embeddings(self, image: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Extract DINO embeddings from image
         """
@@ -361,37 +386,8 @@ class DataFilterPipeline:
         # Separate CLS token and patch embeddings
         cls_token = last_hidden_states[:, 0, :]  # [1, hidden_size]
         patch_features = last_hidden_states[:, 1:, :].unflatten(1, (num_patches_height, num_patches_width))
-        
-        # If mask is provided, filter patches
-        if mask is not None:
-            # Resize mask to patch grid
-            mask_resized = self._resize_mask_to_patches(mask, num_patches_height, num_patches_width)
-            # Get masked patch indices
-            masked_patches = self._get_masked_patches(patch_features.squeeze(0), mask_resized)
-            return cls_token.squeeze(0), masked_patches
-        
+
         return cls_token.squeeze(0), patch_features.squeeze(0)  # Remove batch dimension
-    
-    def _resize_mask_to_patches(self, mask: np.ndarray, num_patches_height: int, num_patches_width: int) -> np.ndarray:
-        """Resize mask to patch grid dimensions"""
-        from PIL import Image
-        mask_pil = Image.fromarray(mask.astype(np.uint8))
-        mask_resized = mask_pil.resize((num_patches_width, num_patches_height), Image.NEAREST)
-        return np.array(mask_resized) > 0
-    
-    def _get_masked_patches(self, patch_features: torch.Tensor, mask: np.ndarray) -> torch.Tensor:
-        """Extract patches where mask is True"""
-        # Convert mask to boolean tensor
-        mask_tensor = torch.from_numpy(mask).bool()
-        
-        # Get indices where mask is True
-        masked_indices = torch.where(mask_tensor.flatten())[0]
-        
-        # Extract masked patches
-        patch_features_flat = patch_features.flatten(0, 1)  # [num_patches, hidden_size]
-        masked_patches = patch_features_flat[masked_indices]
-        
-        return masked_patches
     
     def normalize_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Normalize embeddings using L2 norm"""
