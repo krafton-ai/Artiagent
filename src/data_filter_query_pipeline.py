@@ -15,6 +15,7 @@ import glob
 import pickle
 import argparse
 import shutil
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import warnings
@@ -22,8 +23,13 @@ warnings.filterwarnings('ignore')
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 import cv2
+from transformers import AutoImageProcessor, AutoModel
+import logging
+from datetime import datetime
+import torch.nn.functional as F
 
 # Import query functions from prompts
 from pipeline.prompts import query_addition_artifact_success, query_removal_artifact_success
@@ -36,6 +42,24 @@ except ImportError:
     print("OpenAI library not found. Please install with: pip install openai")
     sys.exit(1)
 
+def setup_logging(output_dir: str, supercategory: str):
+    """Setup logging configuration"""
+    log_dir = os.path.join(output_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f'data_filtering_{timestamp}.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    return logging.getLogger(__name__)
 
 class DataFilterPipeline:
     """Pipeline for filtering GSAM and FLUX generated datasets using GPT-4 Vision queries"""
@@ -65,10 +89,23 @@ class DataFilterPipeline:
         
         # Initialize OpenAI client
         self.client = OpenAI()
+        self._init_dino_embedding()
         
         self.experiment_data = {}
         self.filtered_results = {}
+        self.kernel_stats = {}
 
+    def _init_dino_embedding(self):
+        """Initialize DINOv2 embedding with pre-trained weights"""
+        self.dino_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+        self.dino_model = AutoModel.from_pretrained("facebook/dinov2-base")
+        self.patch_size = self.dino_model.config.patch_size
+
+        self.dino_model.eval()
+
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.dino_model.to(device)
+        print("DINOv2 model initialized successfully")
     
     def find_matching_experiments(self) -> Dict[str, Dict]:
         """Find matching directories that start with 'image' between GSAM and FLUX experiments"""
@@ -144,8 +181,152 @@ class DataFilterPipeline:
         except Exception as e:
             print(f"Error loading pickle {pickle_path}: {e}")
             return None
+
+    def check_distortion_with_dino(self, metadata: Dict, artifact_type: str,
+                                  orig_img: np.ndarray, img: np.ndarray, exp_id: str, logger) -> bool: 
+        """
+        Use DINO to check if two images are similar as a distortion artifact.
+        Returns a dict with pass/fail, similarity, and classification.
+        """
+        # Set default thresholds
+        thresholds = {
+            'same': 0.9,      # Very high similarity
+            'similar': 0.7,    # Moderate similarity
+            'strange': 0.5,
+            'different': 0.0   # Low similarity
+        }
+
+        mask = metadata['artifacts'][artifact_type]['patch_data'].get('masks', None)
+        
+        # Extract embeddings
+        print("Extracting embeddings...")
+        if mask is not None:
+            print(f"Using mask for patch similarity: {mask.shape}")
+            
+        cls1, patches1 = self._extract_embeddings(orig_img, mask)
+        cls2, patches2 = self._extract_embeddings(img, mask)
+        
+        # Compute similarities
+        cls_similarity = self.compute_cosine_similarity(cls1, cls2)
+        
+        # Flatten patch embeddings for comparison
+        patches1_flat = patches1.flatten(0, 1)  # [num_patches, hidden_size]
+        patches2_flat = patches2.flatten(0, 1)  # [num_patches, hidden_size]
+        
+        # Use minimum number of patches for comparison
+        min_patches = min(patches1_flat.shape[0], patches2_flat.shape[0])
+        patches1_flat = patches1_flat[:min_patches]
+        patches2_flat = patches2_flat[:min_patches]
+        
+        patch_similarity = self.compute_cosine_similarity(patches1_flat, patches2_flat)
+        
+        # Use average of CLS and patch similarities
+        avg_similarity = (cls_similarity + patch_similarity) / 2
+        
+        logger.info(f"CLS similarity: {cls_similarity:.3f}, Patch similarity: {patch_similarity:.3f}, Avg: {avg_similarity:.3f}")
+
+        # if avg_similarity < thresholds['same'] and avg_similarity >= thresholds['similar']:
+        if cls_similarity < thresholds['same'] and patch_similarity < 0.8 and patch_similarity >= thresholds['strange']:
+            passed = True
+        else:
+            passed = False
+        # else:
+        #     passed = False 
+
+        return passed
     
-    def process_experiment(self, exp_id: str) -> bool:
+    def _extract_embeddings(self, image: Image.Image, mask: np.ndarray = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Extract DINO embeddings from image
+        """
+        # Process image
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        inputs = self.dino_processor(images=image, return_tensors="pt").to(device)
+        
+        # Get image dimensions
+        batch_size, rgb, img_height, img_width = inputs.pixel_values.shape
+        num_patches_height = img_height // self.patch_size
+        num_patches_width = img_width // self.patch_size
+        num_patches_flat = num_patches_height * num_patches_width
+        
+        # Extract features
+        with torch.no_grad():
+            outputs = self.dino_model(**inputs)
+            last_hidden_states = outputs[0]
+        
+        # Separate CLS token and patch embeddings
+        cls_token = last_hidden_states[:, 0, :]  # [1, hidden_size]
+        patch_features = last_hidden_states[:, 1:, :].unflatten(1, (num_patches_height, num_patches_width))
+        
+        # If mask is provided, filter patches
+        if mask is not None:
+            # Resize mask to patch grid
+            mask_resized = self._resize_mask_to_patches(mask, num_patches_height, num_patches_width)
+            # Get masked patch indices
+            masked_patches = self._get_masked_patches(patch_features.squeeze(0), mask_resized)
+            return cls_token.squeeze(0), masked_patches
+        
+        return cls_token.squeeze(0), patch_features.squeeze(0)  # Remove batch dimension
+    
+    def _resize_mask_to_patches(self, mask: np.ndarray, num_patches_height: int, num_patches_width: int) -> np.ndarray:
+        """Resize mask to patch grid dimensions"""
+        from PIL import Image
+        mask_pil = Image.fromarray(mask.astype(np.uint8))
+        mask_resized = mask_pil.resize((num_patches_width, num_patches_height), Image.NEAREST)
+        return np.array(mask_resized) > 0
+    
+    def _get_masked_patches(self, patch_features: torch.Tensor, mask: np.ndarray) -> torch.Tensor:
+        """Extract patches where mask is True"""
+        # Convert mask to boolean tensor
+        mask_tensor = torch.from_numpy(mask).bool()
+        
+        # Get indices where mask is True
+        masked_indices = torch.where(mask_tensor.flatten())[0]
+        
+        # Extract masked patches
+        patch_features_flat = patch_features.flatten(0, 1)  # [num_patches, hidden_size]
+        masked_patches = patch_features_flat[masked_indices]
+        
+        return masked_patches
+    
+    def normalize_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Normalize embeddings using L2 norm"""
+        return F.normalize(embeddings, p=2, dim=-1)
+    
+    def compute_cosine_similarity(self, emb1: torch.Tensor, emb2: torch.Tensor) -> float:
+        """Compute cosine similarity between two normalized embeddings"""
+        # Ensure embeddings are normalized
+        emb1_norm = self.normalize_embeddings(emb1)
+        emb2_norm = self.normalize_embeddings(emb2)
+        
+        # Compute cosine similarity
+        # If embeddings are 1D, compute directly
+        if emb1_norm.dim() == 1 and emb2_norm.dim() == 1:
+            similarity = F.cosine_similarity(emb1_norm.unsqueeze(0), emb2_norm.unsqueeze(0), dim=1)
+        else:
+            # For multi-dimensional embeddings, flatten and compute
+            emb1_flat = emb1_norm.flatten()
+            emb2_flat = emb2_norm.flatten()
+            similarity = F.cosine_similarity(emb1_flat.unsqueeze(0), emb2_flat.unsqueeze(0), dim=1)
+        
+        return similarity.item()
+    
+    def mask_to_bbox(self, mask: np.ndarray) -> List[int]:
+        """Convert binary mask to bounding box [x_min, y_min, x_max, y_max]"""
+        # Find coordinates where mask is non-zero
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        
+        if not np.any(rows) or not np.any(cols):
+            # Empty mask, return [0, 0, 0, 0]
+            return [0, 0, 0, 0]
+        
+        y_min, y_max = np.where(rows)[0][[0, -1]]
+        x_min, x_max = np.where(cols)[0][[0, -1]]
+        
+        return [int(x_min), int(y_min), int(x_max), int(y_max)]
+    
+    def process_experiment(self, exp_id: str, logger) -> bool:
         """
         Process a single experiment and determine if it passes the filtering criteria.
         
@@ -174,12 +355,12 @@ class DataFilterPipeline:
             # Run GSAM detection
             target_mask =np.array(metadata['artifacts'][artifact_type]['annotation']['target_mask'], dtype=np.uint8)*255
             mask_image = Image.fromarray(target_mask)
-            
+            if artifact_type == 'distortion':
+                kernel_type = metadata['artifacts'][artifact_type].get('kernel_type')
             # Create part entity name description
             class_name = metadata['artifacts'][artifact_type]['class_name']
             main_entity = metadata['vocab'][0] if metadata['vocab'] else "object"
             part_entity_name = f"a {class_name} of a {main_entity}"
-            print(artifact_type)
             # Apply appropriate filtering function based on artifact type
             if artifact_type == 'addition':
                 # Check if the part is present in the mask region
@@ -192,7 +373,7 @@ class DataFilterPipeline:
                 print(f"Addition artifact {img_path.name}: {'PASSED' if passed else 'FAILED'}")
                 print(f"  Reasoning: {reasoning}")
                 
-            else:  # removal
+            elif artifact_type == 'removal':  # removal
                 # Check if the part is absent from the mask region
                 result = query_removal_artifact_success(
                     self.client, img_array, mask_image, part_entity_name
@@ -202,12 +383,24 @@ class DataFilterPipeline:
                 
                 print(f"Removal artifact {img_path.name}: {'PASSED' if passed else 'FAILED'}")
                 print(f"  Reasoning: {reasoning}")
-            
-            print(result)
+            else:  # distortion
+                original_path = [img for img in data['flux_files']['images'] if '01_original_image' in img.name.lower()]
+                for orig_path in original_path:
+                    original_img = self.load_image_safely(orig_path)
+                passed = self.check_distortion_with_dino(
+                    metadata, artifact_type, original_img, img_array, exp_id, logger
+                )
+                logger.info(f"Distortion artifact {exp_id} with {kernel_type}: {'PASSED' if passed else 'FAILED'} (similarity test)")
+
+                if kernel_type not in self.kernel_stats:
+                    self.kernel_stats[kernel_type] = {'total': 0, 'passed': 0}
+                self.kernel_stats[kernel_type]['total'] += 1
+                if passed:
+                    self.kernel_stats[kernel_type]['passed'] += 1
+                    passed_images.append(img_path)
             if passed:
                 passed_images.append({
                     'path': img_path,
-                    'reasoning': reasoning
                 })
         
         # Experiment passes if at least one image passes
@@ -241,42 +434,79 @@ class DataFilterPipeline:
             return
         
         artifact_type = artifact_types[0]  # Take first artifact type
+        flux_path = self.experiment_data[exp_id]['flux_path']
         
-        # Copy only specific GSAM files: 04_comparison_{artifact_type}*
-        # Note: metadata.pkl files are excluded
-        comparison_pattern = f"04_comparison_{artifact_type}"
-        gsam_path = self.experiment_data[exp_id]['gsam_path']
+        # 1. Find and copy original image
+        original_images = [img for img in self.experiment_data[exp_id]['flux_files']['images'] 
+                          if '01_original_image' in img.name.lower()]
         
-        # Search for comparison files in GSAM directory
-        for file_path in gsam_path.rglob('*'):
-            if file_path.is_file() and comparison_pattern in file_path.name:
-                # Copy directly to experiment directory (flatten structure)
-                shutil.copy2(file_path, exp_output_dir / file_path.name)
-                print(f"  Copied GSAM file: {file_path.name}")
+        if original_images:
+            original_img_path = original_images[0]
+            shutil.copy2(original_img_path, exp_output_dir / "original_image.png")
+            print(f"  Copied original image: {original_img_path.name}")
+        else:
+            print(f"  Warning: No original image found for experiment {exp_id}")
         
-        # Copy filtered FLUX images directly to experiment directory
-        # Only copy artifact_{artifact_type}.png files from passed images
+        # 2. Copy artifact image from passed images
         artifact_pattern = f"artifact_{artifact_type}.png"
+        artifact_copied = False
         
         for img_data in results['passed_images']:
             img_path = img_data['path']
             if img_path.name == artifact_pattern:
-                shutil.copy2(img_path, exp_output_dir / img_path.name)
-                print(f"  Copied FLUX file: {img_path.name}")
+                shutil.copy2(img_path, exp_output_dir / "artifact_image.png")
+                print(f"  Copied artifact image: {img_path.name}")
+                artifact_copied = True
+                break
         
-        # Save query results for this experiment
-        query_results_file = exp_output_dir / "query_results.txt"
-        with open(query_results_file, 'w') as f:
-            f.write(f"Query Results for Experiment {exp_id}\n")
-            f.write("=" * 40 + "\n\n")
-            f.write(f"Artifact Type: {artifact_type}\n")
-            f.write(f"Total Images: {results['total_images']}\n")
-            f.write(f"Passed Images: {results['passed_count']}\n\n")
-            
-            for img_data in results['passed_images']:
-                f.write(f"Image: {img_data['path'].name}\n")
-                f.write(f"  Reasoning: {img_data['reasoning']}\n\n")
+        if not artifact_copied:
+            print(f"  Warning: No artifact image copied for experiment {exp_id}")
         
+        # 3. Create JSON metadata file
+        artifact_info = metadata['artifacts'][artifact_type]
+        
+        # Extract target mask and convert to bbox
+        target_mask = np.array(artifact_info['annotation']['target_mask'], dtype=np.uint8)
+        target_bbox = self.mask_to_bbox(target_mask)
+        
+        # Extract entity and part entity
+        entity = metadata['vocab'][0]
+        part_entity = artifact_info['class_name']
+        
+        # Create metadata dictionary
+        metadata_dict = {
+            "target_bbox": target_bbox,
+            "artifact_type": artifact_type,
+            "entity": entity,
+            "part_entity": part_entity
+        }
+        
+        # Save JSON file
+        json_file_path = exp_output_dir / "metadata.json"
+        with open(json_file_path, 'w') as f:
+            json.dump(metadata_dict, f, indent=2)
+        
+        # 4. Create artifact image with bbox overlay
+        artifact_with_bbox_path = exp_output_dir / "artifact_image.png"
+        if artifact_with_bbox_path.exists():
+            try:
+                # Load the artifact image
+                artifact_img = cv2.imread(str(artifact_with_bbox_path))
+                if artifact_img is not None:
+                    # Draw bounding box rectangle
+                    x_min, y_min, x_max, y_max = target_bbox
+                    cv2.rectangle(artifact_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)  # Green rectangle, thickness 2
+                    
+                    # Save the image with bbox overlay
+                    bbox_overlay_path = exp_output_dir / "artifact_with_bbox.png"
+                    cv2.imwrite(str(bbox_overlay_path), artifact_img)
+                    print(f"  Created artifact_with_bbox.png with target region highlighted")
+                else:
+                    print(f"  Warning: Could not load artifact image for bbox overlay")
+            except Exception as e:
+                print(f"  Warning: Failed to create bbox overlay image: {e}")
+        
+        print(f"  Created metadata.json with bbox: {target_bbox}")
         print(f"Saved filtered data for experiment {exp_id}")
 
     def update_summary_file(self, exp_id: str, results: Dict, passed_experiments: int, total_experiments: int):
@@ -294,7 +524,21 @@ class DataFilterPipeline:
             f.write(f"Experiment {exp_id}:\n")
             f.write(f"  - Artifact type: {results['artifact_type']}\n")
             f.write(f"  - Images passed: {results['passed_count']}/{results['total_images']}\n")
-            f.write(f"  - Passed images: {[img.name for img in results['passed_images']]}\n\n")
+            # Debug: Check the structure of passed_images
+            try:
+                passed_image_names = []
+                for img_data in results['passed_images']:
+                    if isinstance(img_data, dict) and 'path' in img_data:
+                        path_obj = img_data['path']
+                        if hasattr(path_obj, 'name'):
+                            passed_image_names.append(path_obj.name)
+                        else:
+                            passed_image_names.append(str(path_obj))
+                    else:
+                        passed_image_names.append(str(img_data))
+                f.write(f"  - Passed images: {passed_image_names}\n\n")
+            except Exception as e:
+                f.write(f"  - Passed images: Error processing image names: {e}\n\n")
             
             # Update final summary at the end
             if passed_experiments == len([e for e in self.experiment_data.keys() if self.filtered_results.get(e)]):
@@ -320,7 +564,21 @@ class DataFilterPipeline:
                 f.write(f"Experiment {exp_id}:\n")
                 f.write(f"  - Artifact type: {results['artifact_type']}\n")
                 f.write(f"  - Images passed: {results['passed_count']}/{results['total_images']}\n")
-                f.write(f"  - Passed images: {[img.name for img in results['passed_images']]}\n\n")
+                # Debug: Check the structure of passed_images
+                try:
+                    passed_image_names = []
+                    for img_data in results['passed_images']:
+                        if isinstance(img_data, dict) and 'path' in img_data:
+                            path_obj = img_data['path']
+                            if hasattr(path_obj, 'name'):
+                                passed_image_names.append(path_obj.name)
+                            else:
+                                passed_image_names.append(str(path_obj))
+                        else:
+                            passed_image_names.append(str(img_data))
+                    f.write(f"  - Passed images: {passed_image_names}\n\n")
+                except Exception as e:
+                    f.write(f"  - Passed images: Error processing image names: {e}\n\n")
         # Copy filtered datasets
         for exp_id, results in self.filtered_results.items():
             # Create experiment directory in output
@@ -336,35 +594,86 @@ class DataFilterPipeline:
             
             artifact_type = artifact_types[0]  # Take first artifact type
             
-            # Copy only specific GSAM files: 04_comparison_{artifact_type}*
-            # Note: metadata.pkl files are excluded
-            comparison_pattern = f"04_comparison_{artifact_type}"
-            gsam_path = self.experiment_data[exp_id]['gsam_path']
+            # 1. Find and copy original image
+            original_images = [img for img in self.experiment_data[exp_id]['flux_files']['images'] 
+                              if '01_original_image' in img.name.lower()]
             
-            # Search for comparison files in GSAM directory
-            for file_path in gsam_path.rglob('*'):
-                if file_path.is_file() and comparison_pattern in file_path.name:
-                    # Copy directly to experiment directory (flatten structure)
-                    shutil.copy2(file_path, exp_output_dir / file_path.name)
-                    print(f"  Copied GSAM file: {file_path.name}")
+            if original_images:
+                original_img_path = original_images[0]
+                shutil.copy2(original_img_path, exp_output_dir / "original_image.png")
+                print(f"  Copied original image: {original_img_path.name}")
+            else:
+                print(f"  Warning: No original image found for experiment {exp_id}")
             
-            # Copy filtered FLUX images directly to experiment directory
-            # Only copy artifact_{artifact_type}.png files from passed images
+            # 2. Copy artifact image from passed images
             artifact_pattern = f"artifact_{artifact_type}.png"
+            artifact_copied = False
             
             for img_data in results['passed_images']:
                 img_path = img_data['path']
                 if img_path.name == artifact_pattern:
-                    shutil.copy2(img_path, exp_output_dir / img_path.name)
-                    print(f"  Copied FLUX file: {img_path.name}")
+                    shutil.copy2(img_path, exp_output_dir / "artifact_image.png")
+                    print(f"  Copied artifact image: {img_path.name}")
+                    artifact_copied = True
+                    break
             
+            if not artifact_copied:
+                print(f"  Warning: No artifact image copied for experiment {exp_id}")
+            
+            # 3. Create JSON metadata file
+            artifact_info = metadata['artifacts'][artifact_type]
+            
+            # Extract target mask and convert to bbox
+            target_mask = np.array(artifact_info['annotation']['target_mask'], dtype=np.uint8)
+            target_bbox = self.mask_to_bbox(target_mask)
+            
+            # Extract entity and part entity
+            entity = metadata['vocab'][0] if metadata['vocab'] else "unknown"
+            part_entity = artifact_info['class_name']
+            
+            # Create metadata dictionary
+            metadata_dict = {
+                "target_bbox": target_bbox,
+                "artifact_type": artifact_type,
+                "entity": entity,
+                "part_entity": part_entity
+            }
+            
+            # Save JSON file
+            json_file_path = exp_output_dir / "metadata.json"
+            with open(json_file_path, 'w') as f:
+                json.dump(metadata_dict, f, indent=2)
+            
+            # 4. Create artifact image with bbox overlay
+            artifact_with_bbox_path = exp_output_dir / "artifact_image.png"
+            if artifact_with_bbox_path.exists():
+                try:
+                    # Load the artifact image
+                    artifact_img = cv2.imread(str(artifact_with_bbox_path))
+                    if artifact_img is not None:
+                        # Draw bounding box rectangle
+                        x_min, y_min, x_max, y_max = target_bbox
+                        cv2.rectangle(artifact_img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)  # Green rectangle, thickness 2
+                        
+                        # Save the image with bbox overlay
+                        bbox_overlay_path = exp_output_dir / "artifact_with_bbox.png"
+                        cv2.imwrite(str(bbox_overlay_path), artifact_img)
+                        print(f"  Created artifact_with_bbox.png with target region highlighted")
+                    else:
+                        print(f"  Warning: Could not load artifact image for bbox overlay")
+                except Exception as e:
+                    print(f"  Warning: Failed to create bbox overlay image: {e}")
+            
+            print(f"  Created metadata.json with bbox: {target_bbox}")
             print(f"Saved filtered data for experiment {exp_id}")
         
         print(f"Filtering complete. Results saved to {self.output_dir}")
     
     def run_pipeline(self):
         """Run the complete data filtering pipeline"""
-        print("Starting data filtering pipeline...")
+        logger = setup_logging(self.output_dir, f"")
+        logger.info(f"Starting filtering pipeline for {self.flux_dir}")
+        # print("Starting data filtering pipeline...")
         
         # Step 1: Find matching experiments
         print("\n1. Finding matching experiments...")
@@ -380,32 +689,27 @@ class DataFilterPipeline:
         passed_experiments = 0
         
         for exp_id in self.experiment_data.keys():
-            try:
-                print(f"\nProcessing experiment {exp_id}...")
+            print(f"\nProcessing experiment {exp_id}...")
+            
+            # Process the experiment
+            if self.process_experiment(exp_id, logger):
+                passed_experiments += 1
                 
-                # Process the experiment
-                if self.process_experiment(exp_id):
-                    passed_experiments += 1
-                    
-                    # Get the results for this experiment
-                    results = self.filtered_results[exp_id]
-                    
-                    # Save this experiment immediately
-                    self.save_single_experiment(exp_id, results)
-                    
-                    # Update summary file
-                    self.update_summary_file(exp_id, results, passed_experiments, total_experiments)
-                    
-                    # Clear this experiment from memory to save space
-                    del self.filtered_results[exp_id]
-                    print(f"Experiment {exp_id} saved and cleared from memory")
-                else:
-                    print(f"Experiment {exp_id} did not pass filtering criteria")
-                    
-            except Exception as e:
-                print(f"Error processing experiment {exp_id}: {e}")
-                print(f"Skipping experiment {exp_id} and continuing with next...")
-                continue
+                # Get the results for this experiment
+                results = self.filtered_results[exp_id]
+                
+                # Save this experiment immediately
+                self.save_single_experiment(exp_id, results)
+                
+                # Update summary file
+                self.update_summary_file(exp_id, results, passed_experiments, total_experiments)
+                
+                # Clear this experiment from memory to save space
+                del self.filtered_results[exp_id]
+                print(f"Experiment {exp_id} saved and cleared from memory")
+            else:
+                print(f"Experiment {exp_id} did not pass filtering criteria")
+
         
         # Step 3: Final summary
         print(f"\n3. Processing complete: {passed_experiments}/{total_experiments} experiments passed")
