@@ -11,7 +11,8 @@ src/flux/_version.py
 exp/
 exps/
 assets/
-data/
+loki/
+src/train/LLaMA-Factory/data
 src/GroundingDINO/build/
 # Environment files (contains sensitive data)
 .env

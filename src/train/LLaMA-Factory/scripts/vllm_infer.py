@@ -131,11 +131,11 @@ def vllm_infer(
         lora_request = None
 
     # Store all results in these lists
-    all_prompts, all_preds, all_labels = [], [], []
+    all_images, all_prompts, all_preds, all_labels = [], [], [], []
 
     # Add batch process to avoid the issue of too many files opened
     for i in tqdm(range(0, len(train_dataset), batch_size), desc="Processing batched inference"):
-        vllm_inputs, prompts, labels = [], [], []
+        vllm_inputs, images, prompts, labels = [], [], [], []
         batch = train_dataset[i : min(i + batch_size, len(train_dataset))]
 
         for j in range(len(batch["input_ids"])):
@@ -175,11 +175,13 @@ def vllm_infer(
                     skip_special_tokens=skip_special_tokens,
                 )
             )
+            images.append(image)
 
         results = llm.generate(vllm_inputs, sampling_params, lora_request=lora_request)
         preds = [result.outputs[0].text for result in results]
 
         # Accumulate results
+        all_images.extend(images)
         all_prompts.extend(prompts)
         all_preds.extend(preds)
         all_labels.extend(labels)
@@ -187,8 +189,8 @@ def vllm_infer(
 
     # Write all results at once outside the loop
     with open(save_name, "w", encoding="utf-8") as f:
-        for text, pred, label in zip(all_prompts, all_preds, all_labels):
-            f.write(json.dumps({"prompt": text, "predict": pred, "label": label}, ensure_ascii=False) + "\n")
+        for image, text, pred, label in zip(all_images, all_prompts, all_preds, all_labels):
+            f.write(json.dumps({"image": image, "prompt": text, "predict": pred, "label": label}, ensure_ascii=False) + "\n")
 
     print("*" * 70)
     print(f"{len(all_prompts)} total generated results have been saved at {save_name}.")
