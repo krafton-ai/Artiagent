@@ -6,6 +6,8 @@ import numpy as np
 import re
 import os
 import cv2
+from openai.types.chat import ChatCompletion
+from typing import Union
 
 # Try to import matplotlib
 try:
@@ -15,7 +17,141 @@ try:
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
-def get_entity_subparts_by_type(client, image, artifact_type):
+class MoneyManager:
+    def __init__(self, model: str = "gpt-3.5-turbo-0613"):
+        self.total_cost = 0.0
+        self.model = model
+        if self.model == "gpt-3.5-turbo-16k-0613":
+            self.input_cost = 0.003
+            self.output_cost = 0.004
+        elif self.model == "gpt-3.5-turbo-1106":
+            self.input_cost = 0.001
+            self.output_cost = 0.002
+        elif self.model == "gpt-3.5-turbo":
+            self.input_cost = 0.001
+            self.output_cost = 0.002
+        elif self.model == "gpt-4-turbo-preview":
+            self.input_cost = 0.01
+            self.output_cost = 0.03
+        elif self.model == "gpt-4-turbo":
+            self.input_cost = 0.01
+            self.output_cost = 0.03
+        elif self.model == "gpt-4-1106-preview":
+            self.input_cost = 0.01
+            self.output_cost = 0.03
+        elif self.model == "gpt-4":
+            self.input_cost = 0.03
+            self.output_cost = 0.06
+        elif self.model == "text-embedding-ada-002":
+            self.input_cost = 0.0001
+            self.output_cost = 0.0
+        elif self.model == "claude-3-opus-20240229":
+            self.input_cost = 0.015
+            self.output_cost = 0.075
+        elif self.model == "claude-opus-4-20250514":
+            self.input_cost = 15 / 1000
+            self.output_cost = 75 / 1000
+        elif self.model == "claude-sonnet-4-20250514":
+            self.input_cost = 3 / 1000
+            self.output_cost = 15 / 1000
+        elif self.model == "gpt-4o":
+            self.input_cost = 2.5 / 1000
+            self.output_cost = 10 / 1000
+        elif self.model == "gpt-4o-mini":
+            self.input_cost = 0.15 / 1000
+            self.output_cost = 0.6 / 1000
+        elif self.model == "gpt-4o-2024-08-06":
+            self.input_cost = 2.5 / 1000
+            self.output_cost = 10 / 1000
+        elif self.model == "gpt-4o-2024-05-13":
+            self.input_cost = 5 / 1000
+            self.output_cost = 15 / 1000
+        elif self.model == "o1-preview":
+            self.input_cost = 15 / 1000
+            self.output_cost = 60 / 1000
+        elif self.model == "o1-preview-2024-09-12":
+            self.input_cost = 15 / 1000
+            self.output_cost = 60 / 1000
+        elif self.model == "o1-2024-12-17":
+            self.input_cost = 15 / 1000
+            self.output_cost = 60 / 1000
+        elif self.model == "o1-mini":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "o1-mini-2024-09-12":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "o3-mini":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "o3":
+            self.input_cost = 2 / 1000
+            self.output_cost = 8 / 1000
+        elif self.model == "o3-mini-2025-01-31":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "gpt-4.1":
+            self.input_cost = 2 / 1000
+            self.output_cost = 8 / 1000
+        elif self.model == "gpt-4.1-mini":
+            self.input_cost = 0.4 / 1000
+            self.output_cost = 1.6 / 1000
+        elif self.model == "gpt-4.1-2025-04-14":
+            self.input_cost = 2 / 1000
+            self.output_cost = 8 / 1000
+        elif self.model == "o4-mini":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "o4-mini-2025-04-16":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "gemini-2.5-flash":
+            self.input_cost = 0.3 / 1000
+            self.output_cost = 2.5 / 1000
+        elif self.model == "gemini-2.5-pro":
+            # TODO: cost changes when # tokens > 200k
+            self.input_cost = 1.25 / 1000
+            self.output_cost = 10 / 1000
+        else:
+            print(
+                f"MoneyManager: Model {self.model} not found. If you are using a new model, please add the cost to the MoneyManager class."
+            )
+            self.input_cost = 0.0
+            self.output_cost = 0.0
+
+    def __call__(self, response: Union[ChatCompletion, None] = None) -> None:
+        if hasattr(response, "usage") and response.usage is None:
+            print("No usage in response")
+            print(response)
+            return
+
+        if self.model == "gemini-2.5-flash" or self.model == "gemini-2.5-pro":
+            input_tokens = response.usage_metadata.prompt_token_count
+            output_tokens = (
+                response.usage_metadata.candidates_token_count
+                + response.usage_metadata.thoughts_token_count
+            )
+
+        else:  # OpenAI and Claude
+            input_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens 
+
+            if "o1" in self.model or "o3" in self.model or "o4" in self.model:
+                output_tokens += (
+                    response.usage.completion_tokens_details.accepted_prediction_tokens
+                    + response.usage.completion_tokens_details.reasoning_tokens
+                    + response.usage.completion_tokens_details.rejected_prediction_tokens
+                )
+
+        input_cost = input_tokens / 1000 * self.input_cost
+        output_cost = output_tokens / 1000 * self.output_cost
+
+        self.total_cost += input_cost + output_cost
+
+    def refresh(self) -> None:
+        self.total_cost = 0.0
+
+def get_entity_subparts_by_type(client, image, artifact_type, money_manager=None):
 
     # Encode image to base64
     base64_image = encode_image_to_base64(image)
@@ -128,6 +264,10 @@ def get_entity_subparts_by_type(client, image, artifact_type):
             temperature=0.2
         )
 
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+
         response = response.choices[0].message.content.strip()
         # Try to extract JSON from the response
         try:
@@ -156,7 +296,142 @@ def get_entity_subparts_by_type(client, image, artifact_type):
         print(f"Error analyzing sampled instance: {e}")
         return None
 
-def get_entity_subparts(client, entity_name):
+def get_entity_subparts_by_type_prev(client, image, artifact_type, money_manager=None):
+
+    # Encode image to base64
+    base64_image = encode_image_to_base64(image)
+    artifact_type_prompt = {
+        'addition': """
+        You are an image artifact agent, where you will decide which part of an object present in the image to inject addition type of artifact.
+
+        Given an image, select an entity suitable for artifact injection, and generate candidate of entity parts that is suitable for generating addition type of artifact.
+
+        Return the candidiates in json format. I will provide you with some output example format.
+
+            {
+            "entity": "person",
+            "subparts": ["arm", "hand", "leg", "foot", "eye"]
+            }
+            
+            {
+            "entity": "car",
+            "subparts": ["mirror", "wheel"]
+            }
+        """,
+        'removal': """
+        You are an image artifact agent, where you will decide which part of an object present in the image to inject removal type of artifact.
+
+        Given an image, select an entity suitable for artifact injection, and generate candidate of entity parts that is suitable for generating removal type of artifact.
+
+        Return the candidiates in json format. I will provide you with some output example format.
+
+            {
+            "entity": "person",
+            "subparts": ["arm", "hand", "leg", "foot", "eye"]
+            }
+            
+            {
+            "entity": "car",
+            "subparts": ["mirror", "wheel"]
+            }
+        """,
+        'distortion': """
+        You are an image artifact agent, where you will decide which part of an object present in the image to inject distortion type of artifact.
+
+        Given an image, select an entity suitable for artifact injection, and generate candidate of entity parts that is suitable for generating distortion type of artifact.
+
+        Return the candidiates in json format. I will provide you with some output example format.
+
+            {
+            "entity": "person",
+            "subparts": ["torso", "head"]
+            }
+            
+            {
+            "entity": "car",
+            "subparts": ["mirror", "wheel", "door"]
+            }
+        """
+    }
+    
+    system_prompt = """
+    Image artifacts refer to unintended, implausible, or visibly corrupted regions within image generated by diffusion models. These artifacts often break the natural semantics or visual coherence of an image, such as a person with extra fingers, a car with warped wheels, or missing parts of animals, an can significantly degrade image quality or realism. Artifacts are a critical concern in both model evaluation and training.
+    There are three types of image artifacts: Addition, Removal, and Distortion.
+    1. Addition: Involves duplicating an existing part of the image and placing in somewhere else, creating implausible duplication (e.g. extra thumb, leg, or ear). The added part is placed adjacent to the original, in one of four directions. 
+        Addition is most common on peripheral or terminal parts of objects/entities.
+        - Human/Animal: fingers, hands, toes, ears, tails, etc.
+        - Vehicles: Mirrors, wheels, wipers.
+    2. Removal: A specific object or part is deleted, and the area is inpainted using background textures, resulting in missing limbs, features, or objects, sometimes with visible traces. 
+        Removal is most common on terminal or protruding elements, such as
+        - Human/Animal: Fingers, toes, legs, tails, ears, horns, etc.
+        - Vehicles: Antennas, side mirrors, etc.
+    3. Distortion: The object or part remains in place but the structure is altered (e.g., twisted, warped, scrambled), making an object unrecognizable or visually broken, like a warped face or twisted wheel.
+        Distortion can occur anywhere, especially in central in continuous regions
+        - Human/Animal: face, torso, entire leg, face, etc.
+        - Vehicle: car doors, etc.
+
+    """ + artifact_type_prompt[artifact_type] + """
+
+    ### Output:
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": system_prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=500,
+            temperature=0.2
+        )
+
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+
+        response = response.choices[0].message.content.strip()
+        # Try to extract JSON from the response
+        try:
+            # First, try to parse the entire response as JSON
+            result = json.loads(response)
+            return result
+        except json.JSONDecodeError:
+            # If that fails, try to find JSON within the response
+            import re
+            json_match = re.search(r'\{[^{}]*\}', response)
+            if json_match:
+                try:
+                    result = json.loads(json_match.group())
+                    return result
+                except json.JSONDecodeError:
+                    pass
+            
+            # If JSON parsing fails, return the raw text for debugging
+            print(f"Could not parse JSON from response: {response}")
+            return {
+                "error": "json_parse_failed",
+                "raw_response": response
+            }
+
+    except Exception as e:
+        print(f"Error analyzing sampled instance: {e}")
+        return None
+
+def get_entity_subparts(client, entity_name, money_manager=None):
     system_prompt = """You are a system that decomposes real-world or conceptual entities into their primary structural or functional subparts. Given the name of an entity, return a JSON object that includes the entity and a list of its subparts.
 
     ### Instructions:
@@ -195,6 +470,10 @@ def get_entity_subparts(client, entity_name):
         temperature=0.2
     )
 
+    # Track costs with money manager
+    if money_manager:
+        money_manager(response)
+
     result_text = response.choices[0].message.content.strip()
 
     try:
@@ -205,7 +484,7 @@ def get_entity_subparts(client, entity_name):
         print(result_text)
         return None
     
-def addition_suggest_offset(client, sampled_instance, class_name, image):
+def addition_suggest_offset(client, sampled_instance, class_name, image, money_manager=None):
     # Extract instance information
     mask = sampled_instance['pred_mask'].cpu().numpy()
     # Convert mask to grayscale image and encode to base64 (same datatype as base64_image)
@@ -313,6 +592,11 @@ def addition_suggest_offset(client, sampled_instance, class_name, image):
             max_tokens=500,
             temperature=0.2
         )
+
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+
         response = response.choices[0].message.content.strip()
                 
         # Try to extract JSON from the response
@@ -342,7 +626,7 @@ def addition_suggest_offset(client, sampled_instance, class_name, image):
         print(f"Error analyzing sampled instance: {e}")
         return None
 
-def addition_sugget_direction(client, sampled_instance, class_name, image):
+def addition_sugget_direction(client, sampled_instance, class_name, image, money_manager=None):
 
     # Extract instance information
     mask = sampled_instance['pred_mask'].cpu().numpy()
@@ -417,6 +701,11 @@ def addition_sugget_direction(client, sampled_instance, class_name, image):
             max_tokens=500,
             temperature=0.2
         )
+
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+
         response = response.choices[0].message.content.strip()
         # Try to extract JSON from the response
         try:
@@ -635,7 +924,7 @@ def visualize_candidate_images_for_api(candidate_images, class_name, output_dir=
         plt.show()
     
 
-def addition_select_candidate(client, candidate_target_list, class_name, image, output_dir=None, img_filename=None):
+def addition_select_candidate(client, candidate_target_list, class_name, image, output_dir=None, img_filename=None, money_manager=None):
     """
     Select the best candidate mask for addition artifacts using OpenAI Vision API
     
@@ -651,6 +940,7 @@ def addition_select_candidate(client, candidate_target_list, class_name, image, 
         image: Image array (numpy array)
         output_dir: Directory to save visualizations (optional)
         img_filename: Filename for saving visualizations (optional)
+        money_manager: MoneyManager instance for cost tracking (optional)
         
     Returns:
         Best candidate dictionary or None if selection fails
@@ -752,6 +1042,10 @@ def addition_select_candidate(client, candidate_target_list, class_name, image, 
             temperature=0.2
         )
         
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+        
         response_text = response.choices[0].message.content.strip()
         print(response_text)
         # Try to extract JSON from the response
@@ -781,7 +1075,7 @@ def addition_select_candidate(client, candidate_target_list, class_name, image, 
         return candidate_target_list[0]
     
 
-def artifact_type_decision(client, sampled_instance, image):
+def artifact_type_decision(client, sampled_instance, image, money_manager=None):
     """
     Analyze a sampled instance using OpenAI Vision API
     
@@ -790,6 +1084,7 @@ def artifact_type_decision(client, sampled_instance, image):
         class_name: The name of the detected class
         image: The image array (numpy array)
         client: OpenAI client (if None, uses default openai module)
+        money_manager: MoneyManager instance for cost tracking (optional)
         
     Returns:
         The response from OpenAI API or None if error
@@ -881,6 +1176,11 @@ def artifact_type_decision(client, sampled_instance, image):
             max_tokens=500,
             temperature=0.2
         )
+
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+
         response = response.choices[0].message.content.strip()
                 
         # Try to extract JSON from the response
@@ -930,14 +1230,14 @@ def encode_image_to_base64(image):
     # Encode to base64
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-def caption_image_with_openai(image):
+def caption_image_with_openai(client, image, money_manager=None):
     """Generate caption for image using OpenAI Vision API"""
     
     # Encode image to base64
     base64_image = encode_image_to_base64(image)
     
     try:
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
@@ -959,12 +1259,16 @@ def caption_image_with_openai(image):
             max_tokens=300
         )
         
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+        
         return response.choices[0].message.content
     except Exception as e:
         print(f"Error generating caption: {e}")
         return None
 
-def query_addition_artifact_success(client, img_array, mask_image, part_entity_name):
+def query_addition_artifact_success(client, img_array, mask_image, part_entity_name, money_manager=None):
     """
     Query GPT-4 Vision to check if addition artifact injection was successful.
     
@@ -973,6 +1277,7 @@ def query_addition_artifact_success(client, img_array, mask_image, part_entity_n
         img_array: Original image as numpy array
         mask_image: PIL Image of the target mask region
         part_entity_name: Description of the part entity (e.g., "a hand of a person")
+        money_manager: MoneyManager instance for cost tracking (optional)
         
     Returns:
         dict: Contains 'success' boolean and 'reasoning' string
@@ -1041,6 +1346,10 @@ def query_addition_artifact_success(client, img_array, mask_image, part_entity_n
             temperature=0.2
         )
         
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+        
         response_text = response.choices[0].message.content.strip()
         
         # Try to extract JSON from the response
@@ -1075,7 +1384,7 @@ def query_addition_artifact_success(client, img_array, mask_image, part_entity_n
         }
 
 
-def query_removal_artifact_success(client, img_array, mask_image, part_entity_name):
+def query_removal_artifact_success(client, img_array, mask_image, part_entity_name, money_manager=None):
     """
     Query GPT-4 Vision to check if removal artifact injection was successful.
     
@@ -1084,6 +1393,7 @@ def query_removal_artifact_success(client, img_array, mask_image, part_entity_na
         img_array: Original image as numpy array
         mask_image: PIL Image of the target mask region
         part_entity_name: Description of the part entity (e.g., "a hand of a person")
+        money_manager: MoneyManager instance for cost tracking (optional)
         
     Returns:
         dict: Contains 'success' boolean and 'reasoning' string
@@ -1152,6 +1462,10 @@ def query_removal_artifact_success(client, img_array, mask_image, part_entity_na
             temperature=0.2
         )
         
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+        
         response_text = response.choices[0].message.content.strip()
         
         # Try to extract JSON from the response
@@ -1184,3 +1498,141 @@ def query_removal_artifact_success(client, img_array, mask_image, part_entity_na
             "confidence": 0.0,
             "reasoning": f"API error: {str(e)}"
         }
+
+def artifact_explanation(client, real_image, artifact_image, metadata, money_manager=None):
+    """
+    Generate natural language explanation of visual artifacts using OpenAI Vision API
+    
+    Args:
+        client: OpenAI client
+        real_image: Original image as numpy array with region visualized where artifact will be injected
+        artifact_image: Modified image with artifact as numpy array with region visualized where artifact was injected
+        metadata: Dictionary containing:
+            - 'entity': e.g., 'person'
+            - 'part': e.g., 'left leg'
+            - 'artifact_type': e.g., 'distortion' (for reasoning only)
+            - 'target_bbox': bounding box coordinates [x1, y1, x2, y2]
+        money_manager: MoneyManager instance for cost tracking (optional)
+        
+    Returns:
+        dict: Contains 'explanation' string and 'success' boolean
+    """
+    # Encode both images to base64
+    base64_real_image = encode_image_to_base64(real_image)
+    base64_artifact_image = encode_image_to_base64(artifact_image)
+    
+    # Extract metadata
+    entity = metadata['entity']
+    part = metadata['part_entity']
+    artifact_type = metadata['artifact_type']
+    
+    # Create artifact-type-specific guidance (without explicitly mentioning the type)
+    if artifact_type == 'distortion':
+        focus_guidance = "Pay attention to warped shapes, unnatural geometry, irregular textures, or visual blending errors that make the structure appear broken or malformed."
+    elif artifact_type == 'removal':
+        focus_guidance = "Look for missing structure, unnatural gaps, smoothed-over areas, or anatomical discontinuity where something appears to be absent."
+    elif artifact_type == 'addition':
+        focus_guidance = "Notice any duplicated or misplaced parts, unnatural growths, or extra elements that conflict with normal anatomy or structure."
+    else:
+        focus_guidance = "Identify any visual abnormalities, unnatural features, or elements that appear incorrect or implausible."
+    
+    prompt = f"""
+You are given two images:
+
+- **Image A**: A real, original image, with a region visualized where the artifact is going to be injected.
+- **Image B**: A modified version of the same scene, with a region visualized where the artifact is injected.
+
+Here is the structured context:
+- **Entity**: {entity}
+- **Part**: {part}
+
+Your task is to:
+1. Examine the highlighted region in the **given image** (Image B).
+2. Use your understanding of how the specified part of the entity should normally appear to identify abnormalities.
+3. Write a natural language explanation describing what appears visually wrong or unnatural in the highlighted region.
+
+**Do not mention or refer to the original image, the artifact type, or the image source explicitly.**
+Base your explanation only on what is visible in the given image.
+
+Focus your reasoning based on the artifact type (without stating it):
+
+{focus_guidance}
+
+Respond naturally and precisely, describing only what is visibly incorrect in the given image within the highlighted region.
+
+Return your response in this exact JSON format:
+{{
+    "explanation": "Your detailed explanation of what appears visually wrong in the highlighted region"
+}}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_real_image}"
+                            }
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_artifact_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=500,
+            temperature=0.2
+        )
+        
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Try to extract JSON from the response
+        try:
+            import re
+            json_match = re.search(r'\{[^{}]*\}', response_text)
+            if json_match:
+                result = json.loads(json_match.group())
+                return {
+                    "success": True,
+                    "explanation": result.get("explanation", ""),
+                    "raw_response": response_text
+                }
+            else:
+                # Fallback: use the entire response as explanation
+                return {
+                    "success": True,
+                    "explanation": response_text,
+                    "raw_response": response_text
+                }
+        except json.JSONDecodeError:
+            # Fallback: use the entire response as explanation
+            return {
+                "success": True,
+                "explanation": response_text,
+                "raw_response": response_text
+            }
+            
+    except Exception as e:
+        print(f"Error in artifact explanation: {e}")
+        return {
+            "success": False,
+            "explanation": "",
+            "error": f"API error: {str(e)}"
+        } 
+        
