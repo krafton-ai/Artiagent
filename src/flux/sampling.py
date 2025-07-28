@@ -17,7 +17,6 @@ from .artifacts_util import (
 )
 
 def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[str], 
-           target_patch_indices=None, reference_patch_indices=None,
            info=None) -> dict[str, Tensor]:
     """
     Prepare inputs for the flux model with support for patch indices.
@@ -26,9 +25,7 @@ def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[st
         t5, clip: Text encoders
         img: Input image tensor
         prompt: Text prompt(s)
-        target_patch_indices: Indices of target patches, required for 'addition'.
-        reference_patch_indices: Indices of reference patches, required for all artifact types.
-        info: Additional information dictionary, must contain 'artifact_type'.
+        info: Additional information dictionary, must contain 'artifact_data'.
     
     Returns:
         Dictionary containing prepared inputs
@@ -57,19 +54,9 @@ def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[st
 
     patch_h, patch_w = h // 2, w // 2
     
-    if reference_patch_indices is None:
-        raise ValueError("`reference_patch_indices` must be provided.")
-    
-    if info is None or 'artifact_type' not in info:
-        raise ValueError("`artifact_type` must be specified in info dictionary.")
-    
     # Add patch dimensions to info for model to use
     info['patch_h'] = patch_h
     info['patch_w'] = patch_w
-    
-    # For addition artifact type, validate that target patches are provided
-    if info['artifact_type'] == 'addition' and target_patch_indices is None:
-        raise ValueError("`target_patch_indices` must be provided for 'addition' artifact type.")
 
     return {
         "img": img,
@@ -77,8 +64,6 @@ def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[st
         "txt": txt.to(img.device),
         "txt_ids": txt_ids.to(img.device),
         "vec": vec.to(img.device),
-        "patch_ids": target_patch_indices,  # Pass raw target indices for addition, None for others
-        "patch_ref_ids": reference_patch_indices,
     }, (patch_h, patch_w)
 
 
@@ -120,14 +105,12 @@ def denoise_first_order(
     txt: Tensor,
     txt_ids: Tensor,
     vec: Tensor,
-    patch_ids: list,
-    patch_ref_ids: list,
     # sampling parameters
     timesteps: list[float],
     inverse,
     info,
     percentage_of_steps = 1.0,
-    guidance: float = 4.0
+    guidance: float = 5.0
 ):
     # this is ignored for schnell
     inject_list = [True] * int(info['inject_step']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['inject_step']))
@@ -162,8 +145,6 @@ def denoise_first_order(
             txt=txt,
             txt_ids=txt_ids,
             y=vec,
-            patch_ids=patch_ids,
-            patch_ref_ids=patch_ref_ids,
             timesteps=t_vec,
             guidance=guidance_vec,
             info=info
@@ -181,8 +162,6 @@ def denoise(
     txt: Tensor,
     txt_ids: Tensor,
     vec: Tensor,
-    patch_ids: list,
-    patch_ref_ids: list,
     # sampling parameters
     timesteps: list[float],
     inverse,
@@ -226,8 +205,6 @@ def denoise(
             txt=txt,
             txt_ids=txt_ids,
             y=vec,
-            patch_ids=patch_ids,
-            patch_ref_ids=patch_ref_ids,
             timesteps=t_vec,
             guidance=guidance_vec,
             info=info
@@ -243,8 +220,6 @@ def denoise(
             txt=txt,
             txt_ids=txt_ids,
             y=vec,
-            patch_ids=patch_ids,
-            patch_ref_ids=patch_ref_ids,
             timesteps=t_vec_mid,
             guidance=guidance_vec,
             info=info
