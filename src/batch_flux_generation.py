@@ -79,6 +79,20 @@ def create_flux_visualizations(img_array: np.ndarray, generated_image: np.ndarra
         patch_data=patch_data,
         artifact_type=artifact_type
     )
+
+    bbox = patch_data['target_bbox']
+
+    visualizer.show_bbox_overlay(
+        img_array, bbox,
+        base_dir=output_dir,
+        filename="orig_bbox.png"
+    )
+
+    visualizer.show_bbox_overlay(
+        generated_image, bbox,
+        base_dir=output_dir,
+        filename="artifact_bbox.png"
+    )
     
     # Save patch annotation visualizations
     # Use output_dir directly (no additional subdirectory creation)
@@ -136,6 +150,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
             continue
         
         artifact_data = data['artifacts'][artifact_type]
+        kernel_type = artifact_data['kernel_type']
         
         # Check if artifact has error
         if 'error' in artifact_data:
@@ -186,7 +201,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
         
         # Create visualizations
         create_flux_visualizations(
-            img_array, generated_image, annotation, artifact_type, sampled_instance_info, class_name,
+            img_array, generated_image, annotation, kernel_type, sampled_instance_info, class_name,
             patch_data, img_filename, caption, flux_output_path, 
             visualizer
         )
