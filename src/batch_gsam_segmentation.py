@@ -37,7 +37,7 @@ except ImportError:
         return iterable
 
 from pipeline import GSAMDetector, COCODataLoader, ImageNetDataLoader, CustomDirectoryDataLoader, InstanceProcessor, ImageVisualizer
-from pipeline.prompts import addition_select_candidate, visualize_all_candidates, visualize_candidate_images_for_api, addition_suggest_offset
+from pipeline.prompts import addition_select_candidate, visualize_all_candidates, visualize_candidate_images_for_api, addition_suggest_offset, kernel_type_decision, MoneyManager
 
 def setup_logging(output_dir: str, supercategory: str):
     """Setup logging configuration"""
@@ -58,7 +58,71 @@ def setup_logging(output_dir: str, supercategory: str):
     
     return logging.getLogger(__name__)
 
+def oriented_aspect_ratio(mask_coords):
+    """
+    Returns (AR, angle_deg) where AR = major_axis / minor_axis length,
+    and angle_deg is the rotation of the major axis relative to the x-axis.
+    """
+    pts = np.array(mask_coords)
+    # Center
+    pts_centered = pts - pts.mean(axis=0)
+    # Covariance
+    cov = np.cov(pts_centered, rowvar=False)
+    # Eigen decomposition
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    # Sort largest first
+    order = np.argsort(eigvals)[::-1]
+    major_len = np.sqrt(eigvals[order[0]])
+    minor_len = np.sqrt(eigvals[order[1]])
+    major_vec = eigvecs[:, order[0]]
+    return major_len / minor_len
 
+def select_kernel_from_shape(mask_patch_coords):
+    """
+    Given a list of (x, y) coordinates defining a mask region,
+    decide on a distortion kernel based on its shape.
+    """
+    coords = np.array(mask_patch_coords)
+    if coords.size == 0:
+        return 'none'
+
+    # 1) Bounding box
+    x_min, y_min = coords.min(axis=0)
+    x_max, y_max = coords.max(axis=0)
+    width  = x_max - x_min + 1
+    height = y_max - y_min + 1
+
+    # 2) Aspect ratio (>=1)
+    aspect_ratio = max(width / height, height / width)
+
+    # 3) Fill ratio: how much of the bbox is actually filled
+    area      = coords.shape[0]
+    bbox_area = width * height
+    fill_ratio = area / bbox_area
+
+    # 4) Circularity estimate: ideal circle in its bbox has fill ≈ π/4 ≈ 0.785
+    #    and aspect_ratio ≈ 1
+    is_circular = (aspect_ratio < 1.3) and (fill_ratio > 0.5)
+
+    # 5) Wide rectangle check
+    is_wide_rect = (width / height > 1.3)
+
+    # 6) Pick kernel
+    if is_circular:
+        # maybe square or circle—but could be diagonal
+        # do PCA to double-check
+        AR_oriented = oriented_aspect_ratio(mask_patch_coords)
+        if AR_oriented < 1.3:
+            kernel = 'swirl'         # squareish/circular
+        else:
+            kernel = 'none'       # elongated but rotated
+    elif is_wide_rect:
+        kernel = 'jitter'            # wide rectangle
+    else:
+        # tall rectangle or moderate shape
+        kernel = 'voronoi'
+
+    return kernel
 
 def create_target_mask_from_patches(target_patch_indices: List[int], img_shape: Tuple, patch_size: int = 16) -> np.ndarray:
     """
@@ -141,6 +205,14 @@ def create_visualizations(img_array: np.ndarray, img_filename: str, caption: str
                 img_filename, image_output_dir
             )
 
+            InstanceProcessor.visualize_target_mask(
+                img_array, {artifact_type: {
+                    'reference_mask': reference_mask,
+                    'target_mask': target_mask
+                }}, 
+                img_filename, image_output_dir
+            )
+
 
 def process_single_image(img_info: Dict, gsam_detector: GSAMDetector, 
                         data_loader, visualizer: ImageVisualizer,
@@ -189,7 +261,7 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
         artifact_count = 0
         successful_artifact_type = None
         
-
+        money_manager = MoneyManager(model="gpt-4o")
 
         for artifact_type in artifact_types_to_try:
             try:
@@ -222,13 +294,28 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                         sampled_instance, img_array.shape, artifact_type, patch_size=16
                     )
                     
-                    # Handle random distortion kernel sampling
+                    from flux.artifacts_util import patch_indices_to_coords
+
+                    reference_mask = patch_annot['mask']
+                    img_height, img_width = reference_mask.shape
+                    patch_size = patch_annot.get('patch_size', 16)
+                    patch_w = img_width // patch_size
+
                     if config['random_distortion'] and artifact_type == 'distortion':
-                        available_kernels = ['none', 'jitter', 'swirl', 'voronoi']
-                        chosen_kernel = random.choice(available_kernels)
-                        logger.info(f"  Randomly selected distortion kernel: {chosen_kernel}")
+                        mask_patch_coords = patch_indices_to_coords(patch_annot['mask_patch_indices'], patch_w, txt_len=512)
+                        chosen_kernel = select_kernel_from_shape(mask_patch_coords)
+                        logger.info(f"  Shape‐based selected distortion kernel: {chosen_kernel}")
+                        # chosen_kernel = kernel_type_decision(openai_client, sampled_instance, img_array, money_manager)
+                        # logger.info(f"  Prompt-based selected distortion kernel: {chosen_kernel}")
                     else:
                         chosen_kernel = config['distortion_kernel']
+                    # # Handle random distortion kernel sampling
+                    # if config['random_distortion'] and artifact_type == 'distortion':
+                    #     available_kernels = ['none', 'jitter', 'swirl', 'voronoi']
+                    #     chosen_kernel = random.choice(available_kernels)
+                    #     logger.info(f"  Randomly selected distortion kernel: {chosen_kernel}")
+                    # else:
+                    #     chosen_kernel = config['distortion_kernel']
                     
                     target_patches, reference_patches = InstanceProcessor.create_artifact_patches(
                         artifact_type, 
@@ -343,7 +430,8 @@ def process_single_image(img_info: Dict, gsam_detector: GSAMDetector,
                     'class_name': annotations[artifact_type]['class_name'],
                     'masks': masks_data.get(artifact_type, {}),
                     'patch_data': convert_numpy(annotations[artifact_type]['patch_data']),
-                    'sampled_instance_info': convert_numpy(annotations[artifact_type]['sampled_instance_info'])
+                    'sampled_instance_info': convert_numpy(annotations[artifact_type]['sampled_instance_info']),
+                    'kernel_type': chosen_kernel
                 }
             else:
                 unified_data['artifacts'][artifact_type] = {

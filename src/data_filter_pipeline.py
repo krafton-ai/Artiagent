@@ -430,7 +430,9 @@ class DataFilterPipeline:
 
         # Find artifact images in FLUX data
         artifact_images = [img for img in data['flux_files']['images'] 
-                            if f'artifact_{artifact_type}' in img.name.lower()]
+                            if f'artifact_{kernel_type}' in img.name.lower()]
+        bbox_images = [img for img in data['flux_files']['images'] 
+                            if 'artifact_bbox' in img.name.lower()]
         
         # Process each artifact image
         passed_images = []
@@ -475,6 +477,7 @@ class DataFilterPipeline:
                 if passed:
                     self.kernel_stats[kernel_type]['passed'] += 1
                     passed_images.append(img_path)
+                    passed_images.append(bbox_images[0])
             # if passed:
             #     passed_images.append(img_path)
         
@@ -508,6 +511,7 @@ class DataFilterPipeline:
             return
         
         artifact_type = artifact_types[0]  # Take first artifact type
+        kernel_type = gsam_metadata['artifacts'][artifact_type]['kernel_type']
         
         # Copy only specific GSAM files: 04_comparison_{artifact_type}*
         # Note: metadata.pkl files are excluded
@@ -523,10 +527,10 @@ class DataFilterPipeline:
         
         # Copy filtered FLUX images directly to experiment directory
         # Only copy artifact_{artifact_type}.png files from passed images
-        artifact_pattern = f"artifact_{artifact_type}.png"
+        artifact_pattern = f"artifact_{kernel_type}.png"
         
         for img_path in results['passed_images']:
-            if img_path.name == artifact_pattern:
+            if img_path.name == artifact_pattern or img_path.name == 'artifact_bbox.png':
                 shutil.copy2(img_path, exp_output_dir / img_path.name)
                 print(f"  Copied FLUX file: {img_path.name}")
         

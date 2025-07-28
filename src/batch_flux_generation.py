@@ -271,6 +271,14 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
     # Initialize components directly
     logger.info("Initializing FLUX components...")
     flux_generator = FluxGenerator(device=device, config=flux_config)
+    # For debug : log configuration stuff
+    logger.info("FLUX Configuration")
+    logger.info(f"Inject step: {inject_step}")
+    logger.info(f"PE step addition: {pe_step_addition}")
+    logger.info(f"PE step removal: {pe_step_removal}")
+    logger.info(f"PE step distortion: {pe_step_distortion}")
+    logger.info(f"Guidance: {guidance}")
+    logger.info(f"Number of steps: {num_steps}")
     visualizer = ImageVisualizer()
     
     try:

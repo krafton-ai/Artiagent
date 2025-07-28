@@ -403,17 +403,12 @@ class InstanceProcessor:
             elif distortion_kernel == 'swirl':
                 # Apply swirl kernel
                 reference_patches = InstanceProcessor.swirl_kernel(
-                    mask_patch_coords, strength=0.5, patch_h=patch_h, patch_w=patch_w
+                    mask_patch_coords, strength=0.3, patch_h=patch_h, patch_w=patch_w
                 )
             elif distortion_kernel == 'voronoi':
                 # Apply Voronoi seed kernel
                 reference_patches = InstanceProcessor.voronoi_seed_kernel(
                     mask_patch_coords, seed_fraction=0.15, patch_h=patch_h, patch_w=patch_w
-                )
-            elif distortion_kernel == 'flip':
-                # Apply flip kernel
-                reference_patches = InstanceProcessor.flip_kernel(
-                    mask_patch_coords, patch_h=patch_h, patch_w=patch_w
                 )
             else:
                 raise ValueError(f"Unknown distortion kernel: {distortion_kernel}")
@@ -817,6 +812,39 @@ class InstanceProcessor:
                         dpi=150, bbox_inches='tight')
             plt.close()
             
+    # for debug
+    def visualize_target_mask(img_array: np.ndarray, masks_data: Dict,
+                            img_filename: str, output_dir: str, patch_size: int = 16):
+        viz_output_dir = output_dir
+        os.makedirs(viz_output_dir, exist_ok=True)
+        
+        for artifact_type, masks in masks_data.items():
+            if 'error' in masks:
+                continue
+                
+            reference_mask = masks.get('reference_mask')
+            target_mask = masks.get('target_mask')
+
+            fig, ax = plt.subplots(figsize=(8, 8))
+            ax.imshow(img_array)
+
+            # set minor ticks at patch boundaries
+            height, width = img_array.shape[:2]
+            ax.set_xticks(np.arange(0, width, patch_size), minor=True)
+            ax.set_yticks(np.arange(0, height, patch_size), minor=True)
+
+            # # draw grid
+            # ax.grid(which='minor', color='white', linestyle='-', linewidth=1)
+
+            # turn off all ticks and labels
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.axis('off')
+
+            plt.tight_layout()
+            plt.savefig(os.path.join(viz_output_dir, "00_target_mask.png"), 
+                            dpi=150, bbox_inches='tight')
+            plt.close(fig)
 
     @staticmethod
     def _add_patch_grid(ax, img_shape, patch_size: int = 16, alpha: float = 0.7):
@@ -916,10 +944,11 @@ class InstanceProcessor:
         ) + 1e-6  # avoid div‑by‑zero
 
         new_coords = []
+        rot = 1 if random.random() < 0.5 else -1
         for py, px in mask_patch_coords:
             dy, dx = py - cy, px - cx
             r = np.hypot(dy, dx)
-            theta = np.arctan2(dy, dx) + strength / max(0.1, (r / max_r))
+            theta = np.arctan2(dy, dx) + rot * strength / max(0.1, (r / max_r))
             n_py = int(round(cy + r * np.sin(theta)))
             n_px = int(round(cx + r * np.cos(theta)))
             n_py = max(0, min(n_py, patch_h - 1))
@@ -967,45 +996,6 @@ class InstanceProcessor:
 
         new_coords = [tuple(seeds[idx]) for idx in nearest_idx]
         return new_coords
-    
-
-    @staticmethod
-    def flip_kernel(
-        mask_patch_coords: List[Tuple[int, int]],
-        direction: Optional[str] = None,  # Unused in new logic
-        patch_h: Optional[int] = None,    # Unused in new logic
-        patch_w: Optional[int] = None,    # Unused in new logic
-    ) -> List[Tuple[int, int]]:
-        """
-        Flip patch coordinates by mirroring across the centroid, always mapping to a coordinate within the region.
-        If the mirrored coordinate is not in the region, use the nearest coordinate in the region.
-        Args:
-            mask_patch_coords: List of (py, px) coordinates to be flipped.
-            direction: Ignored in this version; always mirrors across centroid.
-        Returns:
-            List of flipped (py, px) coordinates, one-to-one with input order, always within the region.
-        """
-        if not mask_patch_coords:
-            return []
-
-        coords_arr = np.array(mask_patch_coords)
-        centroid_y = np.mean(coords_arr[:, 0])
-        centroid_x = np.mean(coords_arr[:, 1])
-        region_set = set(mask_patch_coords)
-        flipped = []
-        for py, px in mask_patch_coords:
-            # Mirror across centroid
-            mirrored_y = int(round(2 * centroid_y - py))
-            mirrored_x = int(round(2 * centroid_x - px))
-            candidate = (mirrored_y, mirrored_x)
-            if candidate in region_set:
-                flipped.append(candidate)
-            else:
-                # Find nearest coordinate in region
-                dists = np.sum((coords_arr - np.array([mirrored_y, mirrored_x])) ** 2, axis=1)
-                nearest_idx = np.argmin(dists)
-                flipped.append(tuple(coords_arr[nearest_idx]))
-        return flipped
 
     # Patch Processing Methods
     @staticmethod

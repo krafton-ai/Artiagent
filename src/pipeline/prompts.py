@@ -1210,6 +1210,131 @@ def artifact_type_decision(client, sampled_instance, image, money_manager=None):
         print(f"Error analyzing sampled instance: {e}")
         return None
 
+def kernel_type_decision(client, sampled_instance, image, money_manager=None):
+    """
+    Decide distortion kernel type using OpenAI Vision API
+    
+    Args:
+        sampled_instance: The sampled instance object (contains bbox, scores, etc.)
+        image: The image array (numpy array)
+        client: OpenAI client (if None, uses default openai module)
+        money_manager: MoneyManager instance for cost tracking (optional)
+        
+    Returns:
+        The response from OpenAI API or None if error
+    """
+
+    # Extract instance information
+    mask = sampled_instance['pred_mask'].cpu().numpy()
+    # Convert mask to grayscale image and encode to base64 (same datatype as base64_image)
+    mask_image = (mask * 255).astype(np.uint8)
+    base64_mask = encode_image_to_base64(mask_image)
+    # Encode image to base64
+    base64_image = encode_image_to_base64(image)
+    
+    prompt = """
+    1 · Purpose
+
+    You will decide which kind of kernel type to use to generate a certain distortion for the targeted region.
+    The selected kernel receives a target mask and generates a reference mask to copy from.
+
+    ⸻
+
+    2 · Inputs you receive
+        1.	Scene description – plain-language explanation of the image.
+        2.	Segmentation map – pixel- or patch-level masks for a single part.
+    ⸻
+
+    3 · Kernel types you may choose from
+        •	none
+    Randomly shuffles the mask patches at each step, drawing references from different locations in the mask for maximal variability.
+    When to choose: when you want fully randomized, time-varying distortions without any spatial consistency or pattern.
+        •	swirl
+    Rotates each patch around a specified center by an angle inversely proportional to its distance, creating a radial twisting effect.
+    When to choose: for circular or near-circular regions when you want a spiral distortion that emphasizes rotational warping around the patch centroid.
+        •	jitter
+    Adds independent Gaussian noise to each patch coordinate, randomly displacing patches by a normal offset for smooth stochastic perturbation.
+    When to choose: when you want subtle, randomized shifts—including references outside the original mask—for a natural, noisy distortion effect.
+        •	voronoi
+    Samples a small set of “seed” patches from the mask and remaps every other patch to its nearest seed, creating clustered, region-based duplication via a Voronoi partition.
+    When to choose: when you want non-uniform, clustered distortions—grouping nearby target patches around representative seed patches for a patchwise “clumping” effect.
+
+    ⸻
+
+    4 · Decision process (internal)
+        1.	Check the mask size.
+        2.	Match the size and context against the guidelines in §3.
+        3.	Select none, swirl, jitter or voronoi.
+        4.	Do not reveal these thoughts; output only the single kernel name as below.
+
+
+    5 · Exact output you must return
+    "none" | "swirl" | "jitter" | "voronoi"
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_mask}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=500,
+            temperature=0.2
+        )
+        
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+
+        response = response.choices[0].message.content.strip()
+                
+        # Try to extract JSON from the response
+        try:
+            # First, try to parse the entire response as JSON
+            result = json.loads(response)
+            return result
+        except json.JSONDecodeError:
+            # If that fails, try to find JSON within the response
+            import re
+            json_match = re.search(r'\{[^{}]*\}', response)
+            if json_match:
+                try:
+                    result = json.loads(json_match.group())
+                    return result
+                except json.JSONDecodeError:
+                    pass
+            
+            # If JSON parsing fails, return the raw text for debugging
+            print(f"Could not parse JSON from response: {response}")
+            return {
+                "error": "json_parse_failed",
+                "raw_response": response
+            }
+
+    except Exception as e:
+        print(f"Error analyzing sampled instance: {e}")
+        return None
+
 def encode_image_to_base64(image):
     """Convert PIL Image or numpy array to base64 string"""
     if isinstance(image, np.ndarray):

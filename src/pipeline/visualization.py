@@ -116,7 +116,8 @@ class ImageVisualizer:
                        base_dir: str = "output",
                        filename: str = "comparison_output.png",
                        patch_data: Optional[dict] = None,
-                       artifact_type: str = "addition"):
+                       artifact_type: str = "addition",
+                       kernel_type: str = "shuffle"):
         """
         Save original image with selected instance overlay and generated image side by side,
         with optional patch visualization based on artifact type
@@ -322,9 +323,12 @@ class ImageVisualizer:
         
         # Draw primary bbox
         rect1 = plt.Rectangle(
-            (bbox['xmin'], bbox['ymin']),
-            bbox['xmax'] - bbox['xmin'],
-            bbox['ymax'] - bbox['ymin'],
+            # (bbox['xmin'], bbox['ymin']),
+            # bbox['xmax'] - bbox['xmin'],
+            # bbox['ymax'] - bbox['ymin'],
+            (bbox[0], bbox[1]),
+            bbox[2] - bbox[0],
+            bbox[3] - bbox[1],
             linewidth=2,
             edgecolor=colors[0],
             facecolor='none',
@@ -346,8 +350,8 @@ class ImageVisualizer:
             ax.add_patch(rect2)
         
         ax.axis('off')
-        ax.legend(loc='upper right')
-        plt.title("Bounding Box Visualization", fontsize=14, fontweight='bold')
+        # ax.legend(loc='upper right')
+        # plt.title("Bounding Box Visualization", fontsize=14, fontweight='bold')
         plt.tight_layout()
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
