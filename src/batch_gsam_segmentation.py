@@ -38,7 +38,7 @@ from pipeline import (
 from pipeline.data_loader import _initialize_data_loader, _get_image_list
 from pipeline.prompts import get_all_entity_subparts
 from PIL import Image
-from transformers import BlipProcessor, BlipForConditionalGeneration
+from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
 
 def setup_logging(output_dir: str, supercategory: str) -> logging.Logger:
@@ -310,8 +310,8 @@ def _create_artifact_annotations(
 def process_single_image(
     img_info: Dict[str, Any], 
     gsam_detector: GSAMDetector, 
-    blip_model: BlipForConditionalGeneration,
-    blip_processor: BlipProcessor,
+    blip_model: Blip2ForConditionalGeneration,
+    blip_processor: Blip2Processor,
     data_loader: Any,
     visualizer: ImageVisualizer,
     output_dir: str, 
@@ -358,9 +358,8 @@ def process_single_image(
             img_array = data_loader.load_image_by_path(img_info['file_path'])
         
         inputs = blip_processor(img_array, return_tensors="pt").to("cuda")
-
         out = blip_model.generate(**inputs)
-        caption = blip_processor.decode(out[0], skip_special_tokens=True)        
+        caption = blip_processor.decode(out[0], skip_special_tokens=True).strip()
 
         try:
             unique_id = str(uuid.uuid4())
@@ -624,7 +623,7 @@ def run_gsam_processing(
     logger.info(f"Starting GSAM processing for {dataset_type} dataset")
     logger.info(f"Categories: {categories}")
     logger.info(f"Artifact types to process: {config['artifact_types']}")
-    logger.info(f"Distortion kernel: {distortion_kernel}")
+    logger.info("Distortion kernel: " + "random" if config['random_distortion'] else distortion_kernel)
     
     # Setup and load progress tracking
     progress_file = os.path.join(output_dir, f'processing_progress.json')
@@ -650,8 +649,8 @@ def run_gsam_processing(
     )
 
 
-    blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to("cuda")
+    blip_processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+    blip_model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-opt-2.7b", device_map="auto")
 
     # Initialize visualizer
     visualizer = ImageVisualizer()
