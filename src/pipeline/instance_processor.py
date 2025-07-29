@@ -337,7 +337,6 @@ class InstanceProcessor:
             reference_patches = mask_patch_coords
         elif artifact_type == 'removal':
             reference_patches = mask_patch_coords
-            
             # Find surrounding patches within Hamilton distance of 3
             surrounding_patches = []
             ref_patch_set = set(mask_patch_coords)  # Convert to set for fast lookup
@@ -355,36 +354,33 @@ class InstanceProcessor:
             
             # Remove duplicates
             surrounding_patches = list(set(surrounding_patches))
-            
-            # Pre-compute set of patches that contain ANY prediction instance pixels (foreground patches)
-            # conflicting_patches = set()
-            # for i in range(len(predictions['pred_boxes'])):
-            #     # Include ALL prediction instances, not just same-class ones
-            #     # Get instance mask and find all patches it overlaps with
-            #     instance_mask = predictions['pred_masks'][i].cpu().numpy()
-            #     instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
-            #     instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
-            #     instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
-            #     conflicting_patches.update(instance_patch_coords)
-            
             # Get reference class from sampled instance
             reference_class_idx = prediction['pred_class'].item()
-            
+            # Pre-compute set of patches that contain ANY prediction instance pixels (foreground patches)
+            foreground_patches = set()
+            for entity_pred_instance in entity_predictions:
+                if prediction['mapped_entity_name'] == entity_pred_instance['entity_name']:
+                    entity_mask = entity_pred_instance['pred_mask'].cpu().numpy()
+                    entity_patch_indices = mask_to_patch_indices(entity_mask, patch_size=patch_size, txt_len=512)
+                    entity_patch_coords = patch_indices_to_coords(entity_patch_indices, patch_w, txt_len=512)
+                    entity_patch_coords = [tuple(coord) for coord in entity_patch_coords]
+                    foreground_patches.update(entity_patch_coords)
             # Pre-compute set of patches that contain same-class-different-instance pixels
             conflicting_patches = set()
             for pred_instance in predictions:
-                if (pred_instance['pred_class'] == reference_class_idx and 
-                    not torch.equal(pred_instance['pred_box'], prediction['pred_box'])):
-                    
-                    # Get instance mask and find all patches it overlaps with
+                if pred_instance['pred_class'] == reference_class_idx and not torch.equal(pred_instance['pred_box'], prediction['pred_box']):
                     instance_mask = pred_instance['pred_mask'].cpu().numpy()
                     instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
                     instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
-                    instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
+                    instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]
                     conflicting_patches.update(instance_patch_coords)
-            # Filter out conflicting patches using set operations
+
             surrounding_patches_set = set(surrounding_patches)
             filtered_surrounding_patches = list(surrounding_patches_set - conflicting_patches)
+            # Get intersection of foreground patches and filtered surrounding patches
+            non_intersecting_patches = list(surrounding_patches_set - foreground_patches)
+            if len(non_intersecting_patches) > len(filtered_surrounding_patches) // 2:
+                filtered_surrounding_patches = non_intersecting_patches
             if len(filtered_surrounding_patches) == 0:
                 raise ValueError("No valid surrounding patches found")
             
