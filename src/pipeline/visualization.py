@@ -56,7 +56,7 @@ class ImageVisualizer:
     
     @staticmethod
     def show_image(image: Union[np.ndarray, Image.Image], 
-                   prompt: str = "",
+                   caption: str = "",
                    figsize: tuple = (6, 6),
                    title: Optional[str] = None,
                    image_name: str = "unknown",
@@ -67,7 +67,7 @@ class ImageVisualizer:
         
         Args:
             image: Image to display (numpy array or PIL Image)
-            prompt: Caption/prompt text to display
+            caption: Caption/caption text to display
             figsize: Figure size tuple (width, height)
             title: Optional title for the image
             image_name: Name of the image (used for directory creation)
@@ -83,7 +83,7 @@ class ImageVisualizer:
             image = np.array(image)
         
         # Wrap caption text
-        wrapped_caption = "\n".join(textwrap.wrap(prompt, width=80)) if prompt else ""
+        wrapped_caption = "\n".join(textwrap.wrap(caption, width=80)) if caption else ""
         
         fig, ax = plt.subplots(1, 1, figsize=figsize)
         
@@ -111,7 +111,7 @@ class ImageVisualizer:
     def show_comparison(original_image: Union[np.ndarray, Image.Image],
                        generated_image: Union[np.ndarray, Image.Image],
                        artifact_data: Optional[Union[Dict, List]] = None,
-                       prompt: str = "",
+                       caption: str = "",
                        figsize: tuple = (16, 8),
                        base_dir: str = "output",
                        filename: str = "comparison_output.png",
@@ -123,7 +123,7 @@ class ImageVisualizer:
             original_image: Original source image
             generated_image: Generated/modified image
             artifact_data: Artifact data (dict with artifact types as keys or list of artifact dicts)
-            prompt: Caption/prompt text to display
+            caption: Caption/caption text to display
             figsize: Figure size tuple (width, height)
             base_dir: Base output directory
             filename: Name of the output file
@@ -139,7 +139,7 @@ class ImageVisualizer:
             generated_image = np.array(generated_image)
         
         # Wrap caption text
-        wrapped_caption = "\n".join(textwrap.wrap(prompt, width=120)) if prompt else ""
+        wrapped_caption = "\n".join(textwrap.wrap(caption, width=120)) if caption else ""
         
         fig, axes = plt.subplots(1, 2, figsize=figsize)
         
@@ -147,78 +147,50 @@ class ImageVisualizer:
         axes[0].imshow(original_image)
         axes[0].axis('off')
         axes[0].set_title("Original with Overlays", fontsize=14, fontweight='bold')
-
             
         # Colors for different artifact types
         artifact_type_colors = {
             'addition': 'red',
             'removal': 'blue', 
-            'distortion': 'green',
-            'replacement': 'orange',
-            'occlusion': 'purple',
-            'corruption': 'cyan',
-            'noise': 'magenta'
+            'distortion': 'yellow',
+            'fusion': 'orange',
         }
-        mask_colors = ['Reds', 'Blues', 'Greens', 'Oranges', 'Purples', 'plasma', 'viridis']
+        artifact_type_colormaps = {
+            'addition': 'Reds',
+            'removal': 'Blues',
+            'distortion': 'YlOrBr',
+            'fusion': 'Oranges',
+        }
         
         # Overlay data from all artifacts
         for idx, artifact in enumerate(artifact_data):
-            artifact_type = artifact.get('artifact_type', f'artifact_{idx}')
-            artifact_name = artifact.get('artifact_name', f'{artifact_type} Target BBox')
+            artifact_type = artifact['artifact_type']
+            artifact_name = artifact['distortion_kernel'] if artifact_type == 'distortion' else artifact_type
             
             # Get color based on artifact type, fallback to index-based color
-            bbox_color = artifact_type_colors.get(artifact_type, ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta'][idx % 7])
-            mask_color_idx = idx % len(mask_colors)
+            bbox_color = artifact_type_colors.get(artifact_type, ['red', 'blue', 'yellow', 'orange'][idx % 4])
+            mask_color = artifact_type_colormaps.get(artifact_type, ['Reds', 'Blues', 'YlOrBr', 'Oranges'][idx % 4])
+            target_bbox = artifact['target_bbox']
+            x1, y1, x2, y2 = target_bbox[:4]
+
+            # Draw target bbox
+            bbox_rect = plt.Rectangle(
+                (x1, y1), x2 - x1, y2 - y1,
+                linewidth=2, edgecolor=bbox_color, 
+                facecolor='none', alpha=0.8
+            )
+            axes[0].add_patch(bbox_rect)
             
-            # Overlay target bbox if available
-            target_bbox = None
+            # Add text annotation on the bbox
+            axes[0].text(x1, y1 - 5, artifact_name, 
+                        fontsize=12, fontweight='bold',
+                        color='white', 
+                        bbox=dict(boxstyle="round,pad=0.3", 
+                                facecolor=bbox_color, 
+                                edgecolor=bbox_color,
+                                alpha=0.8))
             
-            # Try different possible locations for target_bbox
-            if 'target_bbox' in artifact:
-                target_bbox = artifact['target_bbox']
-            elif 'patch_data' in artifact and 'target_bbox' in artifact['patch_data']:
-                target_bbox = artifact['patch_data']['target_bbox']
-            elif 'annotation' in artifact and 'target_bbox' in artifact['annotation']:
-                target_bbox = artifact['annotation']['target_bbox']
-            
-            if target_bbox is not None:
-                # Handle different bbox formats
-                if isinstance(target_bbox, dict):
-                    # Dict format: {xmin, ymin, xmax, ymax}
-                    x1, y1 = target_bbox.get('xmin', 0), target_bbox.get('ymin', 0)
-                    x2, y2 = target_bbox.get('xmax', 0), target_bbox.get('ymax', 0)
-                elif isinstance(target_bbox, (list, tuple, np.ndarray)) and len(target_bbox) >= 4:
-                    # List/array format: [x1, y1, x2, y2]
-                    x1, y1, x2, y2 = target_bbox[:4]
-                else:
-                    continue  # Skip if bbox format is not recognized
-                
-                # Draw target bbox
-                bbox_rect = plt.Rectangle(
-                    (x1, y1), x2 - x1, y2 - y1,
-                    linewidth=3, edgecolor=bbox_color, 
-                    facecolor='none', alpha=0.8
-                )
-                axes[0].add_patch(bbox_rect)
-                
-                # Add text annotation on the bbox
-                axes[0].text(x1, y1 - 5, artifact_name, 
-                           fontsize=12, fontweight='bold',
-                           color=bbox_color, 
-                           bbox=dict(boxstyle="round,pad=0.3", 
-                                   facecolor='white', 
-                                   edgecolor=bbox_color,
-                                   alpha=0.8))
-            
-            # Overlay reference mask if available
-            reference_mask = None
-            
-            # Try different possible locations for reference_mask
-            if 'reference_mask' in artifact:
-                reference_mask = artifact['reference_mask']
-            elif 'annotation' in artifact and 'reference_mask' in artifact['annotation']:
-                reference_mask = artifact['annotation']['reference_mask']
-            
+            reference_mask = artifact['reference_mask']
             if reference_mask is not None:
                 # Convert to numpy array if needed
                 if isinstance(reference_mask, list):
@@ -228,11 +200,7 @@ class ImageVisualizer:
                 if np.any(reference_mask):
                     # Create a masked array to overlay
                     mask_overlay = np.ma.masked_where(reference_mask == 0, reference_mask)
-                    axes[0].imshow(mask_overlay, alpha=0.4, cmap=mask_colors[mask_color_idx])
-    
-        # Add legend if we have overlays
-        if artifact_data:
-            axes[0].legend(loc='upper right', fontsize=10, bbox_to_anchor=(1, 1))
+                    axes[0].imshow(mask_overlay, alpha=0.5, cmap=mask_color)
         
         # Display generated image
         axes[1].imshow(generated_image)
@@ -241,12 +209,11 @@ class ImageVisualizer:
         
         # Add shared caption below the images
         if wrapped_caption:
-            fig.text(0.5, 0.02, wrapped_caption, ha='center', va='bottom', 
+            fig.text(0.5, 0.05, wrapped_caption, ha='center', va='bottom', 
                     fontsize=12, wrap=True)
-            plt.tight_layout(rect=[0, 0.08, 1, 1])  # Adjust layout to fit caption
+            plt.tight_layout(rect=[0, 0.12, 1, 1])  # Adjust layout to fit caption
         else:
             plt.tight_layout()
-        
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         print(f"Plot saved to {save_path}")
@@ -382,7 +349,7 @@ class ImageVisualizer:
                                 artifact_image: Union[np.ndarray, Image.Image],
                                 reference_bbox: dict,
                                 target_bbox: dict,
-                                prompt: str = "",
+                                caption: str = "",
                                 titles: Optional[List[str]] = None,
                                 figsize: tuple = (14, 7),
                                 image_name: str = "unknown",
@@ -397,7 +364,7 @@ class ImageVisualizer:
             artifact_image: Artifact injected image  
             reference_bbox: Reference bounding box dict with xmin, ymin, xmax, ymax
             target_bbox: Target bounding box dict with xmin, ymin, xmax, ymax
-            prompt: Caption/prompt text to display
+            caption: Caption/caption text to display
             titles: List of titles for [real, artifact] images
             figsize: Figure size tuple (width, height)
             image_name: Name of the image (used for directory creation)
@@ -418,7 +385,7 @@ class ImageVisualizer:
             titles = ["Real Image + Reference BBox", "Artifact Injected + Target BBox"]
         
         # Wrap caption text
-        wrapped_caption = "\n".join(textwrap.wrap(prompt, width=100)) if prompt else ""
+        wrapped_caption = "\n".join(textwrap.wrap(caption, width=100)) if caption else ""
         
         fig, axes = plt.subplots(1, 2, figsize=figsize)
         
