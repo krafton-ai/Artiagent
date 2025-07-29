@@ -89,8 +89,6 @@ class Flux(nn.Module):
         txt_ids: Tensor,
         timesteps: Tensor,
         y: Tensor,
-        patch_ids = None,
-        patch_ref_ids = None,
         guidance: Tensor | None = None,
         info = None,
     ) -> Tensor:
@@ -109,50 +107,51 @@ class Flux(nn.Module):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
         inject_pe = pe.clone()
-        target_patch_ref_ids = None
-        # Handle positional encoding manipulation for artifacts
-        if (not info['inverse']) and (timesteps > info['pe_step']):
-            if info['artifact_type'] == 'addition':
-                target_patch_ref_ids = patch_ref_ids
-                inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,target_patch_ref_ids,:,:,:]
-            elif info['artifact_type'] == 'removal':
-                # Use shape-based approach for removal
-                target_patch_ref_ids = sample_closest_patch_ind(
-                    info['patch_h'], info['patch_w'], patch_ids, patch_ref_ids,
-                    patch_size=16, txt_len=512
-                )
-                inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,target_patch_ref_ids,:,:,:]
-                
-            elif info['artifact_type'] == 'distortion':
 
-                # Use shape-based approach for distortion
-                # target_patch_ref_ids = shuffle_pe(
-                #     info['patch_h'], info['patch_w'], patch_ids,
-                #     patch_size=16, txt_len=512
-                # )
-                if len(patch_ref_ids) == 0:
-                    target_patch_ref_ids = patch_ids.copy()
-                    np.random.shuffle(target_patch_ref_ids)
-                    inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,target_patch_ref_ids,:,:,:]
-                else:
-                    target_patch_ref_ids = patch_ref_ids
-                    inject_pe[:,:,patch_ids,:,:,:] = inject_pe[:,:,target_patch_ref_ids,:,:,:]
-            else:
-                raise AttributeError('Artifact type is either not defined or unidentified')
-
-        if target_patch_ref_ids is None:
-            if info['artifact_type'] == 'removal':
-                target_patch_ref_ids = sample_closest_patch_ind(
-                        info['patch_h'], info['patch_w'], patch_ids, patch_ref_ids,
+        if not info['inverse']:
+        # Initialize accumulated lists for tracking all processed IDs
+            accumulated_target_ids = []
+            accumulated_ref_ids = []
+            for artifact_data in info['artifact_data']:
+                if artifact_data['artifact_type'] == 'addition' and timesteps > info['pe_step_addition']:
+                    ref_ids = artifact_data['reference_patch_indices'].copy()
+                    target_ids = artifact_data['target_patch_indices'].copy()
+                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+                    # Accumulate IDs
+                    accumulated_target_ids.extend(target_ids)
+                    accumulated_ref_ids.extend(ref_ids)
+                elif artifact_data['artifact_type'] == 'removal' and timesteps > info['pe_step_removal']:
+                    ref_ids = artifact_data['reference_patch_indices'].copy()
+                    target_ids = artifact_data['target_patch_indices'].copy()
+                    ref_ids = sample_closest_patch_ind(
+                        info['patch_h'], info['patch_w'], target_ids, ref_ids,
                         patch_size=16, txt_len=512
                     )
-        info['patch_ids'] = patch_ids
-        info['patch_ref_ids'] = target_patch_ref_ids
+                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+                    # Accumulate IDs (after target_ids modification)
+                    accumulated_target_ids.extend(target_ids)
+                    accumulated_ref_ids.extend(ref_ids)
+                elif artifact_data['artifact_type'] == 'distortion' and timesteps > info['pe_step_distortion']:
+                    ref_ids = artifact_data['reference_patch_indices'].copy()
+                    target_ids = artifact_data['target_patch_indices'].copy()
+                    if len(ref_ids) == 0:
+                        # For distortion with no reference patches, shuffle target patches
+                        ref_ids = target_ids.copy()
+                        np.random.shuffle(ref_ids)
+                    # Ensure target_ids and ref_ids are different for distortion
+                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+                    # Accumulate IDs (after any ref_ids modification)
+                    accumulated_target_ids.extend(target_ids)
+                    accumulated_ref_ids.extend(ref_ids)
+
+
+            info['patch_ids'] = accumulated_target_ids
+            info['patch_ref_ids'] = accumulated_ref_ids 
         info['timesteps'] = timesteps
 
 
         for block in self.double_blocks:
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, info=info, patch_ids=patch_ids)
+            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, info=info)
 
         cnt = 0
         img = torch.cat((txt, img), 1) 
@@ -160,9 +159,9 @@ class Flux(nn.Module):
         for block in self.single_blocks:
             info['id'] = cnt
             if cnt < 19:
-                img, info = block(img, vec=vec, pe=inject_pe, info=info, patch_ids=patch_ids)
+                img, info = block(img, vec=vec, pe=inject_pe, info=info)
             else:
-                img, info = block(img, vec=vec, pe=pe, info=info, patch_ids=patch_ids)
+                img, info = block(img, vec=vec, pe=pe, info=info)
             cnt += 1
             
 

@@ -7,6 +7,8 @@ import pathlib
 import json
 import glob
 from PIL import Image
+import logging
+from typing import Any
 
 
 class COCODataLoader:
@@ -626,3 +628,210 @@ class CustomDirectoryDataLoader:
         """
         class_name = img_info.get('class_name', 'unknown')
         return f"A photo of a {class_name}"
+    
+
+def _get_coco_image_list(
+    data_loader: COCODataLoader, 
+    categories: List[str], 
+    max_images: Optional[int] = None,
+    max_instances_per_image: Optional[int] = 3
+) -> List[Dict[str, Any]]:
+    """
+    Get image list for COCO dataset with optional filtering.
+    
+    Args:
+        data_loader: COCO data loader instance
+        categories: List of categories to process
+        max_images: Maximum number of images to process
+        max_instances_per_image: Maximum instances per image for filtering
+        
+    Returns:
+        List of image information dictionaries
+    """
+    cat_ids = data_loader.get_category_ids(categories)
+    image_list = []
+    image_ids_seen = set()
+    
+    # Count instances per image if filtering is requested
+    instance_counts = {}
+    if max_instances_per_image is not None:
+        print("Counting instances per image...")
+        from collections import defaultdict
+        instance_counts = defaultdict(int)
+        for ann in data_loader.coco_class.dataset['annotations']:
+            image_id = ann['image_id']
+            instance_counts[image_id] += 1
+    
+    for cat_id in cat_ids:
+        img_ids = data_loader.coco_class.getImgIds(catIds=[cat_id])
+        for img_id in img_ids:
+            if img_id not in image_ids_seen:
+                # Filter by instance count if specified
+                if max_instances_per_image is not None:
+                    if instance_counts[img_id] >= max_instances_per_image:
+                        continue
+                
+                img_info = data_loader.coco_class.loadImgs([img_id])[0]
+                image_list.append(img_info)
+                image_ids_seen.add(img_id)
+                
+                if max_images and len(image_list) >= max_images:
+                    break
+        if max_images and len(image_list) >= max_images:
+            break
+    
+    return image_list
+
+
+def _get_imagenet_image_list(
+    data_loader: ImageNetDataLoader, 
+    categories: List[str], 
+    max_images: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """
+    Get image list for ImageNet dataset.
+    
+    Args:
+        data_loader: ImageNet data loader instance
+        categories: List of categories to process
+        max_images: Maximum number of images to process
+        
+    Returns:
+        List of image information dictionaries
+    """
+    # Determine target synsets
+    target_synsets = []
+    for class_name in categories:
+        for synset, mapped_name in data_loader.class_mapping.items():
+            if mapped_name.lower() == class_name.lower() and synset in data_loader.synsets:
+                target_synsets.append(synset)
+    
+    if not target_synsets:
+        target_synsets = data_loader.synsets
+    
+    image_list = []
+    for synset in target_synsets:
+        image_paths = data_loader.get_images_by_synset(synset)
+        for img_path in image_paths:
+            img_info = {
+                'id': hash(img_path) % 1000000,  # Generate unique ID
+                'file_name': os.path.basename(img_path),
+                'file_path': img_path,
+                'synset': synset,
+                'class_name': data_loader.class_mapping.get(synset, synset)
+            }
+            image_list.append(img_info)
+            
+            if max_images and len(image_list) >= max_images:  
+                break
+        if max_images and len(image_list) >= max_images:
+            break
+    
+    return image_list
+
+
+def _get_custom_image_list(
+    data_loader: CustomDirectoryDataLoader, 
+    categories: List[str], 
+    max_images: Optional[int] = None,
+    logger: logging.Logger = None
+) -> List[Dict[str, Any]]:
+    """
+    Get image list for custom dataset.
+    
+    Args:
+        data_loader: Custom directory data loader instance
+        categories: List of categories to process
+        max_images: Maximum number of images to process
+        logger: Logger instance
+        
+    Returns:
+        List of image information dictionaries
+    """
+    # Get all available class names from the directory structure
+    available_classes = data_loader.get_class_names()
+    if logger:
+        logger.info(f"Available classes in custom dataset: {available_classes}")
+    
+    # Filter categories to only include those available in the dataset
+    target_classes = [cls for cls in categories if cls in available_classes]
+    if not target_classes:
+        if logger:
+            logger.warning(
+                f"None of the specified categories {categories} found in dataset. "
+                f"Available: {available_classes}"
+            )
+        target_classes = available_classes  # Use all available classes
+    
+    if logger:
+        logger.info(f"Processing classes: {target_classes}")
+    
+    image_list = []
+    for class_name in target_classes:
+        image_paths = data_loader.get_all_images_from_class(class_name)
+        for img_path in image_paths:
+            img_info = {
+                'id': hash(img_path) % 1000000,  # Generate unique ID
+                'file_name': os.path.basename(img_path),
+                'file_path': img_path,
+                'class_name': class_name
+            }
+            image_list.append(img_info)
+            
+            if max_images and len(image_list) >= max_images:
+                break
+        if max_images and len(image_list) >= max_images:
+            break
+    
+    return image_list
+
+
+def _get_image_list(
+    dataset_type: str, 
+    data_loader: Any, 
+    categories: List[str], 
+    max_images: Optional[int] = None,
+    logger: logging.Logger = None
+) -> List[Dict[str, Any]]:
+    """
+    Get image list based on dataset type.
+    
+    Args:
+        dataset_type: Type of dataset
+        data_loader: Data loader instance
+        categories: List of categories to process
+        max_images: Maximum number of images to process
+        logger: Logger instance
+        
+    Returns:
+        List of image information dictionaries
+    """
+    if dataset_type == "coco":
+        return _get_coco_image_list(data_loader, categories, max_images)
+    elif dataset_type == "imagenet":
+        return _get_imagenet_image_list(data_loader, categories, max_images)
+    elif dataset_type == "custom":
+        return _get_custom_image_list(data_loader, categories, max_images, logger)
+    else:
+        raise ValueError(f"Unsupported dataset type: {dataset_type}")
+
+
+def _initialize_data_loader(dataset_type: str, config: Dict[str, Any]) -> Any:
+    """
+    Initialize the appropriate data loader based on dataset type.
+    
+    Args:
+        dataset_type: Type of dataset ('coco', 'imagenet', 'custom')
+        config: Configuration dictionary
+        
+    Returns:
+        Initialized data loader instance
+    """
+    if dataset_type == "coco":
+        return COCODataLoader(config['dataset_path'], config['image_path'])
+    elif dataset_type == "imagenet":
+        return ImageNetDataLoader(config['dataset_path'], config['imagenet_split'])
+    elif dataset_type == "custom":
+        return CustomDirectoryDataLoader(config['dataset_path'])
+    else:
+        raise ValueError(f"Unsupported dataset type: {dataset_type}")
