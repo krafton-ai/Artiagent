@@ -827,6 +827,7 @@ class InstanceProcessor:
 
             fig, ax = plt.subplots(figsize=(8, 8))
             ax.imshow(img_array)
+            ax.imshow(target_mask, alpha=0.5, cmap='Blues')
 
             # set minor ticks at patch boundaries
             height, width = img_array.shape[:2]
@@ -834,7 +835,7 @@ class InstanceProcessor:
             ax.set_yticks(np.arange(0, height, patch_size), minor=True)
 
             # # draw grid
-            # ax.grid(which='minor', color='white', linestyle='-', linewidth=1)
+            ax.grid(which='minor', color='white', linestyle='-', linewidth=1)
 
             # turn off all ticks and labels
             ax.set_xticks([])

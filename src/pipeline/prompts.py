@@ -1227,37 +1227,67 @@ def kernel_type_decision(client, sampled_instance, image, money_manager=None):
     # Extract instance information
     mask = sampled_instance['pred_mask'].cpu().numpy()
     # Convert mask to grayscale image and encode to base64 (same datatype as base64_image)
-    mask_image = (mask * 255).astype(np.uint8)
-    base64_mask = encode_image_to_base64(mask_image)
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.imshow(image)
+    ax.imshow(mask, alpha=0.5, cmap='Blues')
+
+    # set minor ticks at patch boundaries
+    patch_size=16
+    height, width = image.shape[:2]
+    ax.set_xticks(np.arange(0, width, patch_size), minor=True)
+    ax.set_yticks(np.arange(0, height, patch_size), minor=True)
+
+    # # draw grid
+    ax.grid(which='minor', color='white', linestyle='-', linewidth=1)
+
+    # turn off all ticks and labels
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.axis('off')
+
+    buf = io.BytesIO()
+    # Save the figure to the buffer in PNG format
+    fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
+    # Seek to the beginning of the buffer
+    buf.seek(0)
+    # Open the image from the buffer using PIL
+    visualized = Image.open(buf)
+    # Close the buffer
+    buf.close()
+    # mask_image = (mask * 255).astype(np.uint8)
+    # base64_mask = encode_image_to_base64(mask_image)
+
     # Encode image to base64
     base64_image = encode_image_to_base64(image)
+    base64_visualized = encode_image_to_base64(visualized)
     
     prompt = """
     1 · Purpose
 
     You will decide which kind of kernel type to use to generate a certain distortion for the targeted region.
     The selected kernel receives a target mask and generates a reference mask to copy from.
+    The task aims to generate distortions from an original image that modifies the target region into abnormal, misaligned features without sacrificing the whole image quality or object identifiability.
 
     ⸻
 
     2 · Inputs you receive
-        1.	Scene description – plain-language explanation of the image.
-        2.	Segmentation map – pixel- or patch-level masks for a single part.
+        1.  Original Image : Original image with no modifications.
+        2.	Masked Image : Patch-level masks for a single part.
     ⸻
 
     3 · Kernel types you may choose from
-        •	none
-    Randomly shuffles the mask patches at each step, drawing references from different locations in the mask for maximal variability.
-    When to choose: when you want fully randomized, time-varying distortions without any spatial consistency or pattern.
-        •	swirl
-    Rotates each patch around a specified center by an angle inversely proportional to its distance, creating a radial twisting effect.
-    When to choose: for circular or near-circular regions when you want a spiral distortion that emphasizes rotational warping around the patch centroid.
-        •	jitter
-    Adds independent Gaussian noise to each patch coordinate, randomly displacing patches by a normal offset for smooth stochastic perturbation.
-    When to choose: when you want subtle, randomized shifts—including references outside the original mask—for a natural, noisy distortion effect.
-        •	voronoi
-    Samples a small set of “seed” patches from the mask and remaps every other patch to its nearest seed, creating clustered, region-based duplication via a Voronoi partition.
-    When to choose: when you want non-uniform, clustered distortions—grouping nearby target patches around representative seed patches for a patchwise “clumping” effect.
+    •	none
+Randomly shuffles the target mask patches at each timestep, drawing references from different locations in the mask.
+When to choose: when you want textural distortions where object boundaries are blurry and ambiguous. 
+    • swirl
+Rotates each patch around a specified center by an angle inversely proportional to its distance, creating a radial twisting effect.
+When to choose: Best for circular or symmetric features—such as faces, eyes or round objects—where gentle rotational warp yields abnormal but recognizable details; avoid on elongated or linear parts (e.g., legs or limbs), where spinning breaks anatomical coherence.
+    • jitter
+Adds independent Gaussian noise to each patch coordinate, randomly displacing patches by a normal offset.
+When to choose: Perfect for fine, high-frequency areas—like fur, hair strands, grass or foliage—where random shifts produce organic, glitch-like texture anomalies without large-scale collapse.
+    • voronoi
+Samples a small set of “seed” patches from the mask and remaps every other patch to its nearest seed, creating clustered, region-based duplication via a Voronoi partition.
+When to choose: Well-suited to more structured or segmented regions—such as architectural details, branches or joint areas—where controlled cell-like clustering introduces stylized, abnormal grouping without total blur.
 
     ⸻
 
@@ -1292,7 +1322,7 @@ def kernel_type_decision(client, sampled_instance, image, money_manager=None):
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_mask}"
+                                "url": f"data:image/jpeg;base64,{base64_visualized}"
                             }
                         }
                     ]
