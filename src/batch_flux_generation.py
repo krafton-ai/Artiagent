@@ -23,12 +23,8 @@ from datetime import datetime
 from typing import List, Dict, Optional
 
 import numpy as np
-import cv2
-try:
-    from tqdm import tqdm
-except ImportError:
-    def tqdm(iterable, *args, **kwargs):
-        return iterable
+from tqdm import tqdm
+from PIL import Image
 
 from pipeline import FluxGenerator, FluxConfig, ImageVisualizer
 
@@ -65,19 +61,15 @@ def load_processed_data(file_path: str) -> Optional[Dict]:
 
 
 def create_flux_visualizations(img_array: np.ndarray, generated_image: np.ndarray,
-                             annotation: Dict, artifact_type: str, sampled_instance_info: Dict, class_name: str,
-                             patch_data: Dict, img_filename: str, 
-                             caption: str, output_dir: str, visualizer: ImageVisualizer):
+                             artifact_data: Dict, img_filename: str, caption: str, output_dir: str, visualizer: ImageVisualizer):
     """Create visualizations for FLUX generation results"""
     # Save comparison
     # import ipdb; ipdb.set_trace(context=10)
     
     visualizer.show_comparison(
-        img_array, generated_image, sampled_instance_info, class_name, caption,
+        img_array, generated_image, artifact_data, caption,
         base_dir=output_dir,
-        filename=f"04_comparison_{artifact_type}.png",
-        patch_data=patch_data,
-        artifact_type=artifact_type
+        filename=f"04_comparison.png",
     )
 
     bbox = patch_data['target_bbox']
@@ -97,11 +89,11 @@ def create_flux_visualizations(img_array: np.ndarray, generated_image: np.ndarra
     # Save patch annotation visualizations
     # Use output_dir directly (no additional subdirectory creation)
     os.makedirs(output_dir, exist_ok=True)
-    generated_image.save(os.path.join(output_dir, f'artifact_{artifact_type}.png'))
+    generated_image.save(os.path.join(output_dir, f'artifact.png'))
 
 
 def process_single_image(data_file: str, flux_generator: FluxGenerator,
-                        visualizer: ImageVisualizer, artifact_types: List[str], 
+                        visualizer: ImageVisualizer, 
                         output_dir: str, logger) -> Dict:
     """Process a single image with FLUX artifact generation"""
     # Load data
@@ -109,8 +101,8 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
     if data is None:
         return {'success': False, 'error': 'Failed to load data'}
     
-    img_id = data['image_info']['id']
-    img_filename = data['image_info']['file_name']
+    img_id = data['id']
+    img_filename = data['real_image_path']
     
     logger.info(f"Processing FLUX generation for image {img_id}: {img_filename}")
     
@@ -124,25 +116,52 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
     }
     
     start_time = time.time()
-    img_array = data['image_array']
+    img_array = Image.open(data['real_image_path'])
     caption = data['caption']
     
     # Create image-specific output directory for FLUX results
-    flux_output_path = os.path.join(output_dir, f'image_{img_id}')
+    flux_output_path = os.path.join(output_dir, f'{data["id"]}')
     os.makedirs(flux_output_path, exist_ok=True)
     
     # Copy visualizations from GSAM processing (they're in the same directory as metadata.pkl)
     gsam_image_dir = os.path.dirname(data_file)  # Directory containing metadata.pkl
-    for viz_file in ["01_original_image.png", "02_detection_results.png"]:
-        gsam_viz_path = os.path.join(gsam_image_dir, viz_file)
-        flux_viz_path = os.path.join(flux_output_path, viz_file)
-        
-        if os.path.exists(gsam_viz_path) and not os.path.exists(flux_viz_path):
-            import shutil
-            shutil.copy2(gsam_viz_path, flux_viz_path)
+    viz_file = "real_image.png"
+    gsam_viz_path = os.path.join(gsam_image_dir, viz_file)
+    flux_viz_path = os.path.join(flux_output_path, viz_file)
+    
+    if os.path.exists(gsam_viz_path) and not os.path.exists(flux_viz_path):
+        import shutil
+        shutil.copy2(gsam_viz_path, flux_viz_path)
     
     # Process each artifact type
     successful_artifacts = 0
+    # import ipdb; ipdb.set_trace(context=30)
+    if len(data['artifacts']) == 0:
+        logger.warning(f"  No artifact data found")
+        return None
+    
+    artifact_data = data['artifacts']
+    
+    logger.info(f"  Generating artifacts...")
+            
+    # Run artifact injection with patch annotations only
+    generated_image = flux_generator.inject_artifacts(
+        source_prompt=caption,
+        target_prompt=caption,
+        artifact_data=artifact_data,
+        source_img=img_array.copy(),
+    )
+    
+    create_flux_visualizations(
+        img_array, generated_image, artifact_data, img_filename, caption, flux_output_path, 
+        visualizer
+    )
+    results['artifacts'] = {
+        'success': True,
+        'artifacts': artifact_data
+    }
+    successful_artifacts += 1
+    logger.info(f"  ✅ artifact generated successfully")
     
     for artifact_type in artifact_types:
         if artifact_type not in data['artifacts']:
@@ -303,10 +322,9 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
             return
             
         # Look for image_* directories containing metadata.pkl files
-        image_dirs = glob.glob(os.path.join(segmentation_output_dir, 'image_*'))
         data_files = []
-        for image_dir in image_dirs:
-            metadata_file = os.path.join(image_dir, 'metadata.pkl')
+        for image_dir in os.listdir(segmentation_output_dir):
+            metadata_file = os.path.join(segmentation_output_dir, image_dir, 'metadata.pkl')
             if os.path.exists(metadata_file):
                 data_files.append(metadata_file)
         
@@ -328,7 +346,7 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
         with tqdm(total=len(data_files), desc=f"FLUX generation for {supercategory} images") as pbar:
             for data_file in data_files:
                 result = process_single_image(
-                    data_file, flux_generator, visualizer, artifact_types, output_dir, logger
+                    data_file, flux_generator, visualizer, output_dir, logger
                 )
                 
                 # Update stats
@@ -341,11 +359,8 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
                     stats['failed_images'] += 1
                 
                 # Update artifact stats
-                for artifact_type, artifact_result in result['artifacts'].items():
-                    if artifact_result.get('success', False):
-                        stats['artifact_stats'][artifact_type]['success'] += 1
-                    else:
-                        stats['artifact_stats'][artifact_type]['failure'] += 1
+                for artifact in result['artifacts']['artifacts']:
+                    stats['artifact_stats'][artifact['artifact_type']]['success'] += 1
                 
                 # Update progress bar
                 status = "✅" if result['success'] else "❌"
@@ -426,20 +441,6 @@ def main():
     parser.add_argument('--use-rf-solver', action='store_true',
                        help='Use RF solver (second-order) instead of first-order denoising (default: False)')
     args = parser.parse_args()
-    
-    # Validate GSAM output directory
-    if not os.path.exists(args.segmentation_output_dir):
-        print(f"❌ Error: GSAM output directory does not exist: {args.segmentation_output_dir}")
-        sys.exit(1)
-        
-    # Check for image directories with metadata.pkl files
-    image_dirs = glob.glob(os.path.join(args.segmentation_output_dir, 'image_*'))
-    metadata_files = [os.path.join(d, 'metadata.pkl') for d in image_dirs if os.path.exists(os.path.join(d, 'metadata.pkl'))]
-    
-    if not metadata_files:
-        print(f"❌ Error: No image directories with metadata.pkl found in: {args.segmentation_output_dir}")
-        print("   Please run GSAM processing first.")
-        sys.exit(1)
     
     run_flux_generation(
         segmentation_output_dir=args.segmentation_output_dir,

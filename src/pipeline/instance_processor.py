@@ -1,13 +1,11 @@
 import random
 import torch
 import numpy as np
-import cv2
 import os
 from typing import List, Dict, Tuple, Optional, Union
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from flux.artifacts_util import bbox_to_patch_coords, patch_coor_to_ind, mask_to_patch_indices, patch_indices_to_coords
-from .prompts import addition_select_candidate, addition_suggest_offset, visualize_all_candidates, visualize_candidate_images_for_api
+from flux.artifacts_util import bbox_to_patch_coords, patch_coor_to_ind, mask_to_patch_indices, patch_indices_to_coords, mask_to_patch_coords
 
 
 class InstanceProcessor:
@@ -60,7 +58,7 @@ class InstanceProcessor:
             max_area_ratio: Maximum area ratio for filtering
             
         Returns:
-            Tuple of (sampled_instance, original_index) or (None, None) if no valid instances
+            Tuple of (prediction, original_index) or (None, None) if no valid instances
         """
         filtered_instances, valid_indices = InstanceProcessor.filter_instances_by_size(predictions, min_area_ratio, max_area_ratio)
         
@@ -136,12 +134,12 @@ class InstanceProcessor:
         # Step 1: Choose entity (vocab[0]) with highest overlap with reference_instance
         entity_instances = []
         
-        for i in range(len(predictions['pred_boxes'])):
-            if predictions['pred_classes'][i] == 0:
+        for i, pred_instance in enumerate(predictions):
+            if pred_instance['pred_class'] == 0:
                 entity_instances.append({
                     'idx': i,
-                    'bbox': predictions['pred_boxes'][i].cpu().numpy(),
-                    'mask': predictions['pred_masks'][i].cpu().numpy()
+                    'bbox': pred_instance['pred_box'].cpu().numpy(),
+                    'mask': pred_instance['pred_mask'].cpu().numpy()
                 })
         
         if not entity_instances:
@@ -152,9 +150,10 @@ class InstanceProcessor:
         max_overlap = 0.9
         
         for entity in entity_instances:
-            # Calculate mask overlap
-            intersection = np.sum(ref_mask & entity['mask'])
-            ref_area = np.sum(ref_mask)
+            # Calculate mask overlap using patch-aligned masks
+            entity_mask_patch = InstanceProcessor._align_mask_to_patches(entity['mask'].astype(np.uint8), patch_size)
+            intersection = np.sum(ref_mask_patch & entity_mask_patch)
+            ref_area = np.sum(ref_mask_patch)
             overlap = intersection / ref_area if ref_area > 0 else 0.0
             
             if overlap > max_overlap:
@@ -168,13 +167,13 @@ class InstanceProcessor:
         reference_class_idx = reference_instance['pred_class'].item()
         
         same_class_instances = []
-        for i in range(len(predictions['pred_boxes'])):
-            if (predictions['pred_classes'][i] == reference_class_idx and 
-                not torch.equal(predictions['pred_boxes'][i], torch.from_numpy(ref_bbox).float())):
+        for i, pred_instance in enumerate(predictions):
+            if (pred_instance['pred_class'] == reference_class_idx and 
+                not torch.equal(pred_instance['pred_box'], torch.from_numpy(ref_bbox).float())):
                 same_class_instances.append({
                     'idx': i,
-                    'bbox': predictions['pred_boxes'][i].cpu().numpy(),
-                    'mask': predictions['pred_masks'][i].cpu().numpy()
+                    'bbox': pred_instance['pred_box'].cpu().numpy(),
+                    'mask': pred_instance['pred_mask'].cpu().numpy()
                 })
         
         # Step 3: Generate stratified angles
@@ -230,7 +229,7 @@ class InstanceProcessor:
                     continue
                 
                 # Set target mask pixels
-                target_mask[valid_target_y, valid_target_x] = 255
+                target_mask[valid_target_y, valid_target_x] = 1
                 
                 # Calculate target bbox from the actual mask for metadata
                 if np.sum(target_mask > 0) > 0:
@@ -295,7 +294,7 @@ class InstanceProcessor:
         return candidates, metadata
     
     @staticmethod
-    def create_artifact_patches(artifact_type: str, sampled_instance: Dict, predictions: Dict, patch_annot: Dict, openai_client, vocab, class_name, img_array, patch_size: int = 16, distortion_kernel: str = 'none', output_dir: str = None, img_filename: str = None) -> Tuple[List[int], List[int]]:
+    def create_artifact_patches(artifact_type: str, prediction: Dict, predictions: Dict, entity_predictions: Dict, img_array, patch_size: int = 16, distortion_kernel: str = 'none', output_dir: str = None, img_filename: str = None) -> Tuple[List[int], List[int]]:
         """
         Create artifact patches for different artifact types
         """
@@ -305,24 +304,13 @@ class InstanceProcessor:
         patch_w = patch_W // patch_size
         patch_h = patch_H // patch_size
 
-        mask_patch_coords = patch_indices_to_coords(patch_annot['mask_patch_indices'], patch_w, txt_len=512)
-        mask_patch_coords = [tuple(coord) for coord in mask_patch_coords]  # Convert to tuples for hashability
+        mask = prediction['pred_mask'].cpu().numpy()
+        mask_patch_coords = mask_to_patch_coords(mask, patch_size=patch_size)
 
         if artifact_type == 'addition':
+            offset, prob_map, metadata = InstanceProcessor.generate_addition_probability_map(prediction, predictions, entity_predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, alpha=2.0, max_entity_overlap=0.7, distance_penalty_weight=0.05)
+            InstanceProcessor.visualize_addition_probability_map(img_array, prob_map, prediction, metadata, patch_size=patch_size, output_dir=output_dir, img_filename=img_filename)
 
-            # artifact_direction = addition_sugget_direction(openai_client, sampled_instance, f'{class_name} of {vocab[0]}', img_array)      
-            # candidate_target_list, metadata = InstanceProcessor.generate_candidate_addition_region(sampled_instance, predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, overlap_threshold=0.05)
-            offset, prob_map, metadata = InstanceProcessor.generate_addition_probability_map(sampled_instance, predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, alpha=2.0, max_entity_overlap=0.7, distance_penalty_weight=0.05)
-            InstanceProcessor.visualize_addition_probability_map(img_array, prob_map, sampled_instance, metadata, patch_size=patch_size, output_dir=output_dir, img_filename=img_filename)
-            
-            # Visualize all candidates overlaid on the original image
-            # visualize_all_candidates(candidate_target_list, img_array, f'{class_name} of {vocab[0]}', output_dir=output_dir, img_filename=img_filename)
-            
-            # addition_target = addition_select_candidate(openai_client, candidate_target_list, f'{class_name} of {vocab[0]}', img_array, output_dir=output_dir, img_filename=img_filename)
-            # offset = addition_target['offset']
-            # offset = addition_suggest_offset(openai_client, sampled_instance, f'{class_name} of {vocab[0]}', img_array)
-            # offset = (offset['offset_x'], offset['offset_y'])            
-            # Convert offset to patch coordinates
             offset_x, offset_y = offset
             shift_x_patches = int(offset_x / patch_size)
             shift_y_patches = int(offset_y / patch_size)
@@ -336,7 +324,6 @@ class InstanceProcessor:
             reference_patches = mask_patch_coords
         elif artifact_type == 'removal':
             reference_patches = mask_patch_coords
-            
             # Find surrounding patches within Hamilton distance of 3
             surrounding_patches = []
             ref_patch_set = set(mask_patch_coords)  # Convert to set for fast lookup
@@ -354,36 +341,33 @@ class InstanceProcessor:
             
             # Remove duplicates
             surrounding_patches = list(set(surrounding_patches))
-            
-            # Pre-compute set of patches that contain ANY prediction instance pixels (foreground patches)
-            # conflicting_patches = set()
-            # for i in range(len(predictions['pred_boxes'])):
-            #     # Include ALL prediction instances, not just same-class ones
-            #     # Get instance mask and find all patches it overlaps with
-            #     instance_mask = predictions['pred_masks'][i].cpu().numpy()
-            #     instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
-            #     instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
-            #     instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
-            #     conflicting_patches.update(instance_patch_coords)
-            
             # Get reference class from sampled instance
-            reference_class_idx = sampled_instance['pred_class'].item()
-            
+            reference_class_idx = prediction['pred_class'].item()
+            # Pre-compute set of patches that contain ANY prediction instance pixels (foreground patches)
+            foreground_patches = set()
+            for entity_pred_instance in entity_predictions:
+                if prediction['mapped_entity_name'] == entity_pred_instance['entity_name']:
+                    entity_mask = entity_pred_instance['pred_mask'].cpu().numpy()
+                    entity_patch_indices = mask_to_patch_indices(entity_mask, patch_size=patch_size, txt_len=512)
+                    entity_patch_coords = patch_indices_to_coords(entity_patch_indices, patch_w, txt_len=512)
+                    entity_patch_coords = [tuple(coord) for coord in entity_patch_coords]
+                    foreground_patches.update(entity_patch_coords)
             # Pre-compute set of patches that contain same-class-different-instance pixels
             conflicting_patches = set()
-            for i in range(len(predictions['pred_boxes'])):
-                if (predictions['pred_classes'][i] == reference_class_idx and 
-                    not torch.equal(predictions['pred_boxes'][i], sampled_instance['pred_box'])):
-                    
-                    # Get instance mask and find all patches it overlaps with
-                    instance_mask = predictions['pred_masks'][i].cpu().numpy()
+            for pred_instance in predictions:
+                if pred_instance['pred_class'] == reference_class_idx and not torch.equal(pred_instance['pred_box'], prediction['pred_box']):
+                    instance_mask = pred_instance['pred_mask'].cpu().numpy()
                     instance_patch_indices = mask_to_patch_indices(instance_mask, patch_size=patch_size, txt_len=512)
                     instance_patch_coords = patch_indices_to_coords(instance_patch_indices, patch_w, txt_len=512)
-                    instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]  # Convert to tuples for hashability
+                    instance_patch_coords = [tuple(coord) for coord in instance_patch_coords]
                     conflicting_patches.update(instance_patch_coords)
-            # Filter out conflicting patches using set operations
+
             surrounding_patches_set = set(surrounding_patches)
             filtered_surrounding_patches = list(surrounding_patches_set - conflicting_patches)
+            # Get intersection of foreground patches and filtered surrounding patches
+            non_intersecting_patches = list(surrounding_patches_set - foreground_patches)
+            if len(non_intersecting_patches) > len(filtered_surrounding_patches) // 2:
+                filtered_surrounding_patches = non_intersecting_patches
             if len(filtered_surrounding_patches) == 0:
                 raise ValueError("No valid surrounding patches found")
             
@@ -419,9 +403,10 @@ class InstanceProcessor:
         return target_patches, reference_patches
     
     @staticmethod
-    def patch_coords_to_indices(artifact_type: str, target_patches: List[Tuple[int, int]], reference_patches: List[Tuple[int, int]],
-                           patch_annot: Dict, img_shape: Tuple[int, int], 
-                           patch_size: int = 16) -> Dict:
+    def map_coords_to_patch_indices(artifact_type: str, target_patches: List[Tuple[int, int]], reference_patches: List[Tuple[int, int]],
+                           img_shape: Tuple[int, int], 
+                           patch_size: int = 16,
+                           txt_len: int = 512) -> Dict:
         """
         Create patch mapping for different artifact types
         
@@ -429,7 +414,6 @@ class InstanceProcessor:
             artifact_type: Type of artifact ('addition', 'removal', 'distortion')
             target_patches: List of target patch coordinates
             reference_patches: List of reference patch coordinates
-            patch_annot: Patch annotation dictionary
             img_shape: Image shape (H, W)
             patch_size: Size of patches (default 16 for FLUX)
             
@@ -450,7 +434,7 @@ class InstanceProcessor:
                 feasibility_mask.append(is_feasible)
             
             # Generate one-to-one mapping of feasible patches
-            reference_patch_indices = [patch_coor_to_ind(ref_px, ref_py, patch_w, txt_len=512) for ref_py, ref_px in reference_patches]
+            reference_patch_indices = [patch_coor_to_ind(ref_px, ref_py, patch_w, txt_len) for ref_py, ref_px in reference_patches]
             target_patch_indices = []
             feasible_reference_patch_indices = []
             
@@ -460,19 +444,19 @@ class InstanceProcessor:
                     feasible_reference_patch_indices.append(ref_patch_idx)
                     target_py, target_px = target_patches[i]
                     
-                    target_patch_idx = patch_coor_to_ind(target_px, target_py, patch_w, txt_len=512)
+                    target_patch_idx = patch_coor_to_ind(target_px, target_py, patch_w, txt_len)
                     target_patch_indices.append(target_patch_idx)
             
             return target_patch_indices, feasible_reference_patch_indices
 
         elif artifact_type == 'removal':
-            reference_patch_indices = [patch_coor_to_ind(ref_px, ref_py, patch_w, txt_len=512) for ref_py, ref_px in reference_patches]
-            target_patch_indices = [patch_coor_to_ind(tar_px, tar_py, patch_w, txt_len=512) for tar_py, tar_px in target_patches]
+            reference_patch_indices = [patch_coor_to_ind(ref_px, ref_py, patch_w, txt_len) for ref_py, ref_px in reference_patches]
+            target_patch_indices = [patch_coor_to_ind(tar_px, tar_py, patch_w, txt_len) for tar_py, tar_px in target_patches]
             return target_patch_indices, reference_patch_indices
         
         elif artifact_type == 'distortion':
-            reference_patch_indices = [patch_coor_to_ind(ref_px, ref_py, patch_w, txt_len=512) for ref_py, ref_px in reference_patches]
-            target_patch_indices = [patch_coor_to_ind(tar_px, tar_py, patch_w, txt_len=512) for tar_py, tar_px in target_patches]
+            reference_patch_indices = [patch_coor_to_ind(ref_px, ref_py, patch_w, txt_len) for ref_py, ref_px in reference_patches]
+            target_patch_indices = [patch_coor_to_ind(tar_px, tar_py, patch_w, txt_len) for tar_py, tar_px in target_patches]
             return target_patch_indices, reference_patch_indices
         
         else:
@@ -509,74 +493,30 @@ class InstanceProcessor:
         return (xmin, ymin, xmax, ymax)
 
     @staticmethod
-    def create_annotation_dict(instance, vocab: List[str], patch_annot: Dict) -> Tuple[Dict, Optional[Dict]]:
+    def patches_to_masks(patch_coords, img_shape, patch_size: int = 16) -> np.ndarray:
         """
-        Create annotation dictionary for artifact injection
+        Convert patch coordinates to binary mask.
         
         Args:
-            instance: The sampled instance
-            vocab: Vocabulary list
-            patch_annot: Patch annotation dictionary
-            offset: Offset for addition artifacts (x, y)
+            patch_coords: List of tuples (py, px) representing patch coordinates
+            img_shape: Shape of the image (H, W, C) or (H, W)
+            patch_size: Size of each patch in pixels (default 16)
             
         Returns:
-            Tuple of (annotation, patch_annot). 
-            patch_annot is updated with target_patch_indices and reference_patch_indices.
+            Binary mask as numpy array with same height/width as image.
+            Pixels covered by patches are set to 1, others to 0.
         """
-        # Get reference bbox from instance
-        ref_bbox = instance['pred_box'].cpu().numpy()
-        ref_bbox_coords = [int(coord) for coord in ref_bbox]
-        reference_mask = patch_annot['mask']
-        artifact_type = patch_annot['artifact_type']
-
-        img_height, img_width = reference_mask.shape
         
-        # Get patch indices from patch_annot
-        target_patch_indices = patch_annot.get('target_patch_indices', [])
-        reference_patch_indices = patch_annot.get('reference_patch_indices', [])
-        patch_size = patch_annot.get('patch_size', 16)
+        img_height, img_width = img_shape[:2]
+        mask = np.zeros((img_height, img_width), dtype=np.uint8)
+        for py, px in patch_coords: 
+            y_start = py * patch_size
+            y_end = min((py + 1) * patch_size, img_height)
+            x_start = px * patch_size
+            x_end = min((px + 1) * patch_size, img_width)
+            mask[y_start:y_end, x_start:x_end] = 1
         
-        # Calculate patch grid dimensions
-        patch_w = img_width // patch_size
-        patch_h = img_height // patch_size
-        
-        # Create target mask from target_patch_indices
-        target_mask = np.zeros((img_height, img_width), dtype=np.uint8)
-        if target_patch_indices:
-            target_patch_coords = patch_indices_to_coords(target_patch_indices, patch_w, txt_len=512)
-            for py, px in target_patch_coords:
-                y_start = py * patch_size
-                y_end = min((py + 1) * patch_size, img_height)
-                x_start = px * patch_size
-                x_end = min((px + 1) * patch_size, img_width)
-                target_mask[y_start:y_end, x_start:x_end] = 1
-        
-        # Create reference mask from reference_patch_indices  
-        reference_mask = np.zeros((img_height, img_width), dtype=np.uint8)
-        if reference_patch_indices:
-            reference_patch_coords = patch_indices_to_coords(reference_patch_indices, patch_w, txt_len=512)
-            for py, px in reference_patch_coords:
-                y_start = py * patch_size
-                y_end = min((py + 1) * patch_size, img_height)
-                x_start = px * patch_size
-                x_end = min((px + 1) * patch_size, img_width)
-                reference_mask[y_start:y_end, x_start:x_end] = 1
-        
-        # Create base annotation
-        anno = {
-            'bounding_box_ref': {
-                "xmax": ref_bbox_coords[2],
-                "xmin": ref_bbox_coords[0],
-                "ymax": ref_bbox_coords[3],
-                "ymin": ref_bbox_coords[1]
-            },
-            'artifact_type': artifact_type,
-        }
-        
-        # Add reference mask to annotation
-        anno['target_mask'] = target_mask
-        anno['reference_mask'] = reference_mask
-        return anno, patch_annot
+        return mask
 
     @staticmethod
     def create_addition_patch_mapping(annotation, img_shape, reference_patch_indices, patch_size=16):
@@ -698,7 +638,7 @@ class InstanceProcessor:
                 y_end = min((py + 1) * patch_size, patch_H)
                 x_start = px * patch_size
                 x_end = min((px + 1) * patch_size, patch_W)
-                reference_mask[y_start:y_end, x_start:x_end] = 255
+                reference_mask[y_start:y_end, x_start:x_end] = 1
         
         # If original image was larger than patch-aligned dimensions, pad the mask
         if H > patch_H or W > patch_W:
@@ -735,7 +675,7 @@ class InstanceProcessor:
                 
                 # If any part of the patch contains mask pixels, fill the entire patch
                 if np.any(patch_region > 0):
-                    aligned_mask[y_start:y_end, x_start:x_end] = 255
+                    aligned_mask[y_start:y_end, x_start:x_end] = 1
         
         return aligned_mask
 
@@ -998,125 +938,15 @@ class InstanceProcessor:
         new_coords = [tuple(seeds[idx]) for idx in nearest_idx]
         return new_coords
 
-    # Patch Processing Methods
     @staticmethod
-    def create_masks_and_patch_annotations_from_instance(instance, img_shape, artifact_type: str, patch_size: int = 16) -> Tuple[Dict, Dict]:
-        """
-        Create both masks and patch annotations from VLPart instance in a single operation
-        
-        Args:
-            instance: VLPart instance with bbox and potentially mask
-            img_shape: Shape of the image (H, W)
-            artifact_type: Type of artifact ('addition', 'removal', 'distortion')
-            patch_size: Size of patches (default 16 for FLUX)
-            
-        Returns:
-            Tuple of (masks_dict, patch_annotations_dict)
-        """
-        H, W = img_shape[:2]
-        
-        # Ensure dimensions are compatible with patch size
-        patch_H = (H // patch_size) * patch_size
-        patch_W = (W // patch_size) * patch_size
-        
-        instance_mask = instance.get('pred_mask', None)
-        if instance_mask is not None:
-            instance_mask = instance_mask.cpu().numpy().astype(np.uint8) if hasattr(instance_mask, 'cpu') else instance_mask.astype(np.uint8)
-        
-        # Create reference mask
-        if instance_mask is not None:
-            # Use the actual segmentation mask but align to patches
-            # Crop to patch-aligned dimensions
-            seg_mask_cropped = instance_mask[:patch_H, :patch_W]
-            
-            # Align mask to patch boundaries inline
-            mask_H, mask_W = seg_mask_cropped.shape
-            patch_rows, patch_cols = mask_H // patch_size, mask_W // patch_size
-            
-            reference_mask = np.zeros((patch_rows * patch_size, patch_cols * patch_size), dtype=np.uint8)
-            
-            for py in range(patch_rows):
-                for px in range(patch_cols):
-                    # Get the patch region in the original mask
-                    y_start, y_end = py * patch_size, (py + 1) * patch_size
-                    x_start, x_end = px * patch_size, (px + 1) * patch_size
-                    
-                    patch_region = seg_mask_cropped[y_start:y_end, x_start:x_end]
-                    
-                    # If any part of the patch contains mask pixels, fill the entire patch
-                    if np.any(patch_region > 0):
-                        reference_mask[y_start:y_end, x_start:x_end] = 255
-        
-        # If original image was larger than patch-aligned dimensions, pad the mask
-        if H > patch_H or W > patch_W:
-            padded_mask = np.zeros((H, W), dtype=np.uint8)
-            padded_mask[:patch_H, :patch_W] = reference_mask
-            reference_mask = padded_mask
-        
-        # Convert segmentation mask to patch indices
-        segmentation_patch_indices = mask_to_patch_indices(reference_mask, patch_size=patch_size, txt_len=512)
-
-        # Create patch annotations
-        patch_annotations = {
-            'mask_patch_indices': segmentation_patch_indices,
-            'mask': reference_mask,
-            'artifact_type': artifact_type,
-            'patch_size': patch_size,
-            'img_shape': img_shape[:2],
-        }
-            
-        return patch_annotations
-
-    @staticmethod
-    def create_patch_annotations_from_instance(segmentation_mask, img_shape, artifact_type: str, patch_size: int = 16) -> Dict:
-        """
-        Create patch index annotations from VLPart instance
-        
-        Args:
-            instance: VLPart instance with bbox and potentially mask
-            img_shape: Shape of the image (H, W)
-            artifact_type: Type of artifact ('addition', 'removal', 'distortion')
-            patch_size: Size of patches (default 16 for FLUX)
-            
-        Returns:
-            Dictionary containing patch indices and mapping information
-        """
-        # Convert segmentation mask to patch indices
-        segmentation_patch_indices = mask_to_patch_indices(segmentation_mask, patch_size=patch_size, txt_len=512)
-
-        if artifact_type == 'addition':
-            annotations = {
-                'reference_patch_indices': segmentation_patch_indices,
-                'reference_mask': segmentation_mask,
-                'artifact_type': artifact_type,
-                'patch_size': patch_size
-            }
-            annotations['target_patch_indices'] = None
-            annotations['target_mask'] = None
-
-        # For addition artifacts, we'll add target information later
-        else:
-            annotations = {
-                'target_patch_indices': segmentation_patch_indices,
-                'target_mask': segmentation_mask,
-                'artifact_type': artifact_type,
-                'patch_size': patch_size
-            }
-
-            annotations['reference_patch_indices'] = None
-            annotations['reference_mask'] = None
-
-            
-        return annotations
-
-    @staticmethod
-    def generate_addition_probability_map(reference_instance, predictions, mask_patch_coords, img_shape, patch_size: int = 16, alpha: float = 2.0, max_entity_overlap: float = 0.7, distance_penalty_weight: float = 0.1) -> Tuple[np.ndarray, Dict]:
+    def generate_addition_probability_map(reference_instance, predictions, entity_predictions, mask_patch_coords, img_shape, patch_size: int = 16, alpha: float = 2.0, max_entity_overlap: float = 0.7, distance_penalty_weight: float = 0.1) -> Tuple[np.ndarray, Dict]:
         """
         Generate a 2D probability map for addition artifact candidates using perimeter patches
         
         Args:
             reference_instance: The reference instance
-            predictions: VLPart model predictions  
+            predictions: GSAM model predictions  
+            entity_predictions: GSAM model entity predictions
             mask_patch_coords: List of patch coordinates for the reference instance
             img_shape: Image shape (height, width, channels)
             patch_size: Size of patches (default 16)
@@ -1142,15 +972,23 @@ class InstanceProcessor:
         # Get reference bbox and mask
         ref_bbox = reference_instance['pred_box'].cpu().numpy()
         ref_mask = reference_instance['pred_mask'].cpu().numpy()
+        ref_entity_name = reference_instance['mapped_entity_name']
+        
+        # Convert reference mask to patch-aligned version for consistent calculations throughout
+        # This ensures IoU calculations are performed at patch granularity, matching FLUX's patch-based approach
+        ref_mask_patch = InstanceProcessor._align_mask_to_patches(ref_mask.astype(np.uint8), patch_size)
+
+        # Get reference class from sampled instance
+        reference_class_idx = reference_instance['pred_class'].item()
         
         # Step 1: Find best entity (vocab[0]) with highest overlap with reference_instance
         entity_instances = []
-        for i in range(len(predictions['pred_boxes'])):
-            if predictions['pred_classes'][i] == 0:
+        for i, pred_instance in enumerate(entity_predictions):
+            if ref_entity_name == pred_instance['entity_name']:
                 entity_instances.append({
                     'idx': i,
-                    'bbox': predictions['pred_boxes'][i].cpu().numpy(),
-                    'mask': predictions['pred_masks'][i].cpu().numpy()
+                    'bbox': pred_instance['pred_box'].cpu().numpy(),
+                    'mask': pred_instance['pred_mask'].cpu().numpy()
                 })
         
         if not entity_instances:
@@ -1176,13 +1014,13 @@ class InstanceProcessor:
         reference_class_idx = reference_instance['pred_class'].item()
         same_class_instances = []
         
-        for i in range(len(predictions['pred_boxes'])):
-            if (predictions['pred_classes'][i] == reference_class_idx and 
-                not torch.equal(predictions['pred_boxes'][i], torch.from_numpy(ref_bbox).float())):
+        for i, pred_instance in enumerate(predictions):
+            if (pred_instance['pred_class'] == reference_class_idx and 
+                not torch.equal(pred_instance['pred_box'], torch.from_numpy(ref_bbox).float())):
                 same_class_instances.append({
                     'idx': i,
-                    'bbox': predictions['pred_boxes'][i].cpu().numpy(),
-                    'mask': predictions['pred_masks'][i].cpu().numpy()
+                    'bbox': pred_instance['pred_box'].cpu().numpy(),
+                    'mask': pred_instance['pred_mask'].cpu().numpy()
                 })
         
         # Step 3: Calculate reference center directly in patch coordinates
@@ -1291,7 +1129,7 @@ class InstanceProcessor:
                 continue
             
             # Set target mask pixels
-            target_mask[valid_target_y, valid_target_x] = 255
+            target_mask[valid_target_y, valid_target_x] = 1
             target_area = np.sum(target_mask > 0)
             
             if target_area == 0:
@@ -1299,8 +1137,11 @@ class InstanceProcessor:
             
             # Step 5-4: Calculate three IoU-based scores
             
+            # Convert entity mask to patch-aligned version for consistent calculations
+            entity_mask_patch = InstanceProcessor._align_mask_to_patches(best_entity['mask'].astype(np.uint8), patch_size)
+            
             # IoU with entity (positive contribution) - exclude reference mask area
-            entity_mask_excluding_ref = best_entity['mask'] & (~ref_mask)
+            entity_mask_excluding_ref = entity_mask_patch & (~ref_mask_patch)
             entity_intersection = np.sum(target_mask & (entity_mask_excluding_ref > 0))
             entity_area = np.sum(entity_mask_excluding_ref > 0)
             entity_overlap = entity_intersection / entity_area if entity_area > 0 else 0.0
@@ -1311,13 +1152,14 @@ class InstanceProcessor:
             valid_candidates += 1
             
             # IoU with reference instance (negative contribution)
-            ref_intersection = np.sum(target_mask & (ref_mask > 0))
+            ref_intersection = np.sum(target_mask & (ref_mask_patch > 0))
             ref_overlap = ref_intersection / target_area
             
             # IoU with same class instances (negative contribution)
             max_same_class_overlap = 0.0
             for same_inst in same_class_instances:
-                same_intersection = np.sum(target_mask & (same_inst['mask'] > 0))
+                same_inst_mask_patch = InstanceProcessor._align_mask_to_patches(same_inst['mask'].astype(np.uint8), patch_size)
+                same_intersection = np.sum(target_mask & (same_inst_mask_patch > 0))
                 same_overlap = same_intersection / target_area
                 max_same_class_overlap = max(max_same_class_overlap, same_overlap)
             
