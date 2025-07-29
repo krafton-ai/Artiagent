@@ -36,7 +36,7 @@ from pipeline import (
     GSAMDetector, InstanceProcessor, ImageVisualizer,
 )
 from pipeline.data_loader import _initialize_data_loader, _get_image_list
-from pipeline.prompts import get_all_entity_subparts
+from pipeline.prompts import get_all_entity_subparts, kernel_type_decision
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
@@ -135,7 +135,7 @@ def _try_process_all_artifact_types(
             annotation = _create_artifact_annotations(
                 artifact_type, prediction,
                 predictions, entity_predictions, entity_name, subentity_name, img_array, config,
-                image_output_dir, img_filename, logger
+                image_output_dir, img_filename, logger, openai_client
             )
         except Exception as e:
             logger.error(f"Error creating {artifact_type} artifact for {entity_name} of {subentity_name}: {str(e)}")
@@ -232,6 +232,7 @@ def _create_artifact_annotations(
     image_output_dir: str,
     img_filename: str,
     logger: logging.Logger,
+    openai_client
 ) -> Dict[str, Any]:
     """
     Create artifact annotations for a detected entity-subpart combination.
@@ -253,11 +254,15 @@ def _create_artifact_annotations(
         Dictionary containing artifact annotation data including bboxes and patch indices
     """
     # Handle random distortion kernel sampling
-    distortion_kernel = config['distortion_kernel']
-    if config['random_distortion'] and artifact_type == 'distortion':
-        available_kernels = ['none', 'jitter', 'swirl', 'voronoi']
-        distortion_kernel = random.choice(available_kernels)
-        logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
+    if artifact_type == 'distortion':
+        distortion_kernel = kernel_type_decision(openai_client, prediction, img_array)
+        logger.info(f"  Prompt selected distortion kernel: {distortion_kernel}")
+    else:
+        distortion_kernel = 'none'
+        # if config['random_distortion'] and artifact_type == 'distortion':
+        #     available_kernels = ['none', 'jitter', 'swirl', 'voronoi']
+        #     distortion_kernel = random.choice(available_kernels)
+        #     logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
     
     # Create artifact patches
     target_patches, reference_patches = InstanceProcessor.create_artifact_patches(

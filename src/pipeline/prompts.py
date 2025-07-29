@@ -1201,22 +1201,13 @@ def artifact_type_decision(client, sampled_instance, image, money_manager=None):
         print(f"Error analyzing sampled instance: {e}")
         return None
 
-def kernel_type_decision(client, sampled_instance, image, money_manager=None):
+def kernel_type_decision(client, prediction, image, money_manager=None):
     """
     Decide distortion kernel type using OpenAI Vision API
-    
-    Args:
-        sampled_instance: The sampled instance object (contains bbox, scores, etc.)
-        image: The image array (numpy array)
-        client: OpenAI client (if None, uses default openai module)
-        money_manager: MoneyManager instance for cost tracking (optional)
-        
-    Returns:
-        The response from OpenAI API or None if error
     """
 
     # Extract instance information
-    mask = sampled_instance['pred_mask'].cpu().numpy()
+    mask = prediction['pred_mask'].cpu().numpy()
     # Convert mask to grayscale image and encode to base64 (same datatype as base64_image)
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.imshow(image)
@@ -1243,14 +1234,16 @@ def kernel_type_decision(client, sampled_instance, image, money_manager=None):
     buf.seek(0)
     # Open the image from the buffer using PIL
     visualized = Image.open(buf)
-    # Close the buffer
-    buf.close()
+    
     # mask_image = (mask * 255).astype(np.uint8)
     # base64_mask = encode_image_to_base64(mask_image)
 
     # Encode image to base64
     base64_image = encode_image_to_base64(image)
     base64_visualized = encode_image_to_base64(visualized)
+
+    # Close the buffer
+    buf.close()
     
     prompt = """
     1 · Purpose
@@ -1355,7 +1348,7 @@ When to choose: Well-suited to more structured or segmented regions—such as ar
     except Exception as e:
         print(f"Error analyzing sampled instance: {e}")
         return None
-
+        
 def encode_image_to_base64(image):
     """Convert PIL Image or numpy array to base64 string"""
     if isinstance(image, np.ndarray):
