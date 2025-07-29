@@ -8,14 +8,6 @@ from torch import Tensor
 from .model import Flux
 from .modules.conditioner import HFEmbedder
 
-from .artifacts_util import (
-    bbox_to_patch_indices, get_closest_patch_ind, sample_closest_patch_ind, 
-    get_interpolated_patch_ind, get_neighbors_patch_ind, visualize_patch_assignments, 
-    visualize_each_patch_assignment, perturb_pe, shuffle_pe,
-    # Patch-based functions (keeping for potential future use)
-    mask_to_patch_indices
-)
-
 def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[str], 
            info=None) -> dict[str, Tensor]:
     """

@@ -14,10 +14,10 @@ Features:
 """
 
 import os
+import uuid
 import sys
 import json
 import time
-from PIL import Image
 import logging
 import pickle
 import random
@@ -26,25 +26,17 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any
 import traceback
 from collections import defaultdict
-
+import random
 import numpy as np
-import torch
 import openai
-
-try:
-    from tqdm import tqdm
-except ImportError:
-    def tqdm(iterable, *args, **kwargs):
-        return iterable
+import torch
+from tqdm import tqdm
 
 from pipeline import (
-    GSAMDetector, COCODataLoader, ImageNetDataLoader, 
-    CustomDirectoryDataLoader, InstanceProcessor, ImageVisualizer
+    GSAMDetector, InstanceProcessor, ImageVisualizer,
 )
-from pipeline.prompts import (
-    addition_select_candidate, visualize_all_candidates, 
-    visualize_candidate_images_for_api, addition_suggest_offset, get_all_entity_subparts
-)
+from pipeline.data_loader import _initialize_data_loader, _get_image_list
+from pipeline.prompts import get_all_entity_subparts
 
 
 def setup_logging(output_dir: str, supercategory: str) -> logging.Logger:
@@ -78,48 +70,6 @@ def setup_logging(output_dir: str, supercategory: str) -> logging.Logger:
     return logging.getLogger(__name__)
 
 
-def create_target_mask_from_patches(
-    target_patch_indices: List[int], 
-    img_shape: Tuple[int, int, int], 
-    patch_size: int = 16
-) -> np.ndarray:
-    """
-    Create target mask from patch indices for addition artifacts.
-    
-    Args:
-        target_patch_indices: List of target patch indices
-        img_shape: Image shape (H, W, C)
-        patch_size: Size of patches (default 16)
-        
-    Returns:
-        Target mask as numpy array
-    """
-    from flux.artifacts_util import patch_indices_to_coords
-    
-    height, width = img_shape[:2]
-    patch_width = width // patch_size
-    
-    # Create empty mask
-    target_mask = np.zeros((height, width), dtype=np.uint8)
-    
-    if target_patch_indices and patch_indices_to_coords is not None:
-        # Convert patch indices to coordinates
-        patch_coords = patch_indices_to_coords(
-            target_patch_indices, patch_width, txt_len=512
-        )
-        
-        # Fill patches in the mask
-        for patch_y, patch_x in patch_coords:
-            y_start = patch_y * patch_size
-            y_end = min((patch_y + 1) * patch_size, height)
-            x_start = patch_x * patch_size
-            x_end = min((patch_x + 1) * patch_size, width)
-            
-            target_mask[y_start:y_end, x_start:x_end] = 255
-    
-    return target_mask
-
-
 def create_visualizations(
     img_array: np.ndarray, 
     img_filename: str, 
@@ -145,79 +95,79 @@ def create_visualizations(
     visualizer.save_raw_image(
         img_array,
         base_dir=image_output_dir,
-        filename="01_original_image.png"
+        filename="real_image.png"
     )
     
-    # Save detection results
-    visualizer.show_detection_results(
-        img_array, 
-        visualized_output,
-        image_name=img_filename, 
-        base_dir=image_output_dir,
-        filename="02_detection_results.png"
-    )
+    # # Save detection results
+    # visualizer.show_detection_results(
+    #     img_array, 
+    #     visualized_output,
+    #     image_name=img_filename, 
+    #     base_dir=image_output_dir,
+    #     filename="02_detection_results.png"
+    # )
     
-    # Create artifact-specific visualizations
-    for artifact_type, artifacts_list in artifacts.items():
-        if artifacts_list:  # Check if list is not empty
-            # Handle list of artifacts per type
-            if not isinstance(artifacts_list, list):
-                artifacts_list = [artifacts_list]
+    # # Create artifact-specific visualizations
+    # for artifact_type, artifacts_list in artifacts.items():
+    #     if artifacts_list:  # Check if list is not empty
+    #         # Handle list of artifacts per type
+    #         if not isinstance(artifacts_list, list):
+    #             artifacts_list = [artifacts_list]
             
-            # Create combined visualization for all artifacts of this type
-            all_target_masks = []
-            all_reference_masks = []
+    #         # Create combined visualization for all artifacts of this type
+    #         all_target_masks = []
+    #         all_reference_masks = []
             
-            for artifact_idx, artifact_data in enumerate(artifacts_list):
-                if 'error' not in artifact_data:
-                    patch_data = artifact_data.get('patch_data', {})
+    #         for artifact_idx, artifact_data in enumerate(artifacts_list):
+    #             if 'error' not in artifact_data:
+    #                 patch_data = artifact_data.get('patch_data', {})
                     
-                    # Create target mask if patch indices exist
-                    target_mask = None
-                    if 'target_patch_indices' in patch_data:
-                        target_mask = create_target_mask_from_patches(
-                            patch_data['target_patch_indices'], 
-                            img_array.shape, 
-                            patch_size=16
-                        )
-                        if target_mask is not None:
-                            all_target_masks.append((target_mask, artifact_idx))
+    #                 # Create target mask if patch indices exist
+    #                 target_mask = None
+    #                 if 'target_patch_indices' in patch_data:
+    #                     target_mask = create_target_mask_from_patches(
+    #                         patch_data['target_patch_indices'], 
+    #                         img_array.shape, 
+    #                         patch_size=16
+    #                     )
+    #                     if target_mask is not None:
+    #                         all_target_masks.append((target_mask, artifact_idx))
                     
-                    # Create reference mask if patch indices exist
-                    reference_mask = None
-                    if 'reference_patch_indices' in patch_data:
-                        reference_mask = create_target_mask_from_patches(
-                            patch_data['reference_patch_indices'], 
-                            img_array.shape, 
-                            patch_size=16
-                        )
-                        if reference_mask is not None:
-                            all_reference_masks.append((reference_mask, artifact_idx))
+    #                 # Create reference mask if patch indices exist
+    #                 reference_mask = None
+    #                 if 'reference_patch_indices' in patch_data:
+    #                     reference_mask = create_target_mask_from_patches(
+    #                         patch_data['reference_patch_indices'], 
+    #                         img_array.shape, 
+    #                         patch_size=16
+    #                     )
+    #                     if reference_mask is not None:
+    #                         all_reference_masks.append((reference_mask, artifact_idx))
             
-            # Create visualizations for multiple artifacts
-            if all_target_masks and all_reference_masks:
-                # Create a combined mask structure for visualization
-                combined_masks = {}
+    #         # Create visualizations for multiple artifacts
+    #         if all_target_masks and all_reference_masks:
+    #             # Create a combined mask structure for visualization
+    #             combined_masks = {}
                 
-                for idx, (target_mask, artifact_idx) in enumerate(all_target_masks):
-                    if idx < len(all_reference_masks):
-                        reference_mask, _ = all_reference_masks[idx]
+    #             for idx, (target_mask, artifact_idx) in enumerate(all_target_masks):
+    #                 if idx < len(all_reference_masks):
+    #                     reference_mask, _ = all_reference_masks[idx]
                         
-                        # Create artifact-specific key
-                        artifact_key = f"{artifact_type}_artifact_{artifact_idx}"
-                        combined_masks[artifact_key] = {
-                            'reference_mask': reference_mask,
-                            'target_mask': target_mask
-                        }
+    #                     # Create artifact-specific key
+    #                     artifact_key = f"{artifact_type}_artifact_{artifact_idx}"
+    #                     combined_masks[artifact_key] = {
+    #                         'reference_mask': reference_mask,
+    #                         'target_mask': target_mask
+    #                     }
                 
-                # Visualize all artifacts for this type
-                if combined_masks:
-                    InstanceProcessor.visualize_patch_masks(
-                        img_array, 
-                        combined_masks, 
-                        img_filename, 
-                        image_output_dir
-                    )
+    #             # Visualize all artifacts for this type
+    #             if combined_masks:
+    #                 InstanceProcessor.visualize_patch_masks(
+    #                     img_array, 
+    #                     combined_masks, 
+    #                     img_filename, 
+    #                     image_output_dir
+    #                 )
 
 
 def _try_process_all_artifact_types(
@@ -226,7 +176,7 @@ def _try_process_all_artifact_types(
     gsam_detector: GSAMDetector,
     config: Dict[str, Any],
     openai_client: openai.OpenAI,
-    output_dir: str,
+    image_output_dir: str,
     img_filename: str,
     logger: logging.Logger
 ) -> Tuple[Dict[str, List[Dict]], Optional[np.ndarray], Optional[Any]]:
@@ -239,7 +189,7 @@ def _try_process_all_artifact_types(
         gsam_detector: GSAM detector instance
         config: Configuration dictionary
         openai_client: OpenAI client
-        output_dir: Output directory
+        image_output_dir: Output directory
         img_filename: Image filename
         logger: Logger instance
         
@@ -247,93 +197,57 @@ def _try_process_all_artifact_types(
         Tuple of (artifacts_by_type, visualized_output, combined_vocab)
     """
     logger.info(f"Getting entity subparts for all artifact types...")
-    image_output_dir = os.path.join(output_dir, f'image_{img_id}')
-    os.makedirs(image_output_dir, exist_ok=True)
+
     
-        # Step 1: Get all entity subparts from API
-        
+    # Step 1: Get all entity subparts from API
     all_subparts_response = get_all_entity_subparts(openai_client, img_array)
     if not all_subparts_response or 'error' in all_subparts_response:
-        logger.info(f"Failed to get entity subparts: {all_subparts_response}")
-        shutil.rmtree(image_output_dir)
-        return {}, None, None
-    
-    
+        raise RuntimeError("Failed to get entity subparts")
+        
     # Transform the response into a nested dictionary structure
     # First level: entity, Second level: subpart, Value: list of artifact types
+    entities = set()
+    subentities = set()
     entity_subpart_artifacts = defaultdict(lambda: defaultdict(list))
-    
     for artifact_type, vocab_data in all_subparts_response.items():
         entity = vocab_data['entity']
         subparts = vocab_data['subparts']
-        
-        for subpart in subparts:
-            entity_subpart_artifacts[entity][subpart].append(artifact_type)
-    
-    # Step 2: Build combined vocabulary and mappings
-    subentity_to_entity = defaultdict(set)  # "ear" -> "giraffe"
-    entity_to_artifact_types = defaultdict(set) # "giraffe" -> ["addition", "removal"]
-    entities = set()
-    subentities = set()
-    
-    for artifact_type, vocabs in all_subparts_response.items():
-            
-        entity = vocabs['entity']
-        subparts = vocabs['subparts']
         entities.add(entity)
-        
-        # Track artifact types for this entity
-        entity_to_artifact_types[entity].add(artifact_type)
-        
-        # Build vocabulary and subentity mappings
         for subpart in subparts:
-            vocab_item = f"{subpart} of {entity}"
-            subentity_to_entity[subpart].add(entity)
             subentities.add(subpart)
-        
-    logger.info(f"Entities: {list(entities)}")
-    logger.info(f"Subentities: {list(subentities)}")
+            entity_subpart_artifacts[entity][subpart].append(artifact_type)
 
     # Step 3: Single detection call with combined vocabulary
-    logger.info(f"Detecting parts using Grounded SAM with combined vocabulary...")
-    predictions, entity_predictions, visualized_output = gsam_detector.detect_parts(img_array, list(entities), list(subentities), min_area_ratio=0.001, max_area_ratio=0.5)
+    logger.info(f"Detecting parts using Grounded SAM...")
+    predictions, entity_predictions, visualized_output = gsam_detector.detect_parts(img_array, list(entities), list(subentities), min_area_ratio=0.005, max_area_ratio=0.5)
     # Step 4: Sample target parts with entity-aware logic
     logger.info(f"Sampling target parts across all entities...")
 
     artifacts = []
-    for artifact_idx, prediction in enumerate(predictions):
+    for prediction in predictions:
         entity_name = prediction['mapped_entity_name']
         subentity_name = prediction['subentity_name']
         
-        available_artifact_types = entity_subpart_artifacts.get(entity_name, {}).get(subentity_name, [])
-        
-        if not available_artifact_types:
-            logger.warning(f"No artifact types available for {subentity_name} of {entity_name}, skipping...")
+        artifact_type = random.choice(entity_subpart_artifacts[entity_name][subentity_name])
+        logger.info(f"Creating {artifact_type} artifact for {entity_name} of {subentity_name}")
+        try:
+            annotation = _create_artifact_annotations(
+                artifact_type, prediction,
+                predictions, entity_predictions, entity_name, subentity_name, img_array, config,
+                image_output_dir, img_filename, logger
+            )
+        except Exception as e:
+            logger.error(f"Error creating {artifact_type} artifact for {entity_name} of {subentity_name}: {str(e)}")
             continue
-            
-        artifact_type = random.choice(available_artifact_types)
-        subpart = prediction['subentity_name']
-        mapped_entity_name = prediction['mapped_entity_name']
-        sampled_idx = artifact_idx
-        
-        logger.info(f"Creating {artifact_type} artifact {artifact_idx + 1}: {subpart}")
-        
-        # Create artifact data for this instance
-        annotation = _create_artifact_annotations(
-            artifact_type, prediction, sampled_idx,
-            predictions, entity_predictions, mapped_entity_name, subpart, img_array, config,
-            image_output_dir, img_filename, logger, artifact_idx
-        )
         
         artifacts.append(annotation)
     
     if not artifacts:
-        logger.info(f"No artifacts were created successfully")
-        shutil.rmtree(image_output_dir)
-        return [], None
+        logger.error(f"No artifacts were created successfully")
+        raise RuntimeError("No artifacts were created successfully")
     
     # Sample final artifacts with completely non-overlapping patches
-    max_artifacts = config.get('max_artifacts_per_image', 3)
+    max_artifacts = config['max_artifacts_per_image']
 
     selected_artifacts = sample_multiple_target_artifacts(
         artifacts,
@@ -341,12 +255,10 @@ def _try_process_all_artifact_types(
     )
 
     if not selected_artifacts:
-        logger.info(f"No valid target parts found across all artifact types after sampling")
-        shutil.rmtree(image_output_dir)
-        return [], None
+        logger.error(f"No valid target parts found across all artifact types after sampling")
+        raise RuntimeError("No valid target parts found after sampling")
         
     logger.info(f"✅ Successfully selected {len(selected_artifacts)} non-overlapping artifacts")
-    
     total_artifacts = len(selected_artifacts)
     logger.info(f"✅ Created {total_artifacts} artifacts")
     
@@ -366,8 +278,6 @@ def sample_multiple_target_artifacts(
     Returns:
         List of selected artifacts with no overlapping patches
     """
-    if not annotations:
-        return []
     
     # Sort by confidence score (descending order - highest confidence first)
     sorted_annotations = sorted(
@@ -380,18 +290,19 @@ def sample_multiple_target_artifacts(
     
     def has_any_patch_overlap(new_artifact: Dict, existing_artifacts: List[Dict]) -> bool:
         """Check if new artifact has any patch overlap with existing ones."""
-        new_target_patches = set(new_artifact.get('patch_data', {}).get('target_patch_indices', []))
-        new_reference_patches = set(new_artifact.get('patch_data', {}).get('reference_patch_indices', []))
+        new_target_patches = set(new_artifact['target_patch_indices'])
+        new_reference_patches = set(new_artifact['reference_patch_indices'])
         
         for existing_artifact in existing_artifacts:
-            existing_target_patches = set(existing_artifact.get('patch_data', {}).get('target_patch_indices', []))
-            existing_reference_patches = set(existing_artifact.get('patch_data', {}).get('reference_patch_indices', []))
+            existing_target_patches = set(existing_artifact['target_patch_indices'])
+            existing_reference_patches = set(existing_artifact['reference_patch_indices'])
             
-            # Check for ANY overlap between any combination of patches
-            if (new_target_patches & existing_target_patches or          # target-target overlap
-                new_reference_patches & existing_reference_patches or    # reference-reference overlap
-                new_target_patches & existing_reference_patches or       # new target - existing reference overlap
-                new_reference_patches & existing_target_patches):        # new reference - existing target overlap
+            # Calculate union of all patches for each artifact
+            new_all_patches = new_target_patches | new_reference_patches
+            existing_all_patches = existing_target_patches | existing_reference_patches
+            
+            # Check for any overlap between the unions
+            if new_all_patches & existing_all_patches:
                 return True
                 
         return False
@@ -411,7 +322,6 @@ def sample_multiple_target_artifacts(
 def _create_artifact_annotations(
     artifact_type: str,
     prediction: Any,
-    sampled_idx: int,
     predictions: Any,
     entity_predictions: Any,
     entity: str,
@@ -421,36 +331,26 @@ def _create_artifact_annotations(
     image_output_dir: str,
     img_filename: str,
     logger: logging.Logger,
-    artifact_idx: int = 0
 ) -> Dict[str, Any]:
     """
-    Create artifact annotations for a successful detection.
+    Create artifact annotations for a detected entity-subpart combination.
     
     Args:
-        artifact_type: Type of artifact
-        prediction: Prediction data
-        sampled_idx: Index of sampled instance
-        class_name: Class name
-        predictions: Prediction results
-        vocab: Vocabulary list
-        img_array: Image array
-        config: Configuration dictionary
-        openai_client: OpenAI client
+        artifact_type: Type of artifact ('addition', 'removal', 'distortion')
+        prediction: Prediction data containing mask and bbox information
+        predictions: All detection predictions from the model
+        entity_predictions: Entity-level detection predictions
+        entity: Entity name (e.g., 'person')
+        subpart: Subpart name (e.g., 'hand')
+        img_array: Image array data
+        config: Configuration dictionary with artifact parameters
         image_output_dir: Output directory for this image
-        img_filename: Image filename
-        logger: Logger instance
-        artifact_idx: Index of this artifact among multiple artifacts (default: 0)
+        img_filename: Image filename for output files
+        logger: Logger instance for tracking progress
         
     Returns:
-        Annotations dictionary
+        Dictionary containing artifact annotation data including bboxes and patch indices
     """
-    logger.info(f"  Creating artifact data for instance {artifact_idx}...")
-    
-    # Create masks and patch annotations in one operation
-    patch_annotation = InstanceProcessor.create_masks_and_patch_annotations_from_instance(
-        prediction, img_array.shape, artifact_type, patch_size=16
-    )
-    
     # Handle random distortion kernel sampling
     distortion_kernel = config['distortion_kernel']
     if config['random_distortion'] and artifact_type == 'distortion':
@@ -464,7 +364,6 @@ def _create_artifact_annotations(
         prediction, 
         predictions, 
         entity_predictions,
-        patch_annotation, 
         img_array, 
         16, 
         distortion_kernel=distortion_kernel,
@@ -475,123 +374,36 @@ def _create_artifact_annotations(
     # Map patches to bounding box coordinates in real image dimensions
     target_bbox = InstanceProcessor.patch_coords_to_bbox(target_patches, patch_size=16)
     reference_bbox = InstanceProcessor.patch_coords_to_bbox(reference_patches, patch_size=16)
-    
-    logger.info(f"    Target patches: {len(target_patches)} patches -> BBox: {target_bbox}")
-    logger.info(f"    Reference patches: {len(reference_patches)} patches -> BBox: {reference_bbox}")
-    
-    # Store bounding box information for later use
-    patch_annotation['target_bbox'] = target_bbox
-    patch_annotation['reference_bbox'] = reference_bbox
 
+    target_mask = InstanceProcessor.patches_to_masks(target_patches, img_array.shape, patch_size=16)
+    reference_mask = InstanceProcessor.patches_to_masks(reference_patches, img_array.shape, patch_size=16)
+    
     # Create patch mapping
-    target_patch_indices, reference_patch_indices = InstanceProcessor.patch_coords_to_indices(
+    target_patch_indices, reference_patch_indices = InstanceProcessor.map_coords_to_patch_indices(
         artifact_type=artifact_type,
         target_patches=target_patches,
         reference_patches=reference_patches,
-        patch_annot=patch_annotation,
         img_shape=img_array.shape,
-        patch_size=16
+        patch_size=16,
+        txt_len=512
     )
 
-    # Update patch annotations with mapping
-    patch_annotation['target_patch_indices'] = target_patch_indices
-    patch_annotation['reference_patch_indices'] = reference_patch_indices
-    
-    # Create annotation dictionary
-    annotation, patch_annotation = InstanceProcessor.create_annotation_dict(
-        instance=prediction,
-        patch_annot=patch_annotation,
-    )
-    
+    logger.info(f"    Target patches: {len(target_patches)} patches -> {len(target_patch_indices)} patch indices")
+    logger.info(f"    Reference patches: {len(reference_patches)} patches -> {len(reference_patch_indices)} patch indices")
+
     # Return structured annotations with artifact index
     return {
         'artifact_type': artifact_type,
-        'artifact_idx': artifact_idx,
-        'annotation': annotation,
         'entity_name': entity,
         'subpart_name': subpart,
-        'sampled_instance_info': {
-            'sampled_idx': sampled_idx,
-            'bbox_coords': prediction['pred_box'].cpu().numpy().tolist(),
-            'score': prediction['score'].item(),
-            'class_idx': prediction['pred_class'].item()
-        },
-        'patch_data': patch_annotation,
+        'target_bbox': target_bbox,
+        'reference_bbox': reference_bbox,
+        'target_patch_indices': target_patch_indices,
+        'reference_patch_indices': reference_patch_indices,
+        'target_mask': target_mask,
+        'reference_mask': reference_mask,
         'distortion_kernel': distortion_kernel if artifact_type == 'distortion' else None
     }
-
-
-def _convert_numpy_types(obj: Any) -> Any:
-    """
-    Convert numpy arrays and types to Python native types for JSON serialization.
-    
-    Args:
-        obj: Object to convert
-        
-    Returns:
-        Converted object with Python native types
-    """
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, dict):
-        return {key: _convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [_convert_numpy_types(item) for item in obj]
-    elif isinstance(obj, tuple):
-        return tuple(_convert_numpy_types(item) for item in obj)
-    else:
-        return obj
-
-
-def _save_unified_data(
-    img_info: Dict[str, Any],
-    img_array: np.ndarray,
-    caption: str,
-    annotations: List[Dict[str, Any]],  # Now expecting a list of artifacts
-    image_output_dir: str
-) -> None:
-    """
-    Save unified data structure to file.
-    
-    Args:
-        img_info: Image information
-        img_array: Image array
-        caption: Image caption
-        annotations: List of artifact dictionaries, each containing artifact_type and other data    
-        image_output_dir: Output directory for this image
-    """
-    # Prepare unified data structure
-    unified_data = {
-        'image_info': img_info,
-        'image_array': img_array,
-        'caption': caption,
-        'artifacts': []
-    }
-    # Process each artifact in the annotations list
-    for artifact_data in annotations:
-        artifact_type = artifact_data['artifact_type']
-        unified_artifact = {
-            'artifact_type': artifact_type,
-            'artifact_name': f"{artifact_data['subpart_name']} of {artifact_data['entity_name']}",
-            'target_bbox': artifact_data['patch_data']['target_bbox'],
-            'reference_bbox': artifact_data['patch_data']['reference_bbox'],
-            'target_patch_indices': artifact_data['patch_data']['target_patch_indices'],
-            'reference_patch_indices': artifact_data['patch_data']['reference_patch_indices'],
-            'target_mask': artifact_data['annotation']['target_mask'],
-            'reference_mask': artifact_data['annotation']['reference_mask'],
-            'distortion_kernel': artifact_data['distortion_kernel'] if artifact_type == 'distortion' else None
-        }
-        unified_data['artifacts'].append(unified_artifact)
-
-    unified_data['processing_timestamp'] = datetime.now().isoformat()
-    # Save unified data
-    output_file = os.path.join(image_output_dir, 'metadata.pkl')
-    with open(output_file, 'wb') as f:
-        pickle.dump(unified_data, f)
 
 
 def process_single_image(
@@ -633,7 +445,7 @@ def process_single_image(
         'processing_time': 0,
         'artifacts_created': 0
     }
-    
+    image_output_dir = None
     start_time = time.time()
     try:
         # Load image and generate caption using data loader
@@ -645,42 +457,41 @@ def process_single_image(
         caption = data_loader.get_image_caption(img_info)
 
         # Process all artifact types at once
-        (artifacts, visualized_output) = _try_process_all_artifact_types(
-            img_array, img_id, gsam_detector, config,
-            openai_client, output_dir, img_filename, logger
-        )
+
+        try:
+            unique_id = str(uuid.uuid4())
+            image_output_dir = os.path.join(output_dir, f'{unique_id}')
+            os.makedirs(image_output_dir, exist_ok=True)
+            (artifacts, visualized_output) = _try_process_all_artifact_types(
+                img_array, img_id, gsam_detector, config,
+                openai_client, image_output_dir, img_filename, logger
+            )
+        except Exception as e:
+            logger.error(f"Error processing image {img_id}: {str(e)}")
+            shutil.rmtree(image_output_dir)
+            logger.error(traceback.format_exc())
+            raise e
 
         if not artifacts:
             results['error'] = "No valid target parts found for any artifact type after filtering"
             return results
 
-        # Use artifacts directly (now a flat list of selected artifacts)
-        annotations = artifacts
+        # create_visualizations(img_array, img_filename, caption, visualized_output, artifacts, image_output_dir, visualizer)
+        real_image_path = visualizer.save_raw_image(img_array, base_dir=image_output_dir, filename="real_image.png")
 
+        unified_data = {
+            'id': unique_id,
+            'real_image_path': real_image_path,
+            'caption': caption,
+            'artifacts': artifacts
+        }
         # Save unified data
-        image_output_dir = os.path.join(output_dir, f'image_{img_id}')
-        _save_unified_data(
-            img_info, img_array, caption, 
-            annotations, image_output_dir
-        )
-
-        # Create visualizations - group artifacts by type for visualization
-        artifacts_for_visualization = {}
-        for artifact_data in artifacts:
-            artifact_type = artifact_data['artifact_type']
-            if artifact_type not in artifacts_for_visualization:
-                artifacts_for_visualization[artifact_type] = []
-            artifacts_for_visualization[artifact_type].append({
-                'annotation': artifact_data['annotation'],
-                'patch_data': artifact_data['patch_data']
-            })
-
-        create_visualizations( img_array, img_filename, caption, visualized_output,
-            artifacts_for_visualization, image_output_dir, visualizer
-        )
+        output_file = os.path.join(image_output_dir, 'metadata.pkl')
+        with open(output_file, 'wb') as f:
+            pickle.dump(unified_data, f)
         
         results['success'] = True
-        results['artifacts_created'] = len(annotations) if annotations else 0
+        results['artifacts_created'] = len(artifacts) if artifacts else 0
         
         # Extract artifact types and details from flat list
         artifact_types_processed = list(set(artifact['artifact_type'] for artifact in artifacts))
@@ -694,7 +505,6 @@ def process_single_image(
                 artifact_details[artifact_type] = []
             artifact_details[artifact_type].append({
                 'subpart_name': artifact['subpart_name'], 
-                'score': artifact['sampled_instance_info']['score']
             })
         results['artifact_details'] = artifact_details
         logger.info(f"✅ Processed image {img_id} with {results['artifacts_created']} artifacts")
@@ -706,28 +516,6 @@ def process_single_image(
     
     results['processing_time'] = time.time() - start_time
     return results
-
-
-def _initialize_data_loader(dataset_type: str, config: Dict[str, Any]) -> Any:
-    """
-    Initialize the appropriate data loader based on dataset type.
-    
-    Args:
-        dataset_type: Type of dataset ('coco', 'imagenet', 'custom')
-        config: Configuration dictionary
-        
-    Returns:
-        Initialized data loader instance
-    """
-    if dataset_type == "coco":
-        return COCODataLoader(config['dataset_path'], config['image_path'])
-    elif dataset_type == "imagenet":
-        return ImageNetDataLoader(config['dataset_path'], config['imagenet_split'])
-    elif dataset_type == "custom":
-        return CustomDirectoryDataLoader(config['dataset_path'])
-    else:
-        raise ValueError(f"Unsupported dataset type: {dataset_type}")
-
 
 def _load_progress_stats(progress_file: str, resume: bool, logger: logging.Logger) -> Dict[str, Any]:
     """
@@ -764,192 +552,6 @@ def _load_progress_stats(progress_file: str, resume: bool, logger: logging.Logge
             logger.warning(f"Could not load progress file: {e}")
     
     return stats
-
-
-def _get_coco_image_list(
-    data_loader: COCODataLoader, 
-    categories: List[str], 
-    max_images: Optional[int] = None,
-    max_instances_per_image: Optional[int] = 3
-) -> List[Dict[str, Any]]:
-    """
-    Get image list for COCO dataset with optional filtering.
-    
-    Args:
-        data_loader: COCO data loader instance
-        categories: List of categories to process
-        max_images: Maximum number of images to process
-        max_instances_per_image: Maximum instances per image for filtering
-        
-    Returns:
-        List of image information dictionaries
-    """
-    cat_ids = data_loader.get_category_ids(categories)
-    image_list = []
-    image_ids_seen = set()
-    
-    # Count instances per image if filtering is requested
-    instance_counts = {}
-    if max_instances_per_image is not None:
-        print("Counting instances per image...")
-        from collections import defaultdict
-        instance_counts = defaultdict(int)
-        for ann in data_loader.coco_class.dataset['annotations']:
-            image_id = ann['image_id']
-            instance_counts[image_id] += 1
-    
-    for cat_id in cat_ids:
-        img_ids = data_loader.coco_class.getImgIds(catIds=[cat_id])
-        for img_id in img_ids:
-            if img_id not in image_ids_seen:
-                # Filter by instance count if specified
-                if max_instances_per_image is not None:
-                    if instance_counts[img_id] >= max_instances_per_image:
-                        continue
-                
-                img_info = data_loader.coco_class.loadImgs([img_id])[0]
-                image_list.append(img_info)
-                image_ids_seen.add(img_id)
-                
-                if max_images and len(image_list) >= max_images:
-                    break
-        if max_images and len(image_list) >= max_images:
-            break
-    
-    return image_list
-
-
-def _get_imagenet_image_list(
-    data_loader: ImageNetDataLoader, 
-    categories: List[str], 
-    max_images: Optional[int] = None
-) -> List[Dict[str, Any]]:
-    """
-    Get image list for ImageNet dataset.
-    
-    Args:
-        data_loader: ImageNet data loader instance
-        categories: List of categories to process
-        max_images: Maximum number of images to process
-        
-    Returns:
-        List of image information dictionaries
-    """
-    # Determine target synsets
-    target_synsets = []
-    for class_name in categories:
-        for synset, mapped_name in data_loader.class_mapping.items():
-            if mapped_name.lower() == class_name.lower() and synset in data_loader.synsets:
-                target_synsets.append(synset)
-    
-    if not target_synsets:
-        target_synsets = data_loader.synsets
-    
-    image_list = []
-    for synset in target_synsets:
-        image_paths = data_loader.get_images_by_synset(synset)
-        for img_path in image_paths:
-            img_info = {
-                'id': hash(img_path) % 1000000,  # Generate unique ID
-                'file_name': os.path.basename(img_path),
-                'file_path': img_path,
-                'synset': synset,
-                'class_name': data_loader.class_mapping.get(synset, synset)
-            }
-            image_list.append(img_info)
-            
-            if max_images and len(image_list) >= max_images:  
-                break
-        if max_images and len(image_list) >= max_images:
-            break
-    
-    return image_list
-
-
-def _get_custom_image_list(
-    data_loader: CustomDirectoryDataLoader, 
-    categories: List[str], 
-    max_images: Optional[int] = None,
-    logger: logging.Logger = None
-) -> List[Dict[str, Any]]:
-    """
-    Get image list for custom dataset.
-    
-    Args:
-        data_loader: Custom directory data loader instance
-        categories: List of categories to process
-        max_images: Maximum number of images to process
-        logger: Logger instance
-        
-    Returns:
-        List of image information dictionaries
-    """
-    # Get all available class names from the directory structure
-    available_classes = data_loader.get_class_names()
-    if logger:
-        logger.info(f"Available classes in custom dataset: {available_classes}")
-    
-    # Filter categories to only include those available in the dataset
-    target_classes = [cls for cls in categories if cls in available_classes]
-    if not target_classes:
-        if logger:
-            logger.warning(
-                f"None of the specified categories {categories} found in dataset. "
-                f"Available: {available_classes}"
-            )
-        target_classes = available_classes  # Use all available classes
-    
-    if logger:
-        logger.info(f"Processing classes: {target_classes}")
-    
-    image_list = []
-    for class_name in target_classes:
-        image_paths = data_loader.get_all_images_from_class(class_name)
-        for img_path in image_paths:
-            img_info = {
-                'id': hash(img_path) % 1000000,  # Generate unique ID
-                'file_name': os.path.basename(img_path),
-                'file_path': img_path,
-                'class_name': class_name
-            }
-            image_list.append(img_info)
-            
-            if max_images and len(image_list) >= max_images:
-                break
-        if max_images and len(image_list) >= max_images:
-            break
-    
-    return image_list
-
-
-def _get_image_list(
-    dataset_type: str, 
-    data_loader: Any, 
-    categories: List[str], 
-    max_images: Optional[int] = None,
-    logger: logging.Logger = None
-) -> List[Dict[str, Any]]:
-    """
-    Get image list based on dataset type.
-    
-    Args:
-        dataset_type: Type of dataset
-        data_loader: Data loader instance
-        categories: List of categories to process
-        max_images: Maximum number of images to process
-        logger: Logger instance
-        
-    Returns:
-        List of image information dictionaries
-    """
-    if dataset_type == "coco":
-        return _get_coco_image_list(data_loader, categories, max_images)
-    elif dataset_type == "imagenet":
-        return _get_imagenet_image_list(data_loader, categories, max_images)
-    elif dataset_type == "custom":
-        return _get_custom_image_list(data_loader, categories, max_images, logger)
-    else:
-        raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
 
 def _update_progress_stats(
@@ -1091,7 +693,6 @@ def _print_processing_summary(
 
 def run_gsam_processing(
     categories: List[str], 
-    artifact_types: List[str],
     max_images: Optional[int] = None, 
     resume: bool = False,
     config: Dict[str, Any] = None,
@@ -1103,7 +704,6 @@ def run_gsam_processing(
     
     Args:
         categories: List of categories to process
-        artifact_types: List of artifact types to process
         max_images: Maximum number of images to process
         resume: Whether to resume from previous run
         config: Configuration dictionary
@@ -1123,11 +723,6 @@ def run_gsam_processing(
     logger.info(f"Categories: {categories}")
     logger.info(f"Artifact types to process: {config['artifact_types']}")
     logger.info(f"Distortion kernel: {distortion_kernel}")
-    logger.info(
-        f"Using smart IoU-based bbox generation "
-        f"(max_ref_overlap={config['max_ref_overlap']}, "
-        f"min_entity_overlap={config['min_entity_overlap']})"
-    )
     
     # Setup and load progress tracking
     progress_file = os.path.join(output_dir, f'processing_progress.json')
@@ -1240,8 +835,6 @@ def _create_dataset_config(args: Any) -> Dict[str, Any]:
         'random_distortion': args.random_distortion,
         # Artifact configuration
         'max_artifacts_per_image': args.max_artifacts_per_image,
-        'min_score_threshold': args.min_score_threshold,
-        'min_spatial_distance': args.min_spatial_distance
     }
     
     if args.dataset == 'coco':
@@ -1304,8 +897,6 @@ def _print_startup_info(args: Any, config: Dict[str, Any]) -> None:
     
     # Artifact configuration info
     print(f"🔢 Max artifacts per image: {args.max_artifacts_per_image}")
-    print(f"   • Min score threshold: {args.min_score_threshold}")
-    print(f"   • Min spatial distance: {args.min_spatial_distance}")
     
     if args.random_distortion:
         print(f"🔧 Distortion kernel: random sampling (jitter, swirl, voronoi)")
@@ -1503,7 +1094,6 @@ def main() -> None:
     # Run processing
     run_gsam_processing(
         categories=args.categories,
-        artifact_types=args.artifact_types,
         max_images=args.max_images,
         resume=args.resume,
         config=config,
@@ -1519,9 +1109,6 @@ def _set_random_seed(seed: int) -> None:
     Args:
         seed: Random seed value
     """
-    import random
-    import numpy as np
-    import torch
     
     random.seed(seed)
     np.random.seed(seed)

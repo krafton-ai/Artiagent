@@ -52,6 +52,7 @@ class ImageVisualizer:
         # Save the raw PIL image
         image.save(save_path)
         print(f"Raw image saved to {save_path}")
+        return save_path
     
     @staticmethod
     def show_image(image: Union[np.ndarray, Image.Image], 
