@@ -37,6 +37,8 @@ from pipeline import (
 )
 from pipeline.data_loader import _initialize_data_loader, _get_image_list
 from pipeline.prompts import get_all_entity_subparts
+from PIL import Image
+from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
 
 def setup_logging(output_dir: str, supercategory: str) -> logging.Logger:
@@ -68,107 +70,6 @@ def setup_logging(output_dir: str, supercategory: str) -> logging.Logger:
     )
     
     return logging.getLogger(__name__)
-
-
-def create_visualizations(
-    img_array: np.ndarray, 
-    img_filename: str, 
-    caption: str,
-    visualized_output: np.ndarray, 
-    artifacts: Dict[str, Any], 
-    image_output_dir: str, 
-    visualizer: ImageVisualizer
-) -> None:
-    """
-    Create all visualizations for an image in image-specific directory.
-    
-    Args:
-        img_array: Original image array
-        img_filename: Image filename
-        caption: Image caption (unused but kept for compatibility)
-        visualized_output: Detection visualization output
-        artifacts: Artifact data dictionary (now supports lists of artifacts per type)
-        image_output_dir: Output directory for visualizations
-        visualizer: ImageVisualizer instance
-    """
-    # Save original image
-    visualizer.save_raw_image(
-        img_array,
-        base_dir=image_output_dir,
-        filename="real_image.png"
-    )
-    
-    # # Save detection results
-    # visualizer.show_detection_results(
-    #     img_array, 
-    #     visualized_output,
-    #     image_name=img_filename, 
-    #     base_dir=image_output_dir,
-    #     filename="02_detection_results.png"
-    # )
-    
-    # # Create artifact-specific visualizations
-    # for artifact_type, artifacts_list in artifacts.items():
-    #     if artifacts_list:  # Check if list is not empty
-    #         # Handle list of artifacts per type
-    #         if not isinstance(artifacts_list, list):
-    #             artifacts_list = [artifacts_list]
-            
-    #         # Create combined visualization for all artifacts of this type
-    #         all_target_masks = []
-    #         all_reference_masks = []
-            
-    #         for artifact_idx, artifact_data in enumerate(artifacts_list):
-    #             if 'error' not in artifact_data:
-    #                 patch_data = artifact_data.get('patch_data', {})
-                    
-    #                 # Create target mask if patch indices exist
-    #                 target_mask = None
-    #                 if 'target_patch_indices' in patch_data:
-    #                     target_mask = create_target_mask_from_patches(
-    #                         patch_data['target_patch_indices'], 
-    #                         img_array.shape, 
-    #                         patch_size=16
-    #                     )
-    #                     if target_mask is not None:
-    #                         all_target_masks.append((target_mask, artifact_idx))
-                    
-    #                 # Create reference mask if patch indices exist
-    #                 reference_mask = None
-    #                 if 'reference_patch_indices' in patch_data:
-    #                     reference_mask = create_target_mask_from_patches(
-    #                         patch_data['reference_patch_indices'], 
-    #                         img_array.shape, 
-    #                         patch_size=16
-    #                     )
-    #                     if reference_mask is not None:
-    #                         all_reference_masks.append((reference_mask, artifact_idx))
-            
-    #         # Create visualizations for multiple artifacts
-    #         if all_target_masks and all_reference_masks:
-    #             # Create a combined mask structure for visualization
-    #             combined_masks = {}
-                
-    #             for idx, (target_mask, artifact_idx) in enumerate(all_target_masks):
-    #                 if idx < len(all_reference_masks):
-    #                     reference_mask, _ = all_reference_masks[idx]
-                        
-    #                     # Create artifact-specific key
-    #                     artifact_key = f"{artifact_type}_artifact_{artifact_idx}"
-    #                     combined_masks[artifact_key] = {
-    #                         'reference_mask': reference_mask,
-    #                         'target_mask': target_mask
-    #                     }
-                
-    #             # Visualize all artifacts for this type
-    #             if combined_masks:
-    #                 InstanceProcessor.visualize_patch_masks(
-    #                     img_array, 
-    #                     combined_masks, 
-    #                     img_filename, 
-    #                     image_output_dir
-    #                 )
-
 
 def _try_process_all_artifact_types(
     img_array: np.ndarray,
@@ -409,6 +310,8 @@ def _create_artifact_annotations(
 def process_single_image(
     img_info: Dict[str, Any], 
     gsam_detector: GSAMDetector, 
+    blip_model: Blip2ForConditionalGeneration,
+    blip_processor: Blip2Processor,
     data_loader: Any,
     visualizer: ImageVisualizer,
     output_dir: str, 
@@ -454,9 +357,9 @@ def process_single_image(
         else:
             img_array = data_loader.load_image_by_path(img_info['file_path'])
         
-        caption = data_loader.get_image_caption(img_info)
-
-        # Process all artifact types at once
+        inputs = blip_processor(img_array, return_tensors="pt").to("cuda")
+        out = blip_model.generate(**inputs)
+        caption = blip_processor.decode(out[0], skip_special_tokens=True).strip()
 
         try:
             unique_id = str(uuid.uuid4())
@@ -476,9 +379,7 @@ def process_single_image(
             results['error'] = "No valid target parts found for any artifact type after filtering"
             return results
 
-        # create_visualizations(img_array, img_filename, caption, visualized_output, artifacts, image_output_dir, visualizer)
         real_image_path = visualizer.save_raw_image(img_array, base_dir=image_output_dir, filename="real_image.png")
-
         unified_data = {
             'id': unique_id,
             'real_image_path': real_image_path,
@@ -722,7 +623,7 @@ def run_gsam_processing(
     logger.info(f"Starting GSAM processing for {dataset_type} dataset")
     logger.info(f"Categories: {categories}")
     logger.info(f"Artifact types to process: {config['artifact_types']}")
-    logger.info(f"Distortion kernel: {distortion_kernel}")
+    logger.info("Distortion kernel: " + "random" if config['random_distortion'] else distortion_kernel)
     
     # Setup and load progress tracking
     progress_file = os.path.join(output_dir, f'processing_progress.json')
@@ -746,7 +647,11 @@ def run_gsam_processing(
         device=config['device'],
         openai_client=openai_client or openai.OpenAI()
     )
-    
+
+
+    blip_processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+    blip_model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-opt-2.7b", device_map="auto")
+
     # Initialize visualizer
     visualizer = ImageVisualizer()
     
@@ -778,7 +683,7 @@ def run_gsam_processing(
     with tqdm(total=len(image_list), desc=f"Processing {dataset_type} images") as pbar:
         for img_info in image_list:
             result = process_single_image(
-                img_info, gsam_detector, data_loader, visualizer,
+                img_info, gsam_detector, blip_model, blip_processor, data_loader, visualizer,
                 output_dir, config, openai_client, logger
             )
             

@@ -121,7 +121,6 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
     
     # Process each artifact type
     successful_artifacts = 0
-    # import ipdb; ipdb.set_trace(context=30)
     if len(data['artifacts']) == 0:
         logger.warning(f"  No artifact data found")
         return None
@@ -137,11 +136,15 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
         artifact_data=artifact_data,
         source_img=img_array.copy(),
     )
-    
-    create_flux_visualizations(
-        img_array, generated_image, artifact_data, img_filename, caption, flux_output_path, 
-        visualizer
+
+    visualizer.show_comparison(
+        img_array, generated_image, artifact_data, caption,
+        base_dir=flux_output_path,
+        filename=f"04_comparison.png",
     )
+
+    generated_image.save(os.path.join(flux_output_path, f'artifact.png'))
+
     results['artifacts'] = {
         'success': True,
         'artifacts': artifact_data
