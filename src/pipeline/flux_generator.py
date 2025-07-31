@@ -128,6 +128,9 @@ class FluxGenerator:
         flux_args.inject_step = self.config.inject_step
         flux_args.attn_mask_step = self.config.attn_mask_step
         flux_args.pe_step = self.config.pe_step
+        flux_args.pe_step_addition = self.config.pe_step['addition']
+        flux_args.pe_step_removal = self.config.pe_step['removal']
+        flux_args.pe_step_distortion = self.config.pe_step['distortion']
         flux_args.seed = self.config.seed
         flux_args.masks = self.config.masks.copy()
         flux_args.alpha = self.config.alpha
@@ -140,7 +143,6 @@ class FluxGenerator:
         flux_args.artifact_type = None
         flux_args.output_dir = None
         flux_args.source_img = None
-        flux_args.pe_step = None
         
         # Initialize optional patch mapping information
         flux_args.patch_mapping = None
@@ -153,11 +155,9 @@ class FluxGenerator:
     def inject_artifacts(self,
         source_prompt: str,
         target_prompt: str,
-        artifact_type: str,
+        artifact_data: Dict,
         source_img: Union[np.ndarray, str],
         output_dir: str = None,
-        reference_patch_indices: Optional[List] = None,
-        target_patch_indices: Optional[List] = None,
         pe_step: Optional[float] = None,
         inject_step: Optional[int] = None,
     ):
@@ -181,12 +181,10 @@ class FluxGenerator:
         # Update with required parameters
         flux_args.source_prompt = source_prompt
         flux_args.target_prompt = target_prompt
-        flux_args.artifact_type = artifact_type
+        flux_args.artifact_data = artifact_data
         flux_args.source_img = source_img
-        flux_args.pe_step = pe_step if pe_step is not None else self.config.get_pe_step(artifact_type)
         flux_args.output_dir = output_dir
-        flux_args.reference_patch_indices = reference_patch_indices
-        flux_args.target_patch_indices = target_patch_indices
+        flux_args.pe_step = pe_step if pe_step is not None else self.config.pe_step
         flux_args.inject_step = inject_step if inject_step is not None else self.config.inject_step
         torch_device = torch.device(self.device)
 
@@ -222,8 +220,10 @@ class FluxGenerator:
         info['inject_step'] = flux_args.inject_step
         info['attn_mask_step'] = flux_args.attn_mask_step
         info['alpha'] = flux_args.alpha
-        info['pe_step'] = flux_args.pe_step
-        info['artifact_type'] = flux_args.artifact_type
+        info['pe_step_distortion'] = flux_args.pe_step_distortion
+        info['pe_step_removal'] = flux_args.pe_step_removal
+        info['pe_step_addition'] = flux_args.pe_step_addition
+        info['artifact_data'] = flux_args.artifact_data
         info['guidance'] = flux_args.guidance
         if not os.path.exists(flux_args.feature_path):
             os.mkdir(flux_args.feature_path)
@@ -232,16 +232,12 @@ class FluxGenerator:
         inp, (patch_h, patch_w) = prepare(
             self.t5, self.clip, init_image, 
             prompt=flux_args.source_prompt,
-            target_patch_indices=flux_args.target_patch_indices,
-            reference_patch_indices=flux_args.reference_patch_indices,
             info=info
         )
         
         inp_target, _ = prepare(
             self.t5, self.clip, init_image, 
             prompt=flux_args.target_prompt,
-            target_patch_indices=flux_args.target_patch_indices,
-            reference_patch_indices=flux_args.reference_patch_indices,
             info=info
         )
         
@@ -251,39 +247,7 @@ class FluxGenerator:
         info['patch_w'] = patch_w
 
         L = inp['img'].shape[1] + inp['txt'].shape[1]
-        patch_ids = inp['patch_ids']
         
-        # Pre-compute attention masks to avoid repeated computation during forward pass
-        torch_device_dtype = torch.bfloat16 if torch_device.type == 'cuda' else torch.float32
-        
-        # Create attention masks for inversion phase
-        double_stream_mask_inv = self.create_attention_mask(
-            flux_args.masks[0], L, patch_ids, txt_len=3, device=torch_device, dtype=torch_device_dtype
-        )
-        single_stream_mask_inv = self.create_attention_mask(
-            flux_args.masks[1], L, patch_ids, txt_len=3, device=torch_device, dtype=torch_device_dtype
-        )
-        
-        # Create attention masks for generation phase  
-        double_stream_mask_gen = self.create_attention_mask(
-            flux_args.masks[2], L, patch_ids, txt_len=3, device=torch_device, dtype=torch_device_dtype
-        )
-        single_stream_mask_gen = self.create_attention_mask(
-            flux_args.masks[3], L, patch_ids, txt_len=3, device=torch_device, dtype=torch_device_dtype
-        )
-        
-        # Store masks in info dict
-        info['double_stream_block_mask'] = flux_args.masks[0]
-        info['single_stream_block_mask'] = flux_args.masks[1]
-        info['precomputed_double_mask_inv'] = double_stream_mask_inv
-        info['precomputed_single_mask_inv'] = single_stream_mask_inv
-        info['precomputed_double_mask_gen'] = double_stream_mask_gen
-        info['precomputed_single_mask_gen'] = single_stream_mask_gen
-        # Set initial masks for inversion phase
-        info['precomputed_double_mask'] = double_stream_mask_inv
-        info['precomputed_single_mask'] = single_stream_mask_inv
-
-
         # Choose denoising function based on configuration
         # RF solver (denoise) is more accurate but slower than first-order denoising
         denoise_func = denoise if self.config.use_rf_solver else denoise_first_order
@@ -294,11 +258,6 @@ class FluxGenerator:
 
         timesteps = get_schedule(flux_args.num_steps, inp_target["img"].shape[1], shift=(flux_args.name != "flux-schnell"))
 
-        # Update info with generation phase masks
-        info['double_stream_block_mask'] = flux_args.masks[2]
-        info['single_stream_block_mask'] = flux_args.masks[3]
-        info['precomputed_double_mask'] = info['precomputed_double_mask_gen'] 
-        info['precomputed_single_mask'] = info['precomputed_single_mask_gen']
         # denoise initial noise
         x, _ = denoise_func(self.model, **inp_target, timesteps=timesteps, guidance=info['guidance'], inverse=False, info=info, percentage_of_steps=flux_args.percentage_of_steps)
 

@@ -4,7 +4,7 @@ import matplotlib.patches as patches
 import numpy as np
 import textwrap
 import os
-from typing import Union, Optional, List
+from typing import Union, Optional, List, Dict
 from PIL import Image
 
 
@@ -52,10 +52,11 @@ class ImageVisualizer:
         # Save the raw PIL image
         image.save(save_path)
         print(f"Raw image saved to {save_path}")
+        return save_path
     
     @staticmethod
     def show_image(image: Union[np.ndarray, Image.Image], 
-                   prompt: str = "",
+                   caption: str = "",
                    figsize: tuple = (6, 6),
                    title: Optional[str] = None,
                    image_name: str = "unknown",
@@ -66,7 +67,7 @@ class ImageVisualizer:
         
         Args:
             image: Image to display (numpy array or PIL Image)
-            prompt: Caption/prompt text to display
+            caption: Caption/caption text to display
             figsize: Figure size tuple (width, height)
             title: Optional title for the image
             image_name: Name of the image (used for directory creation)
@@ -82,7 +83,7 @@ class ImageVisualizer:
             image = np.array(image)
         
         # Wrap caption text
-        wrapped_caption = "\n".join(textwrap.wrap(prompt, width=80)) if prompt else ""
+        wrapped_caption = "\n".join(textwrap.wrap(caption, width=80)) if caption else ""
         
         fig, ax = plt.subplots(1, 1, figsize=figsize)
         
@@ -109,30 +110,23 @@ class ImageVisualizer:
     @staticmethod
     def show_comparison(original_image: Union[np.ndarray, Image.Image],
                        generated_image: Union[np.ndarray, Image.Image],
-                       selected_instance_info: Optional[tuple] = None,
-                       class_name: Optional[str] = None,
-                       prompt: str = "",
+                       artifact_data: Optional[Union[Dict, List]] = None,
+                       caption: str = "",
                        figsize: tuple = (16, 8),
                        base_dir: str = "output",
                        filename: str = "comparison_output.png",
-                       patch_data: Optional[dict] = None,
-                       artifact_type: str = "addition"):
+                       ):
         """
-        Save original image with selected instance overlay and generated image side by side,
-        with optional patch visualization based on artifact type
+        Save original image with all target bboxes and reference masks overlaid and generated image side by side
         
         Args:
             original_image: Original source image
             generated_image: Generated/modified image
-            selected_instance_info: Selected instance info
-            class_name: Class name of the selected instance
-            prompt: Caption/prompt text to display
+            artifact_data: Artifact data (dict with artifact types as keys or list of artifact dicts)
+            caption: Caption/caption text to display
             figsize: Figure size tuple (width, height)
-            image_name: Name of the image (used for directory creation)
             base_dir: Base output directory
             filename: Name of the output file
-            patch_data: Dictionary containing reference_patch_indices and target_patch_indices
-            artifact_type: Type of artifact ("addition", "removal", etc.)
         """
         # Use base_dir directly (no additional subdirectory creation)
         os.makedirs(base_dir, exist_ok=True)
@@ -144,74 +138,69 @@ class ImageVisualizer:
         if isinstance(generated_image, Image.Image):
             generated_image = np.array(generated_image)
         
-
         # Wrap caption text
-        wrapped_caption = "\n".join(textwrap.wrap(prompt, width=120)) if prompt else ""
+        wrapped_caption = "\n".join(textwrap.wrap(caption, width=120)) if caption else ""
         
         fig, axes = plt.subplots(1, 2, figsize=figsize)
         
-        # Display original image with selected instance overlay and patches
+        # Display original image
         axes[0].imshow(original_image)
         axes[0].axis('off')
-        axes[0].set_title("Original", fontsize=14, fontweight='bold')
+        axes[0].set_title("Original with Overlays", fontsize=14, fontweight='bold')
+            
+        # Colors for different artifact types
+        artifact_type_colors = {
+            'addition': 'red',
+            'removal': 'blue', 
+            'distortion': 'yellow',
+            'fusion': 'orange',
+        }
+        artifact_type_colormaps = {
+            'addition': 'Reds',
+            'removal': 'Blues',
+            'distortion': 'YlOrBr',
+            'fusion': 'Oranges',
+        }
         
-        # Draw patch visualization if patch_data is provided
-        if patch_data:
-            # Extract patch data
-            reference_patches = patch_data.get('reference_patch_indices', []) or []
-            target_patches = patch_data.get('target_patch_indices', []) or []
+        # Overlay data from all artifacts
+        for idx, artifact in enumerate(artifact_data):
+            artifact_type = artifact['artifact_type']
+            artifact_name = artifact['distortion_kernel'] if artifact_type == 'distortion' else artifact_type
             
-            # Convert patch indices (subtract 512 offset if present)
-            reference_patches = [idx-512 for idx in reference_patches] if reference_patches else []
-            target_patches = [idx-512 for idx in target_patches] if target_patches else []
-            
-            # Assume 16x16 patches for visualization (this could be made configurable)
-            patch_size = 16
-            h, w = original_image.shape[:2]
-            patches_h = h // patch_size
-            patches_w = w // patch_size
-            
-            # Choose which patches to display based on artifact type
-            if artifact_type == "addition" and target_patches:
-                patches_to_show = target_patches
-                patch_color = 'blue'
-                patch_label = 'Target Patches'
-            else:
-                patches_to_show = reference_patches
-                patch_color = 'red'
-                patch_label = 'Reference Patches'
-            
-            # Draw patch rectangles
-            for i, patch_idx in enumerate(patches_to_show):
-                row = patch_idx // patches_w
-                col = patch_idx % patches_w
-                # Only add label to first patch to avoid cluttering legend
-                label = patch_label if i == 0 else None
-                rect = patches.Rectangle((col * patch_size, row * patch_size), 
-                                        patch_size, patch_size, 
-                                        linewidth=2, edgecolor=patch_color, 
-                                        facecolor=patch_color, alpha=0.3,
-                                        label=label)
-                axes[0].add_patch(rect)
-        
-        # Draw selected instance if provided
-        if selected_instance_info:
-            x1, y1, x2, y2 = selected_instance_info.get('bbox_coords', None)
-            instance_rect = plt.Rectangle(
-                (x1, y1),
-                x2 - x1,
-                y2 - y1,
-                linewidth=3,
-                edgecolor='yellow',
-                facecolor='none',
-                alpha=0.8,
-                label=class_name
+            # Get color based on artifact type, fallback to index-based color
+            bbox_color = artifact_type_colors.get(artifact_type, ['red', 'blue', 'yellow', 'orange'][idx % 4])
+            mask_color = artifact_type_colormaps.get(artifact_type, ['Reds', 'Blues', 'YlOrBr', 'Oranges'][idx % 4])
+            target_bbox = artifact['target_bbox']
+            x1, y1, x2, y2 = target_bbox[:4]
+
+            # Draw target bbox
+            bbox_rect = plt.Rectangle(
+                (x1, y1), x2 - x1, y2 - y1,
+                linewidth=2, edgecolor=bbox_color, 
+                facecolor='none', alpha=0.8
             )
-            axes[0].add_patch(instance_rect)
-        
-        # Add legend if we have patches or selected instance
-        if patch_data or selected_instance_info:
-            axes[0].legend(loc='upper right', fontsize=10)
+            axes[0].add_patch(bbox_rect)
+            
+            # Add text annotation on the bbox
+            axes[0].text(x1, y1 - 5, artifact_name, 
+                        fontsize=12, fontweight='bold',
+                        color='white', 
+                        bbox=dict(boxstyle="round,pad=0.3", 
+                                facecolor=bbox_color, 
+                                edgecolor=bbox_color,
+                                alpha=0.8))
+            
+            reference_mask = artifact['reference_mask']
+            if reference_mask is not None:
+                # Convert to numpy array if needed
+                if isinstance(reference_mask, list):
+                    reference_mask = np.array(reference_mask)
+                
+                # Only overlay if mask has non-zero values
+                if np.any(reference_mask):
+                    # Create a masked array to overlay
+                    mask_overlay = np.ma.masked_where(reference_mask == 0, reference_mask)
+                    axes[0].imshow(mask_overlay, alpha=0.5, cmap=mask_color)
         
         # Display generated image
         axes[1].imshow(generated_image)
@@ -220,12 +209,11 @@ class ImageVisualizer:
         
         # Add shared caption below the images
         if wrapped_caption:
-            fig.text(0.5, 0.02, wrapped_caption, ha='center', va='bottom', 
+            fig.text(0.5, 0.05, wrapped_caption, ha='center', va='bottom', 
                     fontsize=12, wrap=True)
-            plt.tight_layout(rect=[0, 0.08, 1, 1])  # Adjust layout to fit caption
+            plt.tight_layout(rect=[0, 0.12, 1, 1])  # Adjust layout to fit caption
         else:
             plt.tight_layout()
-        
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         print(f"Plot saved to {save_path}")
@@ -358,7 +346,7 @@ class ImageVisualizer:
                                 artifact_image: Union[np.ndarray, Image.Image],
                                 reference_bbox: dict,
                                 target_bbox: dict,
-                                prompt: str = "",
+                                caption: str = "",
                                 titles: Optional[List[str]] = None,
                                 figsize: tuple = (14, 7),
                                 image_name: str = "unknown",
@@ -373,7 +361,7 @@ class ImageVisualizer:
             artifact_image: Artifact injected image  
             reference_bbox: Reference bounding box dict with xmin, ymin, xmax, ymax
             target_bbox: Target bounding box dict with xmin, ymin, xmax, ymax
-            prompt: Caption/prompt text to display
+            caption: Caption/caption text to display
             titles: List of titles for [real, artifact] images
             figsize: Figure size tuple (width, height)
             image_name: Name of the image (used for directory creation)
@@ -394,7 +382,7 @@ class ImageVisualizer:
             titles = ["Real Image + Reference BBox", "Artifact Injected + Target BBox"]
         
         # Wrap caption text
-        wrapped_caption = "\n".join(textwrap.wrap(prompt, width=100)) if prompt else ""
+        wrapped_caption = "\n".join(textwrap.wrap(caption, width=100)) if caption else ""
         
         fig, axes = plt.subplots(1, 2, figsize=figsize)
         

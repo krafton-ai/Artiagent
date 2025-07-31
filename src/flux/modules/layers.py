@@ -161,7 +161,7 @@ class DoubleStreamBlock(nn.Module):
             nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
         )
 
-    def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, info, patch_ids) -> tuple[Tensor, Tensor]:
+    def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, info) -> tuple[Tensor, Tensor]:
         img_mod1, img_mod2 = self.img_mod(vec)
         txt_mod1, txt_mod2 = self.txt_mod(vec)
 
@@ -185,20 +185,9 @@ class DoubleStreamBlock(nn.Module):
         k = torch.cat((txt_k, img_k), dim=2)
         v = torch.cat((txt_v, img_v), dim=2)
 
-        if info['attn_mask']:
-            # Use pre-computed mask if available, otherwise fallback to dynamic computation
-            mask = info.get('precomputed_double_mask', None)
-            if mask is None:
-                mask = get_attn_mask(info['double_stream_block_mask'], q, patch_ids, txt_len=3)
-        else:
-            # For 'none' mask, create zeros mask directly 
-            L = q.size(-2)
-            mask = torch.zeros(L, L, dtype=q.dtype, device=q.device)
-
         if info['inverse']:
             attn = attention(q, k, v, pe)
         else:
-            # if info['inject']:
             attn = attention(q, k, v, pe=pe,) 
 
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
@@ -244,7 +233,7 @@ class SingleStreamBlock(nn.Module):
         self.mlp_act = nn.GELU(approximate="tanh")
         self.modulation = Modulation(hidden_size, double=False)
 
-    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, info, patch_ids) -> Tensor:
+    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, info) -> Tensor:
         mod, _ = self.modulation(vec)
         x_mod = (1 + mod.scale) * self.pre_norm(x) + mod.shift
         qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1)
@@ -264,54 +253,20 @@ class SingleStreamBlock(nn.Module):
 
 
         if info['inject'] and info['id'] > 19:
-            # Use pre-computed mask for feature injection if available
-            mask = info.get('precomputed_single_mask', None)
-            if mask is None:
-                mask = get_attn_mask(info['single_stream_block_mask'], q, patch_ids, txt_len=3)
             feature_name = str(info['t']) + '_' + str(info['second_order']) + '_' + str(info['id']) + '_' + info['type'] + '_' + 'V'
             if info['inverse']:
                 info['feature'][feature_name] = v.clone()
             else:
                 num_patches = v.size(2)
                 mask = torch.ones(num_patches, dtype=torch.bool, device='cuda')
-                mask[patch_ids] = False
+                mask[info['patch_ids']] = False
                 mask[:512] = False
                 keep_indices = mask.nonzero(as_tuple=True)[0]
 
                 backup = info['feature'][feature_name]
                 v[:, :, keep_indices, :] = backup[:, :, keep_indices, :]
-                # Get intersecting indices between patch_ids and patch_ref_ids
-                target_ids = patch_ids
-                reference_patch_ids = info['patch_ref_ids']
-                if info['artifact_type'] == 'addition':
-                    patch_ids_set = set(patch_ids)
-                    patch_ref_ids_set = set(info['patch_ref_ids'])
-                    intersecting_indices = patch_ids_set & patch_ref_ids_set
-                    
-                    # Iterate through both lists and remove elements at positions where patch_ids contains intersecting indices
-                    patch_ref_ids = info['patch_ref_ids']
-                    filtered_patch_ids = []
-                    filtered_patch_ref_ids = []
-                    
-                    for i in range(len(patch_ids)):
-                        if patch_ids[i] not in intersecting_indices:
-                            filtered_patch_ids.append(patch_ids[i])
-                            filtered_patch_ref_ids.append(patch_ref_ids[i])
-                    
-                    target_ids = filtered_patch_ids
-                    reference_patch_ids = filtered_patch_ref_ids
-                v[:,:,target_ids,:] = v[:,:,reference_patch_ids,:]
+                v[:, :, info['patch_ids'], :] = v[:, :, info['patch_ref_ids'], :]
 
-        if info['attn_mask']:
-            # Use pre-computed mask if available, otherwise fallback to dynamic computation
-            mask = info.get('precomputed_single_mask', None)
-            if mask is None:
-                mask = get_attn_mask(info['single_stream_block_mask'], q, patch_ids, txt_len=3)
-        else:
-            # For 'none' mask, create zeros mask directly
-            L = q.size(-2)
-            mask = torch.zeros(L, L, dtype=q.dtype, device=q.device)
-        
         if info['inverse']:
             attn = attention(q, k, v, pe)
         else:
