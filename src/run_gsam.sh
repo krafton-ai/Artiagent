@@ -340,7 +340,7 @@ if [[ "$DATASET" != "coco" && "$DATASET" != "imagenet" && "$DATASET" != "custom"
 fi
 
 # Validate distortion kernel type
-if [[ "$DISTORTION_KERNEL" != "none" && "$DISTORTION_KERNEL" != "jitter" && "$DISTORTION_KERNEL" != "swirl" && "$DISTORTION_KERNEL" != "voronoi" ]]; then
+if [[ "$DISTORTION_KERNEL" != "none" && "$DISTORTION_KERNEL" != "jitter" && "$DISTORTION_KERNEL" != "swirl" && "$DISTORTION_KERNEL" != "voronoi" && "$DISTORTION_KERNEL" != "coarse" && "$DISTORTION_KERNEL" != "strip" ]]; then
     print_error "Invalid distortion kernel: $DISTORTION_KERNEL. Must be one of: none, jitter, swirl, voronoi"
     exit 1
 fi
@@ -381,7 +381,7 @@ print_configuration() {
     echo "Supercategory:           $SUPERCATEGORY"
     echo "Artifact types:          $ARTIFACT_TYPES"
     if [[ "$RANDOM_DISTORTION" == true ]]; then
-        echo "Distortion kernel:       random sampling (jitter, swirl, voronoi)"
+        echo "Distortion kernel:       random sampling (jitter, swirl, voronoi, coarse, strip)"
     else
         echo "Distortion kernel:       $DISTORTION_KERNEL"
     fi
@@ -536,7 +536,7 @@ print_summary() {
     echo "  - Use the results with run_flux.sh for artifact generation"
     echo "  - Command: ./run_flux.sh $OUTPUT_DIR --artifact-types \"$ARTIFACT_TYPES\""
     if [[ "$RANDOM_DISTORTION" == true ]]; then
-        echo "  - Note: Used random distortion kernels (jitter, swirl, voronoi) for distortion artifacts"
+        echo "  - Note: Used random distortion kernels (shuffle, jitter, swirl, voronoi, coarse, strip) for distortion artifacts"
     elif [[ "$DISTORTION_KERNEL" != "none" ]]; then
         echo "  - Note: Used distortion kernel '$DISTORTION_KERNEL' for distortion artifacts"
     fi

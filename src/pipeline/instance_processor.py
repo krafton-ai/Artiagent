@@ -394,6 +394,16 @@ class InstanceProcessor:
                 reference_patches = InstanceProcessor.voronoi_seed_kernel(
                     mask_patch_coords, seed_fraction=0.15, patch_h=patch_h, patch_w=patch_w
                 )
+            elif distortion_kernel == 'coarse':
+                # Apply coarse shuffling kernel
+                reference_patches = InstanceProcessor.coarse_shuffling_kernel(
+                    mask_patch_coords, num_partitions=5, patch_h=patch_h, patch_w=patch_w
+                )
+            elif distortion_kernel == 'strip':
+                # Apply stripped shifting kernel
+                reference_patches = InstanceProcessor.stripped_shifting_kernel(
+                    mask_patch_coords, num_strips=6, patch_h=patch_h, patch_w=patch_w
+                )
             else:
                 raise ValueError(f"Unknown distortion kernel: {distortion_kernel}")
             
@@ -937,6 +947,239 @@ class InstanceProcessor:
 
         new_coords = [tuple(seeds[idx]) for idx in nearest_idx]
         return new_coords
+
+    @staticmethod
+    def coarse_shuffling_kernel(
+        mask_patch_coords: List[Tuple[int, int]],
+        num_partitions: int = 5,
+        patch_h: Optional[int] = None,
+        patch_w: Optional[int] = None,
+        rng: Optional[random.Random] = None
+    ) -> List[Tuple[int, int]]:
+        """
+        Coarsely partition region and shuffle within regions. 
+
+        Args:
+            mask_patch_coords: Coordinates to remap.
+            num_partitions: Number of partitions to generate.
+            patch_h, patch_w: Explicit grid size for clamping (inferred if None).
+            rng: Optional `random.Random` instance for reproducibility.
+
+        Returns:
+            List where each entry is the coordinate of the seed that the corresponding
+            input patch copies.
+        """
+        if not mask_patch_coords:
+            return []
+
+        if rng is None:
+            rng = random
+
+        coords_arr = np.array(mask_patch_coords)
+        region_set = set(mask_patch_coords)
+        n_coords = len(mask_patch_coords)
+        num_partitions = min(num_partitions, n_coords)
+
+        # 1. Randomly select seeds
+        seeds = rng.sample(mask_patch_coords, num_partitions)
+        seeds_arr = np.array(seeds)
+
+        # 2. Assign each coordinate to the nearest seed (partition)
+        dists = ((coords_arr[:, None, :] - seeds_arr[None, :, :]) ** 2).sum(-1)
+        partition_indices = dists.argmin(axis=1)  # For each coord, index of nearest seed
+
+        # Build partition lists
+        partitions = [[] for _ in range(num_partitions)]
+        for idx, coord in enumerate(mask_patch_coords):
+            part_idx = partition_indices[idx]
+            partitions[part_idx].append(coord)
+
+        # 3. Create a random mapping between partitions (no self-mapping)
+        partition_mapping = list(range(num_partitions))
+        rng.shuffle(partition_mapping)
+        # Ensure no partition maps to itself
+        for i in range(num_partitions):
+            if partition_mapping[i] == i:
+                # Find another partition to swap with
+                for j in range(num_partitions):
+                    if j != i and partition_mapping[j] != i:
+                        partition_mapping[i], partition_mapping[j] = partition_mapping[j], partition_mapping[i]
+                        break
+
+        # 4. For each coordinate, reference from the mapped partition
+        mapped_coords = []
+        for idx, coord in enumerate(mask_patch_coords):
+            current_partition = partition_indices[idx]
+            target_partition = partition_mapping[current_partition]
+            if partitions[target_partition]:
+                candidate = rng.choice(partitions[target_partition])
+                if candidate in region_set:
+                    mapped_coords.append(candidate)
+                else:
+                    # Fallback to nearest coordinate in region
+                    dists = np.sum((coords_arr - np.array(candidate)) ** 2, axis=1)
+                    nearest_idx = np.argmin(dists)
+                    mapped_coords.append(tuple(coords_arr[nearest_idx]))
+            else:
+                mapped_coords.append(coord)
+        return mapped_coords
+
+    @staticmethod
+    def stripped_shifting_kernel(
+        mask_patch_coords: List[Tuple[int, int]],
+        num_strips: int = 4,
+        patch_h: Optional[int] = None,
+        patch_w: Optional[int] = None,
+        patch_size: Optional[int] = 16,
+        direction: Optional[str] = None
+    ) -> List[Tuple[int, int]]:
+        """
+        Vertically / horizontally cut into strips and shift with different strengths.
+
+        Args:
+            mask_patch_coords: Coordinates to remap.
+            num_strips: Number of strips to generate.
+            patch_h, patch_w: Explicit grid size for clamping (inferred if None).
+            direction: Optional direction to determine which way to generate strips.
+
+        Returns:
+            List where each entry is the coordinate of the seed that the corresponding
+            input patch copies.
+        """
+        if not mask_patch_coords:
+            return []
+
+        if patch_h is None or patch_w is None:
+            max_py = max(py for py, _ in mask_patch_coords)
+            max_px = max(px for _, px in mask_patch_coords)
+            patch_h = max_py + 1
+            patch_w = max_px + 1
+
+        if direction is None:
+            coords_arr = np.array(mask_patch_coords)
+            x_min, y_min = coords_arr.min(axis=0)
+            x_max, y_max = coords_arr.max(axis=0)
+            width = x_max - x_min + 1
+            height = y_max - y_min + 1
+
+            aspect_ratio = width / height
+
+            if aspect_ratio < 1:    # if horizontal region, strip vertically
+                direction = 'vertical'  
+            else:                   # if vertical region, strip horizontally
+                direction = 'horizontal'
+        # Create region set for fast lookup
+        region_set = set(mask_patch_coords)
+        coords_arr = np.array(mask_patch_coords)
+
+        # Determine strip boundaries
+        if direction == 'vertical':
+            # Vertical strips: divide by x-coordinate
+            x_coords = [px for _, px in mask_patch_coords]
+            x_min, x_max = min(x_coords), max(x_coords)
+            strip_width = (x_max - x_min + 1) // num_strips
+            
+            # Create strip boundaries
+            strip_boundaries = []
+            for i in range(num_strips):
+                start_x = x_min + i * strip_width
+                end_x = x_min + (i + 1) * strip_width if i < num_strips - 1 else x_max + 1
+                strip_boundaries.append((start_x, end_x))
+        else:  # horizontal
+            # Horizontal strips: divide by y-coordinate
+            y_coords = [py for py, _ in mask_patch_coords]
+            y_min, y_max = min(y_coords), max(y_coords)
+            strip_height = (y_max - y_min + 1) // num_strips
+            
+            # Create strip boundaries
+            strip_boundaries = []
+            for i in range(num_strips):
+                start_y = y_min + i * strip_height
+                end_y = y_min + (i + 1) * strip_height if i < num_strips - 1 else y_max + 1
+                strip_boundaries.append((start_y, end_y))
+
+        # Assign each coordinate to a strip
+        strip_assignments = []
+        for py, px in mask_patch_coords:
+            strip_idx = -1
+            for i, (start, end) in enumerate(strip_boundaries):
+                if direction == 'vertical':
+                    if start <= px < end:
+                        strip_idx = i
+                        break
+                else:  # horizontal
+                    if start <= py < end:
+                        strip_idx = i
+                        break
+            strip_assignments.append(strip_idx)
+
+        # Generate shift strengths for each strip (different for each strip)
+        shift_strengths = []
+        for i in range(num_strips):
+            direction = 1 if i % 2 == 0 else -1
+            # Use different shift strengths: 1, 2, 3, 4 pixels etc.
+            shift_strength = direction * (i + 1) * 10  # 10, 20, 30, 40 pixels
+            shift_strengths.append(shift_strength)
+        random.shuffle(shift_strengths)
+
+        # Apply shifts to each coordinate
+        shifted_coords = []
+        strip_coords = [[] for _ in range(num_strips)]
+        strip_indices = [[] for _ in range(num_strips)]
+        
+        for i, (py, px) in enumerate(mask_patch_coords):
+            strip_idx = strip_assignments[i]
+            if strip_idx >= 0:
+                strip_coords[strip_idx].append((py, px))
+                strip_indices[strip_idx].append(i)
+        
+        # Apply circular shift within each strip
+        for strip_idx in range(num_strips):
+            if not strip_coords[strip_idx]:
+                continue
+                
+            strip_patches = strip_coords[strip_idx]
+            strip_patch_indices = strip_indices[strip_idx]
+            shift_strength = shift_strengths[strip_idx]
+            
+            # Sort patches within the strip for consistent ordering
+            if direction == 'vertical':
+                # Sort by y-coordinate (vertical position) for vertical strips
+                sorted_indices = sorted(range(len(strip_patches)), 
+                                     key=lambda idx: strip_patches[idx][0])
+            else:  # horizontal
+                # Sort by x-coordinate (horizontal position) for horizontal strips
+                sorted_indices = sorted(range(len(strip_patches)), 
+                                     key=lambda idx: strip_patches[idx][1])
+            
+            # Apply circular shift within the strip
+            num_patches_in_strip = len(strip_patches)
+            if num_patches_in_strip > 0:
+                # Calculate how many positions to shift (modulo for circular effect)
+                shift_positions = shift_strength // patch_size  # Convert pixel shift to patch shift
+                shift_positions = shift_positions % num_patches_in_strip  # Ensure circular
+                
+                # Create circular mapping
+                for i, original_idx in enumerate(sorted_indices):
+                    # Calculate new position with circular shift
+                    new_idx = (i + shift_positions) % num_patches_in_strip
+                    shifted_patch = strip_patches[sorted_indices[new_idx]]
+                    
+                    # Find the original index in the full list
+                    original_full_idx = strip_patch_indices[original_idx]
+                    
+                    # Ensure we have enough space in shifted_coords
+                    while len(shifted_coords) <= original_full_idx:
+                        shifted_coords.append(None)
+                    
+                    shifted_coords[original_full_idx] = shifted_patch
+        
+        # Fill in any missing coordinates (shouldn't happen, but safety check)
+        for i, (py, px) in enumerate(mask_patch_coords):
+            if i >= len(shifted_coords) or shifted_coords[i] is None:
+                shifted_coords.append((py, px))
+
+        return shifted_coords
 
     @staticmethod
     def generate_addition_probability_map(reference_instance, predictions, entity_predictions, mask_patch_coords, img_shape, patch_size: int = 16, alpha: float = 2.0, max_entity_overlap: float = 0.7, distance_penalty_weight: float = 0.1) -> Tuple[np.ndarray, Dict]:

@@ -809,7 +809,7 @@ def _print_startup_info(args: Any, config: Dict[str, Any]) -> None:
     print(f"🔢 Max artifacts per image: {args.max_artifacts_per_image}")
     
     if args.random_distortion:
-        print(f"🔧 Distortion kernel: random sampling (jitter, swirl, voronoi)")
+        print(f"🔧 Distortion kernel: random sampling (jitter, swirl, voronoi, coarse, strip)")
     else:
         print(f"🔧 Distortion kernel: {args.distortion_kernel}")
     
@@ -965,12 +965,12 @@ def _setup_argument_parser() -> Any:
     # Distortion configuration
     parser.add_argument(
         '--distortion-kernel', type=str, default='none', 
-        choices=['none', 'jitter', 'swirl', 'voronoi'],
+        choices=['none', 'jitter', 'swirl', 'voronoi', 'coarse', 'strip'],
         help='Type of distortion kernel to apply for distortion artifacts (default: none)'
     )
     parser.add_argument(
         '--random-distortion', action='store_true',
-        help='Randomly sample distortion kernel for each image from jitter, swirl, voronoi'
+        help='Randomly sample distortion kernel for each image from shuffle, jitter, swirl, voronoi, coarse, strip'
     )
     parser.add_argument(
         '--seed', type=int, default=None,
