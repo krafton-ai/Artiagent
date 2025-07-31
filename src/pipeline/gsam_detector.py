@@ -278,8 +278,8 @@ class GSAMDetector:
                 'pred_class': classes_tensor[i],
                 'score': scores_tensor[i],
                 'pred_mask': masks_tensor[i] if len(masks_tensor) > 0 else torch.empty(0, 0, dtype=torch.bool),
-                'subentity_name': filtered_subentity_names[i],
-                'mapped_entity_name': filtered_entity_names[i],
+                'subentity': filtered_subentity_names[i],
+                'entity': filtered_entity_names[i],
             }
             predictions.append(pred_instance)
         
@@ -292,7 +292,7 @@ class GSAMDetector:
                     'pred_class': torch.tensor(detections.class_id[entity_idx]).long(),
                     'score': torch.tensor(detections.confidence[entity_idx]).float(),
                     'pred_mask': torch.from_numpy(detections.mask[entity_idx]).bool(),
-                    'entity_name': entities[detections.class_id[entity_idx]],
+                    'entity': entities[detections.class_id[entity_idx]],
                 }
                 entity_predictions.append(entity_pred_instance)
         

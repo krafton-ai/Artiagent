@@ -18,65 +18,81 @@ logging.basicConfig(
 # -----------------------------
 # Worker Function for Threads
 # -----------------------------
-def process_single_image_dir(image_dir, client, base_dir):
+def process_single_image_dir(image_dir, client):
     metadata_path = os.path.join(image_dir, "metadata.json")
     original_image_path = os.path.join(image_dir, "original_image.png")
-    artifact_image_path = os.path.join(image_dir, "artifact_with_bbox.png")
+    artifact_image_path = os.path.join(image_dir, "artifact_image.png")
+    
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
 
-    try:
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
+    # Load images once for all artifacts in this directory
+    original_image = Image.open(original_image_path)
+    artifact_image = Image.open(artifact_image_path)
+    
+    # Create one money manager for all artifacts in this directory
+    money_manager = MoneyManager(model="gpt-4o")
+    
+    artifacts_processed = 0
+    artifacts_failed = 0
 
-        logging.info(f"Processing {os.path.basename(image_dir)}")
+    for artifact in metadata:
+        try:
+            target_bbox = artifact['target_bbox']
+            artifact_type = artifact['artifact_type']
+            entity = artifact['entity']
+            subentity = artifact['subentity']
 
-        original_image = Image.open(original_image_path)
-        artifact_image = Image.open(artifact_image_path)
-        draw = ImageDraw.Draw(original_image)
-        draw.rectangle(metadata['target_bbox'], outline='red', width=3)
+            # Create copies of images with bounding boxes for this artifact
+            original_with_bbox = original_image.copy()
+            artifact_with_bbox = artifact_image.copy()
+            
+            draw = ImageDraw.Draw(original_with_bbox)
+            draw.rectangle(target_bbox, outline='red', width=3)
+            draw2 = ImageDraw.Draw(artifact_with_bbox)
+            draw2.rectangle(target_bbox, outline='green', width=3)
 
-        money_manager = MoneyManager(model="gpt-4o")
+            result = artifact_explanation(
+                client=client,
+                real_image=original_with_bbox,
+                artifact_image=artifact_with_bbox,
+                entity=entity,
+                part=subentity,
+                artifact_type=artifact_type,
+                money_manager=money_manager
+            )
 
-        result = artifact_explanation(
-            client=client,
-            real_image=original_image,
-            artifact_image=artifact_image,
-            metadata=metadata,
-            money_manager=money_manager
-        )
+            if result['success']:
+                artifact['explanation'] = result['explanation']
+                artifacts_processed += 1
+                logging.info(f"  ✓ Generated explanation for {entity}/{subentity}: {result['explanation'][:100]}...")
+            else:
+                artifact['explanation'] = ""
+                artifacts_failed += 1
+                logging.warning(f"  ✗ Failed to generate explanation for {entity}/{subentity}: {result.get('error', 'Unknown error')}")
+                
+        except Exception as e:
+            artifact['explanation'] = ""
+            artifacts_failed += 1
+            logging.error(f"  ✗ Error processing artifact {entity}/{subentity}: {str(e)}")
 
-        if result['success']:
-            metadata['explanation'] = result['explanation']
-            logging.info(f"  ✓ Generated explanation: {result['explanation'][:100]}...")
-        else:
-            metadata['explanation'] = ""
-            logging.warning(f"  ✗ Failed to generate explanation: {result.get('error', 'Unknown error')}")
-
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-
-        return True, money_manager.total_cost, None
-
-    except Exception as e:
-        return False, 0.0, str(e)
-
+    # Save metadata once after processing all artifacts
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    logging.info(f"  📁 {image_dir}: {artifacts_processed} explanations generated, {artifacts_failed} failed")
+    return True, money_manager.total_cost, None
 # -----------------------------
 # Main Entry Point
 # -----------------------------
 def process_metadata_files():
     client = OpenAI()
-    base_dir = "../../exps/filtering"
+    base_dir = "../exps/filtering/testing_multi_caption"
 
     image_dirs_all = []
 
-    for artifact_type in ["addition", "removal", "distortion"]:
-        artifact_dir = os.path.join(base_dir, artifact_type)
-        if not os.path.exists(artifact_dir):
-            logging.warning(f"Directory {artifact_dir} does not exist, skipping...")
-            continue
-
-        logging.info(f"Processing {artifact_type} artifacts...")
-        image_dirs = glob.glob(os.path.join(artifact_dir, "filtered_image_*"))
-        image_dirs_all.extend([d for d in image_dirs])
+    image_dirs = glob.glob(os.path.join(base_dir, "filtered_*"))
+    image_dirs_all.extend([d for d in image_dirs])
 
     total_processed = 0
     total_errors = 0
@@ -84,7 +100,7 @@ def process_metadata_files():
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
-            executor.submit(process_single_image_dir, image_dir, client, base_dir): image_dir
+            executor.submit(process_single_image_dir, image_dir, client): image_dir
             for image_dir in image_dirs_all
         }
 

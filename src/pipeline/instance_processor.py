@@ -346,7 +346,7 @@ class InstanceProcessor:
             # Pre-compute set of patches that contain ANY prediction instance pixels (foreground patches)
             foreground_patches = set()
             for entity_pred_instance in entity_predictions:
-                if prediction['mapped_entity_name'] == entity_pred_instance['entity_name']:
+                if prediction['entity'] == entity_pred_instance['entity']:
                     entity_mask = entity_pred_instance['pred_mask'].cpu().numpy()
                     entity_patch_indices = mask_to_patch_indices(entity_mask, patch_size=patch_size, txt_len=512)
                     entity_patch_coords = patch_indices_to_coords(entity_patch_indices, patch_w, txt_len=512)
@@ -981,7 +981,7 @@ class InstanceProcessor:
         # Get reference bbox and mask
         ref_bbox = reference_instance['pred_box'].cpu().numpy()
         ref_mask = reference_instance['pred_mask'].cpu().numpy()
-        ref_entity_name = reference_instance['mapped_entity_name']
+        ref_entity = reference_instance['entity']
         
         # Convert reference mask to patch-aligned version for consistent calculations throughout
         # This ensures IoU calculations are performed at patch granularity, matching FLUX's patch-based approach
@@ -993,7 +993,7 @@ class InstanceProcessor:
         # Step 1: Find best entity (vocab[0]) with highest overlap with reference_instance
         entity_instances = []
         for i, pred_instance in enumerate(entity_predictions):
-            if ref_entity_name == pred_instance['entity_name']:
+            if ref_entity == pred_instance['entity']:
                 entity_instances.append({
                     'idx': i,
                     'bbox': pred_instance['pred_box'].cpu().numpy(),

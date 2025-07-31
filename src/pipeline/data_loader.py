@@ -709,11 +709,7 @@ def _get_coco_image_list(
                 image_list.append(img_info)
                 image_ids_seen.add(img_id)
                 
-                if max_images and len(image_list) >= max_images:
-                    break
-        if max_images and len(image_list) >= max_images:
-            break
-    
+    print("number of images", len(image_list))
     return image_list
 
 
