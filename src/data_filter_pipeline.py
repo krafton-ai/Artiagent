@@ -33,6 +33,7 @@ import torch.nn.functional as F
 # Add pipeline to path for GSAM detector
 sys.path.append('pipeline')
 from pipeline.gsam_detector import GSAMDetector
+import lpips
 
 
 def setup_logging(output_dir: str, supercategory: str):
@@ -327,6 +328,59 @@ class DataFilterPipeline:
             passed = False
 
         return passed
+
+    def check_distortion_with_lpips(self, gsam_metadata: Dict, artifact_type: str,
+                                  orig_img: np.ndarray, img: np.ndarray, exp_id: str, logger) -> bool: 
+        """
+        Use DINO to check if two images are similar as a distortion artifact.
+        Returns a dict with pass/fail, similarity, and classification.
+        """
+        # Set default thresholds
+        thresholds = {
+            'similar': 0.8,
+            'strange': 0.7,
+        }
+
+        def preprocess_for_lpips(np_img):
+            # Convert to float32, resize to [H, W, 3] if needed
+            if np_img.dtype != np.float32:
+                np_img = np_img.astype(np.float32)
+            if np_img.max() > 1.0:
+                np_img = np_img / 255.0
+            # LPIPS expects shape [1, 3, H, W] and range [-1, 1]
+            if np_img.shape[-1] == 3:
+                np_img = np.transpose(np_img, (2, 0, 1))  # [3, H, W]
+            elif np_img.shape[0] == 3:
+                pass  # already [3, H, W]
+            else:
+                raise ValueError(f"Unexpected image shape for LPIPS: {np_img.shape}")
+            tensor = torch.from_numpy(np_img).unsqueeze(0)  # [1, 3, H, W]
+            tensor = tensor * 2 - 1  # [0,1] -> [-1,1]
+            return tensor
+            
+        target_bbox = gsam_metadata['artifacts'][artifact_type]['patch_data']['target_bbox']
+        orig_bbox = self._scale_bbox_to_image_size(target_bbox, orig_img.shape, img.shape)
+
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        orig_crop = preprocess_for_lpips(self._crop_to_bbox(orig_img, orig_bbox)).to(device)
+        img_crop = preprocess_for_lpips(self._crop_to_bbox(img, target_bbox)).to(device)
+
+        # cls1, _ = self._extract_embeddings(orig_crop)
+        # cls2, _ = self._extract_embeddings(img_crop)
+
+        # bbox_similarity = self.compute_cosine_similarity(cls1, cls2)
+
+        with torch.no_grad():
+            d = 1 - self.lpips_model(orig_crop, img_crop).item()
+
+        logger.info(f"LPIPS similarity: {d:.4f}")
+
+        if d < thresholds['similar'] and d >= thresholds['strange']:
+            passed = True
+        else:
+            passed = False
+
+        return passed
     
     def _scale_bbox_to_image_size(self, bbox, target_img_shape, source_img_shape):
         """
@@ -466,7 +520,7 @@ class DataFilterPipeline:
                 original_path = [img for img in data['flux_files']['images'] if '01_original_image' in img.name.lower()]
                 for orig_path in original_path:
                     original_img = self.load_image_safely(orig_path)
-                passed = self.check_distortion_with_dino(
+                passed = self.check_distortion_with_lpips(
                     gsam_metadata, artifact_type, original_img, img_array, exp_id, logger
                 )
                 logger.info(f"Distortion artifact {exp_id} with {kernel_type}: {'PASSED' if passed else 'FAILED'} (similarity test)")
