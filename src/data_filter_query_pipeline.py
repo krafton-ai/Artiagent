@@ -137,7 +137,8 @@ class DataFilterPipeline:
                 self.experiment_data[exp_id] = {
                     'metadata_path': metadata_path,
                     'real_image_path': real_image_path,
-                    'artifact_path': artifact_path
+                    'artifact_path': artifact_path,
+                    'flux_dir': flux_dir
                 }
             else:
                 missing_files = []
@@ -397,6 +398,13 @@ class DataFilterPipeline:
         artifact_image = results['artifact_image']
         shutil.copy2(artifact_image, exp_output_dir / "artifact_image.png")
         print(f"  Copied artifact image: {artifact_image}")
+
+        # 2. Copy comparison image from passed images
+        comparison_image =  self.experiment_data[exp_id]['flux_dir'] / 'comparison.png'
+        shutil.copy2(comparison_image, exp_output_dir / "comparison.png")
+        print(f"  Copied comparison image: {comparison_image}")
+
+
         
         # Create metadata dictionary
         metadata_dict = []
