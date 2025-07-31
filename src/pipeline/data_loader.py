@@ -1,6 +1,5 @@
 import os
 import numpy as np
-import matplotlib.image as mpimg
 from pycocotools.coco import COCO
 from typing import List, Dict, Tuple, Optional
 import pathlib
@@ -69,7 +68,22 @@ class COCODataLoader:
         
         # Load image info and array
         img_info = self.coco_class.loadImgs(sampled_id)[0]
-        img_array = mpimg.imread(os.path.join(self.image_path, img_info['file_name']))
+        
+        # Load image with PIL
+        img_path = os.path.join(self.image_path, img_info['file_name'])
+        img = Image.open(img_path)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Rescale if shortest side is less than 480
+        width, height = img.size
+        if min(width, height) < 480:
+            scale_factor = 480 / min(width, height)
+            new_width = int(width * scale_factor)
+            new_height = int(height * scale_factor)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        img_array = np.array(img)
         
         # Apply the same preprocessing as used for flux model
         # Ensure dimensions are divisible by 16 for correct input to the flux model
@@ -124,7 +138,21 @@ class COCODataLoader:
             Image array with dimensions adjusted to be divisible by 16
         """
         img_path = os.path.join(self.image_path, img_info['file_name'])
-        img_array = mpimg.imread(img_path)
+        
+        # Load image with PIL
+        img = Image.open(img_path)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Rescale if shortest side is less than 480
+        width, height = img.size
+        if min(width, height) < 480:
+            scale_factor = 480 / min(width, height)
+            new_width = int(width * scale_factor)
+            new_height = int(height * scale_factor)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        img_array = np.array(img)
         
         # Apply the same preprocessing as used for flux model
         # Ensure dimensions are divisible by 16 for correct input to the flux model
@@ -325,17 +353,20 @@ class ImageNetDataLoader:
         Returns:
             Image array with dimensions adjusted to be divisible by 16
         """
-        try:
-            # Try loading with PIL first (better format support)
-            img = Image.open(image_path)
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            img_array = np.array(img)
-        except Exception:
-            # Fallback to matplotlib
-            img_array = mpimg.imread(image_path)
-            if len(img_array.shape) == 2:  # Grayscale
-                img_array = np.stack([img_array] * 3, axis=-1)
+        # Load image with PIL
+        img = Image.open(image_path)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Rescale if shortest side is less than 480
+        width, height = img.size
+        if min(width, height) < 480:
+            scale_factor = 480 / min(width, height)
+            new_width = int(width * scale_factor)
+            new_height = int(height * scale_factor)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        img_array = np.array(img)
         
         # Ensure dimensions are divisible by 16 for flux model compatibility
         shape = img_array.shape
@@ -569,17 +600,20 @@ class CustomDirectoryDataLoader:
         Returns:
             Image array with dimensions adjusted to be divisible by 16
         """
-        try:
-            # Try loading with PIL first (better format support)
-            img = Image.open(image_path)
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            img_array = np.array(img)
-        except Exception:
-            # Fallback to matplotlib
-            img_array = mpimg.imread(image_path)
-            if len(img_array.shape) == 2:  # Grayscale
-                img_array = np.stack([img_array] * 3, axis=-1)
+        # Load image with PIL
+        img = Image.open(image_path)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Rescale if shortest side is less than 480
+        width, height = img.size
+        if min(width, height) < 480:
+            scale_factor = 480 / min(width, height)
+            new_width = int(width * scale_factor)
+            new_height = int(height * scale_factor)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        img_array = np.array(img)
         
         # Ensure dimensions are divisible by 16 for flux model compatibility
         shape = img_array.shape
