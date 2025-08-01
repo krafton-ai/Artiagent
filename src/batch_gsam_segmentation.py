@@ -36,7 +36,7 @@ from pipeline import (
     GSAMDetector, InstanceProcessor, ImageVisualizer,
 )
 from pipeline.data_loader import _initialize_data_loader, _get_image_list
-from pipeline.prompts import get_all_entity_subparts, kernel_type_decision
+from pipeline.prompts import get_all_entity_subparts, MoneyManager, kernel_type_decision
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
@@ -73,12 +73,12 @@ def setup_logging(output_dir: str, supercategory: str) -> logging.Logger:
 
 def _try_process_all_artifact_types(
     img_array: np.ndarray,
-    img_id: int,
     gsam_detector: GSAMDetector,
     config: Dict[str, Any],
     openai_client: openai.OpenAI,
     image_output_dir: str,
     img_filename: str,
+    money_manager: MoneyManager,
     logger: logging.Logger
 ) -> Tuple[Dict[str, List[Dict]], Optional[np.ndarray], Optional[Any]]:
     """
@@ -86,7 +86,6 @@ def _try_process_all_artifact_types(
     
     Args:
         img_array: Image array
-        img_id: Image ID
         gsam_detector: GSAM detector instance
         config: Configuration dictionary
         openai_client: OpenAI client
@@ -101,7 +100,7 @@ def _try_process_all_artifact_types(
 
     
     # Step 1: Get all entity subparts from API
-    all_subparts_response = get_all_entity_subparts(openai_client, img_array)
+    all_subparts_response = get_all_entity_subparts(openai_client, img_array, money_manager)
     if not all_subparts_response or 'error' in all_subparts_response:
         raise RuntimeError("Failed to get entity subparts")
         
@@ -114,9 +113,9 @@ def _try_process_all_artifact_types(
         entity = vocab_data['entity']
         subparts = vocab_data['subparts']
         entities.add(entity)
-        for subpart in subparts:
-            subentities.add(subpart)
-            entity_subpart_artifacts[entity][subpart].append(artifact_type)
+        for subentity in subparts:
+            subentities.add(subentity)
+            entity_subpart_artifacts[entity][subentity].append(artifact_type)
 
     # Step 3: Single detection call with combined vocabulary
     logger.info(f"Detecting parts using Grounded SAM...")
@@ -126,19 +125,19 @@ def _try_process_all_artifact_types(
 
     artifacts = []
     for prediction in predictions:
-        entity_name = prediction['mapped_entity_name']
-        subentity_name = prediction['subentity_name']
+        entity = prediction['entity']
+        subentity = prediction['subentity']
         
-        artifact_type = random.choice(entity_subpart_artifacts[entity_name][subentity_name])
-        logger.info(f"Creating {artifact_type} artifact for {entity_name} of {subentity_name}")
+        artifact_type = random.choice(entity_subpart_artifacts[entity][subentity])
+        logger.info(f"Creating {artifact_type} artifact for {entity} of {subentity}")
         try:
-            annotation = _create_artifact_annotations(
+            annotation = create_artifact_annotations(
                 artifact_type, prediction,
                 predictions, entity_predictions, entity_name, subentity_name, img_array, config,
                 image_output_dir, img_filename, logger, openai_client
             )
         except Exception as e:
-            logger.error(f"Error creating {artifact_type} artifact for {entity_name} of {subentity_name}: {str(e)}")
+            logger.error(f"Error creating {artifact_type} artifact for {entity} of {subentity}: {str(e)}")
             continue
         
         artifacts.append(annotation)
@@ -220,13 +219,13 @@ def sample_multiple_target_artifacts(
     return selected_artifacts
 
 
-def _create_artifact_annotations(
+def create_artifact_annotations(
     artifact_type: str,
     prediction: Any,
     predictions: Any,
     entity_predictions: Any,
     entity: str,
-    subpart: str,
+    subentity: str,
     img_array: np.ndarray,
     config: Dict[str, Any],
     image_output_dir: str,
@@ -300,8 +299,8 @@ def _create_artifact_annotations(
     # Return structured annotations with artifact index
     return {
         'artifact_type': artifact_type,
-        'entity_name': entity,
-        'subpart_name': subpart,
+        'entity': entity,
+        'subentity': subentity,
         'target_bbox': target_bbox,
         'reference_bbox': reference_bbox,
         'target_patch_indices': target_patch_indices,
@@ -322,6 +321,7 @@ def process_single_image(
     output_dir: str, 
     config: Dict[str, Any], 
     openai_client: openai.OpenAI,
+    money_manager: MoneyManager,
     logger: logging.Logger
 ) -> Dict[str, Any]:
     """
@@ -371,8 +371,8 @@ def process_single_image(
             image_output_dir = os.path.join(output_dir, f'{unique_id}')
             os.makedirs(image_output_dir, exist_ok=True)
             (artifacts, visualized_output) = _try_process_all_artifact_types(
-                img_array, img_id, gsam_detector, config,
-                openai_client, image_output_dir, img_filename, logger
+                img_array, gsam_detector, config,
+                openai_client, image_output_dir, img_filename, money_manager, logger
             )
         except Exception as e:
             logger.error(f"Error processing image {img_id}: {str(e)}")
@@ -410,7 +410,7 @@ def process_single_image(
             if artifact_type not in artifact_details:
                 artifact_details[artifact_type] = []
             artifact_details[artifact_type].append({
-                'subpart_name': artifact['subpart_name'], 
+                'subentity': artifact['subentity'], 
             })
         results['artifact_details'] = artifact_details
         logger.info(f"✅ Processed image {img_id} with {results['artifacts_created']} artifacts")
@@ -509,10 +509,10 @@ def _update_progress_stats(
                 
                 # Track class distribution
                 for artifact in artifacts_list:
-                    subpart_name = artifact.get('subpart_name', 'unknown')
-                    if subpart_name not in stats['detailed_artifact_stats']['class_distribution']:
-                        stats['detailed_artifact_stats']['class_distribution'][subpart_name] = 0
-                    stats['detailed_artifact_stats']['class_distribution'][subpart_name] += 1
+                    subentity = artifact.get('subentity', 'unknown')
+                    if subentity not in stats['detailed_artifact_stats']['class_distribution']:
+                        stats['detailed_artifact_stats']['class_distribution'][subentity] = 0
+                    stats['detailed_artifact_stats']['class_distribution'][subentity] += 1
     else:
         stats['failed_images'] += 1
     
@@ -527,7 +527,8 @@ def _print_processing_summary(
     dataset_type: str, 
     categories: List[str], 
     output_dir: str,
-    logger: logging.Logger
+    logger: logging.Logger,
+    money_manager: MoneyManager
 ) -> None:
     """
     Print final processing summary.
@@ -583,7 +584,7 @@ def _print_processing_summary(
             sorted_classes = sorted(detailed_stats['class_distribution'].items(), 
                                   key=lambda x: x[1], reverse=True)
             for class_name, count in sorted_classes[:10]:  # Show top 10
-                percentage = (count / total_artifacts) * 100 if total_artifacts > 0 else 0
+                percentaged = (count / total_artifacts) * 100 if total_artifacts > 0 else 0
                 logger.info(f"  {class_name}: {count} ({percentage:.1f}%)")
             
             if len(sorted_classes) > 10:
@@ -594,6 +595,7 @@ def _print_processing_summary(
     logger.info("")
     logger.info(f"Total time: {elapsed_time/3600:.1f} hours")
     logger.info(f"Results saved in: {output_dir}")
+    logger.info(f"Total cost: {money_manager.total_cost}")
     logger.info("="*60)
 
 
@@ -637,6 +639,8 @@ def run_gsam_processing(
     # Initialize components
     logger.info("Initializing components...")
     data_loader = _initialize_data_loader(dataset_type, config)
+
+    money_manager = MoneyManager(model="gpt-4o")
     
     # Initialize GSAM detector
     gsam_detector = GSAMDetector(
@@ -689,7 +693,7 @@ def run_gsam_processing(
         for img_info in image_list:
             result = process_single_image(
                 img_info, gsam_detector, blip_model, blip_processor, data_loader, visualizer,
-                output_dir, config, openai_client, logger
+                output_dir, config, openai_client, money_manager, logger
             )
             
             # Update statistics and progress
@@ -708,7 +712,7 @@ def run_gsam_processing(
     with open(progress_file, 'w') as f:
         json.dump(stats, f, indent=2)
     
-    _print_processing_summary(stats, dataset_type, categories, output_dir, logger)
+    _print_processing_summary(stats, dataset_type, categories, output_dir, logger, money_manager)
     
     # Cleanup components
     gsam_detector.cleanup()

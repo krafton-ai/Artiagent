@@ -154,7 +154,7 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
     visualizer.show_comparison(
         img_array, generated_image, artifact_data, caption,
         base_dir=flux_output_path,
-        filename=f"04_comparison.png",
+        filename=f"comparison.png",
     )
 
     generated_image.save(os.path.join(flux_output_path, f'artifact.png'))

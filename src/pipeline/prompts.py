@@ -1638,7 +1638,7 @@ def query_removal_artifact_success(client, img_array, mask_image, part_entity_na
             "reasoning": f"API error: {str(e)}"
         }
 
-def artifact_explanation(client, real_image, artifact_image, metadata, money_manager=None):
+def artifact_explanation(client, real_image, artifact_image, entity, part, artifact_type, money_manager=None):
     """
     Generate natural language explanation of visual artifacts using OpenAI Vision API
     
@@ -1660,11 +1660,6 @@ def artifact_explanation(client, real_image, artifact_image, metadata, money_man
     base64_real_image = encode_image_to_base64(real_image)
     base64_artifact_image = encode_image_to_base64(artifact_image)
     
-    # Extract metadata
-    entity = metadata['entity']
-    part = metadata['part_entity']
-    artifact_type = metadata['artifact_type']
-    
     # Create artifact-type-specific guidance (without explicitly mentioning the type)
     if artifact_type == 'distortion':
         focus_guidance = "Pay attention to warped shapes, unnatural geometry, irregular textures, or visual blending errors that make the structure appear broken or malformed."
@@ -1678,8 +1673,8 @@ def artifact_explanation(client, real_image, artifact_image, metadata, money_man
     prompt = f"""
 You are given two images:
 
-- **Image A**: A real, original image, with a region visualized where the artifact is going to be injected.
-- **Image B**: A modified version of the same scene, with a region visualized where the artifact is injected.
+- **Image A**: A real, original image, with a region visualized as red bounding box where the artifact is going to be injected.
+- **Image B**: A modified version of the same scene, with a region visualized as green bounding box where the artifact is injected.
 
 Here is the structured context:
 - **Entity**: {entity}
