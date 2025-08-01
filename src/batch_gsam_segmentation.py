@@ -36,7 +36,7 @@ from pipeline import (
     GSAMDetector, InstanceProcessor, ImageVisualizer,
 )
 from pipeline.data_loader import _initialize_data_loader, _get_image_list
-from pipeline.prompts import get_all_entity_subparts, MoneyManager, kernel_type_decision
+from pipeline.prompts import get_all_entity_subparts, MoneyManager
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
@@ -133,7 +133,7 @@ def _try_process_all_artifact_types(
         try:
             annotation = create_artifact_annotations(
                 artifact_type, prediction,
-                predictions, entity_predictions, entity_name, subentity_name, img_array, config,
+                predictions, entity_predictions, entity, subentity, img_array, config,
                 image_output_dir, img_filename, logger, openai_client
             )
         except Exception as e:
@@ -254,14 +254,10 @@ def create_artifact_annotations(
     """
     # Handle random distortion kernel sampling
     if artifact_type == 'distortion':
-        distortion_kernel = kernel_type_decision(openai_client, prediction, img_array)
-        logger.info(f"  Prompt selected distortion kernel: {distortion_kernel}")
-    else:
-        distortion_kernel = 'none'
-        # if config['random_distortion'] and artifact_type == 'distortion':
-        #     available_kernels = ['none', 'jitter', 'swirl', 'voronoi']
-        #     distortion_kernel = random.choice(available_kernels)
-        #     logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
+        if config['random_distortion'] and artifact_type == 'distortion':
+            available_kernels = ['none', 'jitter', 'swirl', 'voronoi', 'coarse', 'strip']
+            distortion_kernel = random.choice(available_kernels)
+            logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
     
     # Create artifact patches
     target_patches, reference_patches = InstanceProcessor.create_artifact_patches(
@@ -271,7 +267,7 @@ def create_artifact_annotations(
         entity_predictions,
         img_array, 
         16, 
-        distortion_kernel=distortion_kernel,
+        distortion_kernel=distortion_kernel if artifact_type == 'distortion' else None,
         output_dir=image_output_dir,
         img_filename=img_filename
     )
