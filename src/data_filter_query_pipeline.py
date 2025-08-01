@@ -34,6 +34,7 @@ import torch.nn.functional as F
 # Import query functions from prompts
 from pipeline.prompts import query_addition_artifact_success, query_removal_artifact_success, MoneyManager
 from openai import OpenAI
+import lpips
 
 
 def setup_logging(output_dir: str):
@@ -83,23 +84,20 @@ class DataFilterPipeline:
         
         # Initialize OpenAI client
         self.client = OpenAI()
-        self._init_dino_embedding()
+        self._init_lpips()
         self.money_manager = MoneyManager(model="gpt-4o")
         self.experiment_data = {}
         self.filtered_results = {}
         self.kernel_stats = {}
 
-    def _init_dino_embedding(self):
-        """Initialize DINOv2 embedding with pre-trained weights"""
-        self.dino_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
-        self.dino_model = AutoModel.from_pretrained("facebook/dinov2-base")
-        self.patch_size = self.dino_model.config.patch_size
-
-        self.dino_model.eval()
-
+    def _init_lpips(self):
+        """Initialize LPIPS"""
+        self.lpips_model = lpips.LPIPS(net='alex')
+        
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        self.dino_model.to(device)
-        print("DINOv2 model initialized successfully")
+
+        self.lpips_model.to(device)
+        print("LPIPS initalized successfully")
     
     def find_matching_experiments(self) -> Dict[str, Dict]:
         """Find matching directories that start with 'image' between GSAM and FLUX experiments"""
@@ -156,7 +154,7 @@ class DataFilterPipeline:
         
         return self.experiment_data
 
-    def check_distortion_with_dino(self, metadata: Dict, artifact_type: str,
+    def check_distortion_with_lpips(self, artifact: Dict, artifact_type: str,
                                   orig_img: np.ndarray, img: np.ndarray, exp_id: str, logger) -> bool: 
         """
         Use DINO to check if two images are similar as a distortion artifact.
@@ -164,126 +162,81 @@ class DataFilterPipeline:
         """
         # Set default thresholds
         thresholds = {
-            'same': 0.9,      # Very high similarity
-            'similar': 0.7,    # Moderate similarity
-            'strange': 0.5,
-            'different': 0.0   # Low similarity
+            'similar': 0.8,
+            'strange': 0.7,
         }
 
-        mask = metadata['artifacts'][artifact_type]['patch_data'].get('masks', None)
-        
-        # Extract embeddings
-        print("Extracting embeddings...")
-        if mask is not None:
-            print(f"Using mask for patch similarity: {mask.shape}")
+        def preprocess_for_lpips(np_img):
+            # Convert to float32, resize to [H, W, 3] if needed
+            if np_img.dtype != np.float32:
+                np_img = np_img.astype(np.float32)
+            if np_img.max() > 1.0:
+                np_img = np_img / 255.0
+            # LPIPS expects shape [1, 3, H, W] and range [-1, 1]
+            if np_img.shape[-1] == 3:
+                np_img = np.transpose(np_img, (2, 0, 1))  # [3, H, W]
+            elif np_img.shape[0] == 3:
+                pass  # already [3, H, W]
+            else:
+                raise ValueError(f"Unexpected image shape for LPIPS: {np_img.shape}")
+            tensor = torch.from_numpy(np_img).unsqueeze(0)  # [1, 3, H, W]
+            tensor = tensor * 2 - 1  # [0,1] -> [-1,1]
+            return tensor
             
-        cls1, patches1 = self._extract_embeddings(orig_img, mask)
-        cls2, patches2 = self._extract_embeddings(img, mask)
-        
-        # Compute similarities
-        cls_similarity = self.compute_cosine_similarity(cls1, cls2)
-        
-        # Flatten patch embeddings for comparison
-        patches1_flat = patches1.flatten(0, 1)  # [num_patches, hidden_size]
-        patches2_flat = patches2.flatten(0, 1)  # [num_patches, hidden_size]
-        
-        # Use minimum number of patches for comparison
-        min_patches = min(patches1_flat.shape[0], patches2_flat.shape[0])
-        patches1_flat = patches1_flat[:min_patches]
-        patches2_flat = patches2_flat[:min_patches]
-        
-        patch_similarity = self.compute_cosine_similarity(patches1_flat, patches2_flat)
-        
-        # Use average of CLS and patch similarities
-        avg_similarity = (cls_similarity + patch_similarity) / 2
-        
-        logger.info(f"CLS similarity: {cls_similarity:.3f}, Patch similarity: {patch_similarity:.3f}, Avg: {avg_similarity:.3f}")
+        target_bbox = artifact['target_bbox']
+        orig_bbox = self._scale_bbox_to_image_size(target_bbox, orig_img.shape, img.shape)
 
-        # if avg_similarity < thresholds['same'] and avg_similarity >= thresholds['similar']:
-        if cls_similarity < thresholds['same'] and patch_similarity < 0.8 and patch_similarity >= thresholds['strange']:
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        orig_crop = preprocess_for_lpips(self._crop_to_bbox(orig_img, orig_bbox)).to(device)
+        img_crop = preprocess_for_lpips(self._crop_to_bbox(img, target_bbox)).to(device)
+
+        with torch.no_grad():
+            d = 1 - self.lpips_model(orig_crop, img_crop).item()
+
+        logger.info(f"LPIPS similarity: {d:.4f}")
+
+        if d < thresholds['similar'] and d >= thresholds['strange']:
             passed = True
         else:
             passed = False
-        # else:
-        #     passed = False 
 
         return passed
     
-    def _extract_embeddings(self, image: Image.Image, mask: np.ndarray = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _scale_bbox_to_image_size(self, bbox, target_img_shape, source_img_shape):
         """
-        Extract DINO embeddings from image
+        Scale bounding box coordinates from source image size to target image size.
         """
-        # Process image
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        inputs = self.dino_processor(images=image, return_tensors="pt").to(device)
+        xmin, ymin, xmax, ymax = bbox
+        source_h, source_w = source_img_shape[:2]
+        target_h, target_w = target_img_shape[:2]
         
-        # Get image dimensions
-        batch_size, rgb, img_height, img_width = inputs.pixel_values.shape
-        num_patches_height = img_height // self.patch_size
-        num_patches_width = img_width // self.patch_size
-        num_patches_flat = num_patches_height * num_patches_width
+        # Calculate scaling ratios
+        scale_x = target_w / source_w
+        scale_y = target_h / source_h
         
-        # Extract features
-        with torch.no_grad():
-            outputs = self.dino_model(**inputs)
-            last_hidden_states = outputs[0]
+        # Scale coordinates
+        scaled_xmin = int(round(xmin * scale_x))
+        scaled_ymin = int(round(ymin * scale_y))
+        scaled_xmax = int(round(xmax * scale_x))
+        scaled_ymax = int(round(ymax * scale_y))
         
-        # Separate CLS token and patch embeddings
-        cls_token = last_hidden_states[:, 0, :]  # [1, hidden_size]
-        patch_features = last_hidden_states[:, 1:, :].unflatten(1, (num_patches_height, num_patches_width))
+        # Ensure coordinates are within bounds
+        scaled_xmin = max(0, scaled_xmin)
+        scaled_ymin = max(0, scaled_ymin)
+        scaled_xmax = min(target_w, scaled_xmax)
+        scaled_ymax = min(target_h, scaled_ymax)
         
-        # If mask is provided, filter patches
-        if mask is not None:
-            # Resize mask to patch grid
-            mask_resized = self._resize_mask_to_patches(mask, num_patches_height, num_patches_width)
-            # Get masked patch indices
-            masked_patches = self._get_masked_patches(patch_features.squeeze(0), mask_resized)
-            return cls_token.squeeze(0), masked_patches
-        
-        return cls_token.squeeze(0), patch_features.squeeze(0)  # Remove batch dimension
-    
-    def _resize_mask_to_patches(self, mask: np.ndarray, num_patches_height: int, num_patches_width: int) -> np.ndarray:
-        """Resize mask to patch grid dimensions"""
-        from PIL import Image
-        mask_pil = Image.fromarray(mask.astype(np.uint8))
-        mask_resized = mask_pil.resize((num_patches_width, num_patches_height), Image.NEAREST)
-        return np.array(mask_resized) > 0
-    
-    def _get_masked_patches(self, patch_features: torch.Tensor, mask: np.ndarray) -> torch.Tensor:
-        """Extract patches where mask is True"""
-        # Convert mask to boolean tensor
-        mask_tensor = torch.from_numpy(mask).bool()
-        
-        # Get indices where mask is True
-        masked_indices = torch.where(mask_tensor.flatten())[0]
-        
-        # Extract masked patches
-        patch_features_flat = patch_features.flatten(0, 1)  # [num_patches, hidden_size]
-        masked_patches = patch_features_flat[masked_indices]
-        
-        return masked_patches
-    
-    def normalize_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Normalize embeddings using L2 norm"""
-        return F.normalize(embeddings, p=2, dim=-1)
-    
-    def compute_cosine_similarity(self, emb1: torch.Tensor, emb2: torch.Tensor) -> float:
-        """Compute cosine similarity between two normalized embeddings"""
-        # Ensure embeddings are normalized
-        emb1_norm = self.normalize_embeddings(emb1)
-        emb2_norm = self.normalize_embeddings(emb2)
-        
-        # Compute cosine similarity
-        # If embeddings are 1D, compute directly
-        if emb1_norm.dim() == 1 and emb2_norm.dim() == 1:
-            similarity = F.cosine_similarity(emb1_norm.unsqueeze(0), emb2_norm.unsqueeze(0), dim=1)
-        else:
-            # For multi-dimensional embeddings, flatten and compute
-            emb1_flat = emb1_norm.flatten()
-            emb2_flat = emb2_norm.flatten()
-            similarity = F.cosine_similarity(emb1_flat.unsqueeze(0), emb2_flat.unsqueeze(0), dim=1)
-        
-        return similarity.item()
+        return [scaled_xmin, scaled_ymin, scaled_xmax, scaled_ymax]
+
+    def _crop_to_bbox(self, image: np.ndarray, bbox) -> np.ndarray:
+        """Crop image to bounding box coordinates"""
+        h, w = image.shape[:2]
+        xmin, ymin, xmax, ymax = [int(round(x)) for x in bbox]
+        xmin = max(0, xmin)
+        ymin = max(0, ymin)
+        xmax = min(w, xmax)
+        ymax = min(h, ymax)
+        return image[ymin:ymax, xmin:xmax]
     
     def mask_to_bbox(self, mask: np.ndarray) -> List[int]:
         """Convert binary mask to bounding box [x_min, y_min, x_max, y_max]"""
@@ -355,19 +308,19 @@ class DataFilterPipeline:
                 print(f"Removal artifact {artifact_image.name}: {'PASSED' if passed else 'FAILED'}")
                 print(f"  Reasoning: {reasoning}")
             else:  # distortion
-                passed=True
-                # real_image = data['real_image_path']
-                # original_img = Image.open(real_image)
-                # passed = self.check_distortion_with_dino(
-                #     metadata, artifact_type, original_img, img_array, exp_id, logger
-                # )
-                # logger.info(f"Distortion artifact {exp_id} with {kernel_type}: {'PASSED' if passed else 'FAILED'} (similarity test)")
+                real_image = data['real_image_path']
+                original_img = Image.open(real_image)
+                original_img_array = np.array(original_img.convert('RGB'))
+                passed = self.check_distortion_with_lpips(
+                    artifact, artifact_type, original_img_array, img_array, exp_id, logger
+                )
+                logger.info(f"Distortion artifact with {kernel_type}: {'PASSED' if passed else 'FAILED'} (similarity test)")
 
-                # if kernel_type not in self.kernel_stats:
-                #     self.kernel_stats[kernel_type] = {'total': 0, 'passed': 0}
-                # self.kernel_stats[kernel_type]['total'] += 1
-                # if passed:
-                #     self.kernel_stats[kernel_type]['passed'] += 1
+                if kernel_type not in self.kernel_stats:
+                    self.kernel_stats[kernel_type] = {'total': 0, 'passed': 0}
+                self.kernel_stats[kernel_type]['total'] += 1
+                if passed:
+                    self.kernel_stats[kernel_type]['passed'] += 1
 
                 
         if passed:
@@ -400,8 +353,8 @@ class DataFilterPipeline:
         print(f"  Copied artifact image: {artifact_image}")
 
         # 2. Copy comparison image from passed images
-        comparison_image =  self.experiment_data[exp_id]['flux_dir'] / 'comparison.png'
-        shutil.copy2(comparison_image, exp_output_dir / "comparison.png")
+        comparison_image =  self.experiment_data[exp_id]['flux_dir'] / '04_comparison.png'
+        shutil.copy2(comparison_image, exp_output_dir / "04_comparison.png")
         print(f"  Copied comparison image: {comparison_image}")
 
 
