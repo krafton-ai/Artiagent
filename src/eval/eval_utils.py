@@ -548,8 +548,7 @@ class Evaluation:
 
     @staticmethod
     def _compute_iou_heatmap(artifact_map: np.ndarray, bbox: List[float], 
-                           image_width: int, image_height: int, 
-                           threshold: float = 0.5) -> float:
+                           image_width: int, image_height: int) -> float:
         """
         Compute the Intersection over Union (IoU) between a heatmap and a bounding box.
         
@@ -558,7 +557,6 @@ class Evaluation:
             bbox: Bounding box in format [x1, y1, x2, y2] in image coordinates
             image_width: Original image width
             image_height: Original image height  
-            threshold: Threshold to binarize the heatmap (default: 0.5)
             
         Returns:
             IoU score between 0 and 1
@@ -584,7 +582,7 @@ class Evaluation:
             heatmap_y2 = max(0, min(heatmap_y2, heatmap_h - 1))
             
             # Create binary mask from heatmap using threshold
-            binary_heatmap = (artifact_map > threshold).astype(np.float32)
+            binary_heatmap = (artifact_map > 0).astype(np.float32)
             
             # Create binary bbox mask
             bbox_mask = np.zeros_like(binary_heatmap)
@@ -748,6 +746,7 @@ class Evaluation:
         # Extract prediction data if artifacts were detected
         result_bbox_list = []
         result_desc_list = []
+        
         if num_artifacts > 0 and 'artifacts' in result:
             result_bbox_list = [d.get('bbox_2d', []) for d in result['artifacts'] if 'bbox_2d' in d]
             result_desc_list = [d.get('explanation', '') for d in result['artifacts'] if 'explanation' in d]
@@ -849,8 +848,7 @@ class Evaluation:
                     for bbox in result_bbox_list:
                         if len(bbox) == 4:
                             bbox_iou = self._compute_iou_heatmap(
-                                artifact_map, bbox, 512, 512, 
-                                threshold=0.3  # Lower threshold for more sensitive artifact detection
+                                artifact_map, bbox, 512, 512
                             )
                             iou_scores.append(bbox_iou)
                     

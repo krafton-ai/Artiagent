@@ -5,16 +5,33 @@ This module contains model wrappers for different VLM/MLLM models
 to evaluate their artifact detection capabilities.
 """
 
+import os
+import sys
 import torch
 from typing import Dict, Any, Optional, Union, List
 from PIL import Image
 import json
 import re
+import io
+import base64
 import numpy as np
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoModel, AutoTokenizer
 from qwen_vl_utils import process_vision_info
 import openai
 from openai.types.chat import ChatCompletion
+from google.oauth2 import service_account
+from google import genai
+from google.genai import types
+
+def create_prompt(option):
+    if option == 'default':
+        prompt = "Analyze the image and describe any visual anomalies. Provide whether there is an artifact, and if so, provide bboxes and descriptions for all anomalies. Respond with a JSON array of these objects in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
+    elif option == 'legion':
+        prompt = "You are a helpful assistant. Analyze the given images based on the following three criteria and return the visible artifacts in the image. You need to return the bbox and explanations for all visible artifacts, and if none, assign 0 to the number of artifacts.  Evaluation Criteria: (a) The image should be well-lit, sharp, and visually clear without blurriness, noise, or distortion. (b) The image must not show obvious signs of artificial manipulation, such as pixelated edges or unnatural distortions. (c) The image should look realistic and have a photo-like appearance. Localization Task : Return all the visible artifacts in the structured JSON format:  ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n``` Please strictly follow the instructions to label the input image."
+    elif option == 'synartifact':
+        prompt = "Step 1: You are my assistant to analyze whether artifacts exist in this image. If there are any artifacts, go to step 2. If not, go to step 5. Step 2: You are my assistant to locate artifacts in this image. Please provide the coordinates for artifacts that you choose using the format of [x1,y1,x2,y2]. Step 3: You are my assistant to explain anomalies in this image. Please provide detailed explanations of the artifact in the bbox you have selected in step 2. Step 4: You are my assistant to analyze other artifacts in this image. If there are any other artifacts except the above in this image, go back to step 2 and repeat. If not, go to step 5. Step 5: Gather all the information above and return the JSON output in the structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
+
+    return prompt
 
 class MoneyManager:
     def __init__(self, model: str = "gpt-3.5-turbo-0613"):
@@ -108,7 +125,6 @@ class MoneyManager:
             self.input_cost = 0.3 / 1000
             self.output_cost = 2.5 / 1000
         elif self.model == "gemini-2.5-pro":
-            # TODO: cost changes when # tokens > 200k
             self.input_cost = 1.25 / 1000
             self.output_cost = 10 / 1000
         else:
@@ -201,17 +217,6 @@ class QwenEval:
             device_map=self.device
         )
         self.processor = AutoProcessor.from_pretrained(model_name)
-        
-    def _create_prompt(self) -> str:
-        """
-        Create the prompt for artifact detection.
-        
-        Returns:
-            Formatted prompt string for the model
-        """
-
-        prompt = "Analyze the image and describe any visual anomalies. Provide whether there is an artifact, and if so, provide bboxes and descriptions for all anomalies. Respond with a JSON array of these objects in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
-        return prompt
     
     def inference(self, image: Image.Image) -> Dict[str, Any]:
         """
@@ -223,7 +228,7 @@ class QwenEval:
         Returns:
             Dictionary containing artifact detection results
         """
-        prompt = self._create_prompt()
+        prompt = create_prompt('legion')
         
         # Prepare the conversation
         messages = [
@@ -264,6 +269,7 @@ class QwenEval:
         output_text = self.processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
+        print(output_text)
         
         # Parse the JSON response
         try:
@@ -292,7 +298,7 @@ class QwenEval:
         if not images:
             return []
 
-        prompt = self._create_prompt()
+        prompt = create_prompt('default')
 
         # Build batched messages
         messages_list = []
@@ -414,8 +420,30 @@ class GPTEval:
         """
         return "Analyze the image and describe any visual anomalies. Provide whether there is an artifact, and if so, provide bboxes and descriptions for all anomalies. Respond with a JSON array of these objects in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
 
+    def _encode_image_to_base64(self, image):
+        """Convert PIL Image or numpy array to base64 string"""
+        if isinstance(image, np.ndarray):
+            # Convert numpy array to PIL Image
+            pil_image = Image.fromarray(image)
+        else:
+            pil_image = image
+
+        # Convert to RGB if necessary
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+
+        # Save to bytes buffer
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format='JPEG')
+        buffer.seek(0)
+
+        # Encode to base64
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
     def inference(self, image: Image.Image) -> Dict[str, Any]:
-        prompt = self._create_prompt()
+        prompt = create_prompt('synartifact')
+        base64_image = self._encode_image_to_base64(image)
+
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o",
@@ -423,7 +451,7 @@ class GPTEval:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": system_prompt},
+                            {"type": "text", "text": prompt},
                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                         ]
                     }
@@ -448,13 +476,13 @@ class GPTEval:
                 if raw_text.endswith("```"):
                     raw_text = raw_text[:-3].strip()
 
-                return json.loads(raw_text)
+                return json.loads(raw_text)[0]
 
             except json.JSONDecodeError:
                 json_match = re.search(r'\{[\s\S]*?\}', raw_text)
                 if json_match:
                     try:
-                        return json.loads(json_match.group())
+                        return json.loads(json_match.group())[0]
                     except json.JSONDecodeError:
                         pass
 
@@ -467,7 +495,6 @@ class GPTEval:
         except Exception as e:
             print(f"Error analyzing sampled instance: {e}")
             return None
-
 
 class GeminiEval:
     """
@@ -478,43 +505,155 @@ class GeminiEval:
         self.config = config
         
         # Load model and processor
-        self._init_client()
+        try:
+            self._init_client()
+        except Exception as e:
+            print(f"Exception occurred while setting up Gemini client: {e}")
+            self.client = None
+
+
+                
         self.money_manager = MoneyManager(model="gemini-2.5-pro")
 
-    def _init_client(self):
-        """Initialize openai client with API key"""
-        # Check OpenAI API key
-        if not os.getenv('OPENAI_API_KEY'):
-            print("❌ Error: OPENAI_API_KEY environment variable not set.")
-            sys.exit(1)
+    def _init_client(self, service_account_path: str = "key/gemini_gcp.json",
+        project_id: str = "gamebench-456108",
+        location: str = "us-central1"):
+        """Initialize gemini client with API key"""
         
-        self.client = openai.OpenAI()
+        scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+        credentials = service_account.Credentials.from_service_account_file(
+            service_account_path, scopes=scopes
+        )
+        client = genai.Client(
+            vertexai=True,
+            project=project_id,
+            location=location,
+            credentials=credentials,
+        )
+        self.client = client
 
-    def _create_prompt(self) -> str:
-        """
-        Create the prompt for artifact detection.
-        
-        Returns:
-            Formatted prompt string for the model
-        """
-        return "Analyze the image and describe any visual anomalies. Provide whether there is an artifact, and if so, provide bboxes and descriptions for all anomalies. Respond with a JSON array of these objects in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
+    def _chat_completion_request(
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.2,
+        top_p: float = 0.8,
+        max_tokens: int = 1024,
+        stream: bool = False,
+        response_format: str = None,
+    ):
+
+        system_prompt = None
+        contents = []
+
+        for m in messages:
+            if m["role"] == "system" and system_prompt is None:
+                system_prompt = m["content"]
+            else:
+                if isinstance(m["content"], str):
+                    contents.append(
+                        types.Content(
+                            role=m["role"], parts=[types.Part.from_text(text=m["content"])]
+                        )
+                    )
+                elif isinstance(m["content"], list):
+                    for part in m["content"]:
+                        if part["type"] == "text":
+                            contents.append(
+                                types.Content(
+                                    role=m["role"],
+                                    parts=[types.Part.from_text(text=part["text"])],
+                                )
+                            )
+                        elif part["type"] == "image_url":
+                            base64_image = part["image_url"]["url"][
+                                len("data:image/png;base64,") :
+                            ]
+                            image_bytes = base64.b64decode(base64_image)
+                            contents.append(
+                                types.Content(
+                                    role=m["role"],
+                                    parts=[
+                                        types.Part.from_bytes(
+                                            data=image_bytes, mime_type="image/png"
+                                        )
+                                    ],
+                                )
+                            )
+                        else:
+                            raise ValueError("Content must be a string or list of strings.")
+
+        if system_prompt is None:
+            system_prompt = ""
+
+        generate_content_config = types.GenerateContentConfig(
+            temperature=temperature,
+            top_p=top_p,
+            max_output_tokens=max_tokens,
+            response_modalities=["TEXT"],
+            safety_settings=[],
+            system_instruction=[types.Part(text=system_prompt)],
+        )
+
+        if response_format:
+            generate_content_config.response_mime_type = "application/json"
+            generate_content_config.response_schema = response_format
+
+        full_text = ""
+        response_role = ""  # default role
+
+        if stream:
+            for chunk in client.models.generate_content_stream(
+                model=model,
+                contents=contents,
+                config=generate_content_config,
+            ):
+                if hasattr(chunk, "text") and chunk.text:
+                    full_text += chunk.text
+                    response_role = "assistant"
+        else:
+            max_retries = 10
+            for attempt in range(max_retries):
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=contents,
+                        config=generate_content_config,
+                    )
+
+                    found_text = False
+                    if hasattr(response, "candidates") and response.candidates:
+                        for candidate in response.candidates:
+                            if candidate.content.parts:
+                                for part in candidate.content.parts:
+                                    if hasattr(part, "text") and part.text:
+                                        found_text = True
+                                        break
+                            if found_text:
+                                break
+                    if found_text:
+                        break
+
+                    print(f"[Retry {attempt+1}] Empty response. Retrying...")
+                except Exception as e:
+                    import time
+
+                    print(f"[Retry {attempt + 1}] Unexpected error: {e}. Retrying...")
+                    time.sleep(2**attempt)
+
+        return response
+
 
     def inference(self, image: Image.Image) -> Dict[str, Any]:
-        prompt = self._create_prompt()
+        prompt = create_prompt('legion')
         try:
-            response = self.client.chat.completions.create(
-                model="gemini-2.5-pro",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": system_prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                        ]
-                    }
+            myfile = client.files.upload(file=image)
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    myfile,
+                    "\n\n",
+                    prompt,
                 ],
-                max_tokens=1000,
-                temperature=0.2
             )
 
             if self.money_manager:
@@ -552,3 +691,134 @@ class GeminiEval:
         except Exception as e:
             print(f"Error analyzing sampled instance: {e}")
             return None
+    
+    def inference_batch(self, image: Image.Image) -> Dict[str, Any]:
+        prompt = create_prompt('legion')
+        try:
+            myfile = client.files.upload(file=image)
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    myfile,
+                    "\n\n",
+                    prompt,
+                ],
+            )
+
+            if self.money_manager:
+                self.money_manager(response)
+
+            raw_text = response.choices[0].message.content.strip()
+
+            try:
+                raw_text = response.choices[0].message.content.strip()
+
+                # Handle markdown-style code block like ```json ... ```
+                if raw_text.startswith("```json"):
+                    raw_text = raw_text[len("```json"):].strip()
+                elif raw_text.startswith("```"):
+                    raw_text = raw_text[len("```"):].strip()
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3].strip()
+
+                return json.loads(raw_text)
+
+            except json.JSONDecodeError:
+                json_match = re.search(r'\{[\s\S]*?\}', raw_text)
+                if json_match:
+                    try:
+                        return json.loads(json_match.group())
+                    except json.JSONDecodeError:
+                        pass
+
+                print(f"Could not parse JSON from response: {raw_text}")
+                return {
+                    "error": "json_parse_failed",
+                    "raw_response": raw_text
+                }
+
+        except Exception as e:
+            print(f"Error analyzing sampled instance: {e}")
+            return None
+
+
+class PalEval:
+    """
+    Wrapper class for PAL4VST model evaluation.
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        
+        self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
+        # Load model and processor
+        self._load_model()
+        
+    def _load_model(self):
+        """Load the PAL4VST torchscript."""
+        torchscript_file = "/home/jovyan/image-artifacts/baselines/PAL4VST/deployment/pal4vst/swin-large_upernet_unified_512x512/end2end.pt"
+            
+        self.model = torch.jit.load(torchscript_file).to(self.device)
+    
+    def inference(self, image: Image.Image) -> Dict[str, Any]:
+        """
+        Run inference on a single image to detect artifacts.
+        
+        Args:
+            image: PIL Image to analyze
+            
+        Returns:
+            (512, 512) sized heatmap of artifact
+        """
+        img_tensor = self._prepare_input(np.array(image.resize((512, 512))))
+
+        result = self.model(img_tensor).cpu().data.numpy()[0][0]
+            
+        return result
+    
+    def _get_mean_stdinv(self, img):
+        """
+        Compute the mean and std for input image (make sure it's aligned with training)
+        """
+
+        mean=[123.675, 116.28, 103.53]
+        std=[58.395, 57.12, 57.375]
+
+        mean_img = np.zeros((img.shape))
+        mean_img[:,:,0] = mean[0]
+        mean_img[:,:,1] = mean[1]
+        mean_img[:,:,2] = mean[2]
+        mean_img = np.float32(mean_img)
+
+        std_img = np.zeros((img.shape))
+        std_img[:,:,0] = std[0]
+        std_img[:,:,1] = std[1]
+        std_img[:,:,2] = std[2]
+        std_img = np.float64(std_img)
+
+        stdinv_img = 1 / np.float32(std_img)
+
+        return mean_img, stdinv_img
+
+    def _numpy2tensor(self, img):
+        """
+        Convert numpy to tensor
+        """
+        img = torch.from_numpy(img).transpose(0,2).transpose(1,2).unsqueeze(0).float()
+        return img
+
+    def _prepare_input(self, img):
+        """
+        Convert numpy image into a normalized tensor (ready to do segmentation)
+        """
+        mean_img, stdinv_img = self._get_mean_stdinv(img)
+
+        img_tensor = self._numpy2tensor(img).to(self.device)
+        mean_img_tensor = self._numpy2tensor(mean_img).to(self.device)
+        stdinv_img_tensor = self._numpy2tensor(stdinv_img).to(self.device)
+        
+        img_tensor = img_tensor - mean_img_tensor
+        img_tensor = img_tensor * stdinv_img_tensor
+
+        return img_tensor
+   

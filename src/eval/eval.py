@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 from PIL import Image
 from pathlib import Path
 
-from models import QwenEval, GPTEval, GeminiEval
+from models import QwenEval, GPTEval, GeminiEval, PalEval
 from eval_utils import Evaluation, Visualizer, parse_tfrecord_file
 
 
@@ -196,8 +196,10 @@ def create_model(config: Dict):
         return QwenEval(config)
     elif model_type == 'gpt':
         return GPTEval(config)
-    elif model_type == 'gemini':
-        return GeminiEval(config)
+    # elif model_type == 'gemini':
+    #     return GeminiEval(config)
+    elif model_type == 'pal':
+        return PalEval(config)
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -259,11 +261,16 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None, enable_visua
             
             # Run model inference
             prediction = model.inference(image)
+            print(prediction)
             
             # Evaluate results
+            # if config['model_type'] == 'pal':
+                
+            # else:
             stats = evaluator.generate_statistics(
                 dataset_type, json_data, prediction
             )
+
             sample_result = {
                 'image_path': str(image_path),
                 'binary_success': stats['binary_success'],
@@ -533,7 +540,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Evaluate VLM/MLLM models on artifact detection tasks'
     )
-    parser.add_argument('--model', type=str, choices=['qwen', 'gpt', 'gemini'], 
+    parser.add_argument('--model', type=str, choices=['qwen', 'gpt', 'gemini', 'pal'], 
                        default='qwen', help='Model type to evaluate (default: qwen)')
     parser.add_argument('--dataset', type=str, 
                        choices=['synthscars', 'synartifact', 'loki', 'richhf'], 
@@ -552,8 +559,8 @@ def main():
                        help='Enable visualization of results (default: False)')
     parser.add_argument('--base-dir', type=str, default=None,
                        help='Custom base directory for dataset')
-    parser.add_argument('--batch-size', type=int, default=2,
-                       help='Batched inference size (default: 2)')
+    parser.add_argument('--batch-size', type=int, default=1,
+                       help='Batched inference size (default: 1)')
                        
     args = parser.parse_args()
     
@@ -587,6 +594,7 @@ def main():
     
     print(f"🚀 Starting evaluation for {args.dataset.upper()} dataset")
     print(f"🤖 Model: {args.model}")
+    print(f"🤖 Finetuned: {args.use_finetuned}")
     print(f"📁 Dataset path: {base_dir}")
     print(f"🔧 Device: {args.device}")
     
