@@ -10,7 +10,7 @@ import json
 import re
 import math
 from typing import Dict, List, Tuple, Optional, Union, Any
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -386,6 +386,7 @@ class Visualizer:
             Path to saved visualization
         """
         artifact_map = sample['artifact_map']
+        pred_heatmap = result.get('heatmap')
 
         # Use matplotlib for better heatmap visualization
         fig, ax = plt.subplots(1, 1, figsize=(12, 12))
@@ -411,7 +412,20 @@ class Visualizer:
                                            facecolor='none', alpha=0.8)
                     ax.add_patch(rect)
 
-        ax.imshow(artifact_map, cmap='hot', alpha=0.3)
+        ax.imshow(artifact_map, cmap='hot', alpha=0.35)
+        if pred_heatmap is not None:
+            # Normalize pred_heatmap to 2D
+            ph = pred_heatmap
+            if isinstance(ph, list):
+                ph = np.array(ph)
+            if hasattr(ph, 'detach'):
+                ph = ph.detach().cpu().numpy()
+            if ph is not None:
+                if len(ph.shape) == 4:
+                    ph = ph[0, 0]
+                elif len(ph.shape) == 3:
+                    ph = ph[:, :, 0]
+                ax.imshow(ph, cmap='cool', alpha=0.35)
         
         plt.tight_layout()
         
@@ -547,56 +561,244 @@ class Evaluation:
             return 0.0
 
     @staticmethod
-    def _compute_iou_heatmap(artifact_map: np.ndarray, bbox: List[float], 
-                           image_width: int, image_height: int) -> float:
+    def _binarize_heatmap(artifact_map: np.ndarray, threshold: float = 0.3) -> np.ndarray:
+        """Binarize a heatmap with a threshold. Ensures 2D array output."""
+        if artifact_map is None:
+            return None
+        try:
+            if isinstance(artifact_map, list):
+                artifact_map = np.array(artifact_map)
+            if hasattr(artifact_map, 'detach'):
+                artifact_map = artifact_map.detach().cpu().numpy()
+            if len(artifact_map.shape) == 4:
+                # e.g., (1,1,512,512)
+                artifact_map = artifact_map[0, 0]
+            elif len(artifact_map.shape) == 3:
+                artifact_map = artifact_map[:, :, 0]
+            # Normalize if the values look like logits
+            arr = artifact_map.astype(np.float32)
+            # Thresholding
+            binary = (arr > threshold).astype(np.uint8)
+            return binary
+        except Exception:
+            return None
+
+    @staticmethod
+    def _connected_components(binary_mask: np.ndarray) -> List[np.ndarray]:
         """
-        Compute the Intersection over Union (IoU) between a heatmap and a bounding box.
-        
-        Args:
-            artifact_map: 2D heatmap array of shape (512, 512) with values in [0, 1]
-            bbox: Bounding box in format [x1, y1, x2, y2] in image coordinates
-            image_width: Original image width
-            image_height: Original image height  
-            
-        Returns:
-            IoU score between 0 and 1
+        Simple 8-connected component extraction returning a list of masks.
+        Avoids external dependencies.
+        """
+        if binary_mask is None:
+            return []
+        h, w = binary_mask.shape
+        visited = np.zeros_like(binary_mask, dtype=np.uint8)
+        components: List[np.ndarray] = []
+
+        def neighbors(y: int, x: int):
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        yield ny, nx
+
+        for y in range(h):
+            for x in range(w):
+                if binary_mask[y, x] and not visited[y, x]:
+                    # BFS/DFS
+                    stack = [(y, x)]
+                    visited[y, x] = 1
+                    comp_coords = []
+                    while stack:
+                        cy, cx = stack.pop()
+                        comp_coords.append((cy, cx))
+                        for ny, nx in neighbors(cy, cx):
+                            if binary_mask[ny, nx] and not visited[ny, nx]:
+                                visited[ny, nx] = 1
+                                stack.append((ny, nx))
+                    comp_mask = np.zeros_like(binary_mask, dtype=np.uint8)
+                    for cy, cx in comp_coords:
+                        comp_mask[cy, cx] = 1
+                    components.append(comp_mask)
+        return components
+
+    @staticmethod
+    def _bbox_mask_on_heatmap_grid(
+        bbox: List[float], heatmap_w: int, heatmap_h: int, image_w: int, image_h: int
+    ) -> np.ndarray:
+        """Rasterize a bbox to heatmap grid as binary mask."""
+        x1, y1, x2, y2 = bbox
+        hx1 = int(max(0, min(heatmap_w - 1, (x1 / image_w) * heatmap_w)))
+        hy1 = int(max(0, min(heatmap_h - 1, (y1 / image_h) * heatmap_h)))
+        hx2 = int(max(0, min(heatmap_w - 1, (x2 / image_w) * heatmap_w)))
+        hy2 = int(max(0, min(heatmap_h - 1, (y2 / image_h) * heatmap_h)))
+        mask = np.zeros((heatmap_h, heatmap_w), dtype=np.uint8)
+        if hx2 >= hx1 and hy2 >= hy1:
+            mask[hy1 : hy2 + 1, hx1 : hx2 + 1] = 1
+        return mask
+
+    @staticmethod
+    def _polygon_mask_on_heatmap_grid(
+        seg: List[float], heatmap_w: int, heatmap_h: int, image_w: int, image_h: int
+    ) -> np.ndarray:
+        """Rasterize polygon to heatmap grid using PIL drawing."""
+        # Scale points
+        pts = []
+        for i in range(0, len(seg), 2):
+            x = int((seg[i] / image_w) * heatmap_w)
+            y = int((seg[i + 1] / image_h) * heatmap_h)
+            x = max(0, min(heatmap_w - 1, x))
+            y = max(0, min(heatmap_h - 1, y))
+            pts.append((x, y))
+        img = Image.new('L', (heatmap_w, heatmap_h), 0)
+        draw = ImageDraw.Draw(img)
+        if len(pts) >= 3:
+            draw.polygon(pts, outline=1, fill=1)
+        return (np.array(img) > 0).astype(np.uint8)
+
+    @staticmethod
+    def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+        inter = np.sum((a > 0) & (b > 0))
+        if inter == 0:
+            return 0.0
+        union = np.sum((a > 0) | (b > 0))
+        return float(inter / union) if union > 0 else 0.0
+
+    @staticmethod
+    def _compute_iou_heatmap_regionwise(
+        artifact_map: np.ndarray,
+        bbox: List[float],
+        image_width: int,
+        image_height: int,
+        threshold: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
+        """
+        Region-wise IoU between a bbox and the best-matching connected region of the heatmap.
         """
         try:
-            # Ensure heatmap is 2D
-            if len(artifact_map.shape) == 3:
+            if artifact_map is None:
+                return 0.0
+            if len(artifact_map.shape) == 4:
+                artifact_map = artifact_map[0, 0]
+            elif len(artifact_map.shape) == 3:
                 artifact_map = artifact_map[:, :, 0]
-            
-            heatmap_h, heatmap_w = artifact_map.shape
-            
-            # Normalize bbox coordinates to heatmap coordinates
-            x1, y1, x2, y2 = bbox
-            heatmap_x1 = int((x1 / image_width) * heatmap_w)
-            heatmap_y1 = int((y1 / image_height) * heatmap_h)  
-            heatmap_x2 = int((x2 / image_width) * heatmap_w)
-            heatmap_y2 = int((y2 / image_height) * heatmap_h)
-            
-            # Clamp coordinates to heatmap bounds
-            heatmap_x1 = max(0, min(heatmap_x1, heatmap_w - 1))
-            heatmap_y1 = max(0, min(heatmap_y1, heatmap_h - 1))
-            heatmap_x2 = max(0, min(heatmap_x2, heatmap_w - 1))
-            heatmap_y2 = max(0, min(heatmap_y2, heatmap_h - 1))
-            
-            # Create binary mask from heatmap using threshold
-            binary_heatmap = (artifact_map > 0).astype(np.float32)
-            
-            # Create binary bbox mask
-            bbox_mask = np.zeros_like(binary_heatmap)
-            bbox_mask[heatmap_y1:heatmap_y2+1, heatmap_x1:heatmap_x2+1] = 1.0
-            
-            # Compute intersection and union
-            intersection = np.sum(binary_heatmap * bbox_mask)
-            union = np.sum(np.maximum(binary_heatmap, bbox_mask))
-            
-            # Return IoU
-            return float(intersection / union) if union > 0 else 0.0
-            
+            h, w = artifact_map.shape
+            bin_map = (artifact_map > threshold).astype(np.uint8)
+            regions = Evaluation._connected_components(bin_map)
+            if not regions:
+                return 0.0
+            # Remove tiny regions
+            regions = [r for r in regions if int(np.sum(r)) >= min_region_area]
+            if not regions:
+                return 0.0
+            bbox_mask = Evaluation._bbox_mask_on_heatmap_grid(bbox, w, h, image_width, image_height)
+            best = 0.0
+            for region in regions:
+                iou = Evaluation._mask_iou(region, bbox_mask)
+                if iou > best:
+                    best = iou
+            return best
         except Exception:
-            # Fallback to 0 if computation fails
+            return 0.0
+
+    @staticmethod
+    def _compute_polygon_vs_heatmap_regionwise(
+        artifact_map: np.ndarray,
+        polygon_seg: List[float],
+        image_width: int,
+        image_height: int,
+        threshold: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
+        """
+        Region-wise IoU between a polygon (GT) and the best-matching connected region of the heatmap.
+        """
+        try:
+            if artifact_map is None:
+                return 0.0
+            if len(artifact_map.shape) == 4:
+                artifact_map = artifact_map[0, 0]
+            elif len(artifact_map.shape) == 3:
+                artifact_map = artifact_map[:, :, 0]
+            h, w = artifact_map.shape
+            bin_map = (artifact_map > threshold).astype(np.uint8)
+            regions = Evaluation._connected_components(bin_map)
+            if not regions:
+                return 0.0
+            regions = [r for r in regions if int(np.sum(r)) >= min_region_area]
+            if not regions:
+                return 0.0
+            poly_mask = Evaluation._polygon_mask_on_heatmap_grid(polygon_seg, w, h, image_width, image_height)
+            best = 0.0
+            for region in regions:
+                iou = Evaluation._mask_iou(region, poly_mask)
+                if iou > best:
+                    best = iou
+            return best
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _compute_heatmap_to_heatmap_iou_regionwise(
+        pred_heatmap: np.ndarray,
+        gt_heatmap: np.ndarray,
+        threshold_pred: float = 0.3,
+        threshold_gt: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
+        """
+        Compute mean IoU between connected regions of pred and GT heatmaps via greedy best-match.
+        """
+        try:
+            # Normalize shapes to 2D
+            if len(pred_heatmap.shape) == 4:
+                pred_heatmap = pred_heatmap[0, 0]
+            elif len(pred_heatmap.shape) == 3:
+                pred_heatmap = pred_heatmap[:, :, 0]
+            if len(gt_heatmap.shape) == 4:
+                gt_heatmap = gt_heatmap[0, 0]
+            elif len(gt_heatmap.shape) == 3:
+                gt_heatmap = gt_heatmap[:, :, 0]
+
+            pred_bin = (pred_heatmap > threshold_pred).astype(np.uint8)
+            gt_bin = (gt_heatmap > threshold_gt).astype(np.uint8)
+
+            pred_regions = [r for r in Evaluation._connected_components(pred_bin) if np.sum(r) >= min_region_area]
+            gt_regions = [r for r in Evaluation._connected_components(gt_bin) if np.sum(r) >= min_region_area]
+
+            if not pred_regions or not gt_regions:
+                return 0.0
+
+            # Compute IoU matrix
+            iou_matrix = np.zeros((len(gt_regions), len(pred_regions)), dtype=np.float32)
+            for i, g in enumerate(gt_regions):
+                for j, p in enumerate(pred_regions):
+                    iou_matrix[i, j] = Evaluation._mask_iou(g, p)
+
+            # Greedy matching: for each GT pick best pred and don't reuse preds
+            used_pred = set()
+            ious = []
+            for i in range(len(gt_regions)):
+                # pick best available pred
+                best_j = -1
+                best_iou = 0.0
+                for j in range(len(pred_regions)):
+                    if j in used_pred:
+                        continue
+                    val = float(iou_matrix[i, j])
+                    if val > best_iou:
+                        best_iou = val
+                        best_j = j
+                if best_j >= 0:
+                    used_pred.add(best_j)
+                    if best_iou > 0:
+                        ious.append(best_iou)
+
+            return float(np.mean(ious)) if ious else 0.0
+        except Exception:
             return 0.0
 
     @staticmethod
@@ -717,8 +919,9 @@ class Evaluation:
         self, 
         dataset_type: str, 
         json_data: Dict, 
-        result: Dict
-    ) -> Tuple[bool, float, float, float]:
+        result: Dict,
+        image_size: Optional[Tuple[int, int]] = None,
+    ) -> Dict[str, Any]:
         """
         Generate evaluation statistics for a single image.
         
@@ -728,9 +931,12 @@ class Evaluation:
             result: Model prediction results
             
         Returns:
-            Tuple of (binary_classification_success, iou, mean_rouge_l, mean_css)
+            stats dict with keys: binary_success, iou, rouge_l, css, classification,
+            has_gt_artifacts, has_pred_artifacts
         """
         num_artifacts = result.get('number_of_artifacts', 0)
+        pred_heatmap = result.get('heatmap', None)
+        img_w, img_h = (image_size if image_size is not None else (512, 512))
         
         # Initialize variables for all paths
         stats = {
@@ -760,7 +966,19 @@ class Evaluation:
             ground_seg_list = [d['segmentation'][0] for d in json_data['refs'] if 'segmentation' in d]
             ground_desc_list = [d.get('explanation', '') for d in json_data['refs']]
             
-            if num_artifacts > 0 and result_bbox_list:
+            if pred_heatmap is not None:
+                # Heatmap vs polygon regions
+                stats['classification'] = 'TP'  # synthscars has only positive samples
+                stats['binary_success'] = True
+                # Compute mean over GT regions
+                ious = []
+                for seg in ground_seg_list:
+                    iou = self._compute_polygon_vs_heatmap_regionwise(
+                        pred_heatmap, seg, img_w, img_h
+                    )
+                    ious.append(iou)
+                stats['iou'] = float(np.mean(ious)) if ious else 0.0
+            elif num_artifacts > 0 and result_bbox_list:
                 stats['classification'] = 'TP'
                 stats['binary_success'] = True
                 stats['iou'], stats['rouge_l'], stats['css'] = self.get_scores(
@@ -783,7 +1001,25 @@ class Evaluation:
                 stats['classification'] = 'TN' if stats['binary_success'] else 'FP'
             else:
                 # Ground truth has artifacts
-                if num_artifacts > 0 and result_bbox_list:
+                if pred_heatmap is not None:
+                    # Heatmap vs GT bbox list
+                    stats['classification'] = 'TP'
+                    stats['binary_success'] = True
+                    ground_bbox_list = []
+                    ground_desc_list = []
+                    for annotation in has_gt_artifacts:
+                        if 'rect_start' in annotation and 'rect_end' in annotation:
+                            bbox = annotation['rect_start'] + annotation['rect_end']
+                            ground_bbox_list.append(bbox)
+                            ground_desc_list.append(annotation.get('artifacts_caption', ''))
+                    ious = []
+                    for bbox in ground_bbox_list:
+                        iou = self._compute_iou_heatmap_regionwise(
+                            pred_heatmap, bbox, img_w, img_h
+                        )
+                        ious.append(iou)
+                    stats['iou'] = float(np.mean(ious)) if ious else 0.0
+                elif num_artifacts > 0 and result_bbox_list:
                     stats['binary_success'] = True
                     stats['classification'] = 'TP'
                     # Convert rect_start + rect_end to bbox format
@@ -822,7 +1058,17 @@ class Evaluation:
                     ground_bbox_list.append(bbox)
                     ground_desc_list.append(problem.get('desc', ''))
             
-            if num_artifacts > 0 and result_bbox_list and ground_bbox_list:
+            if pred_heatmap is not None and ground_bbox_list:
+                stats['binary_success'] = True
+                stats['classification'] = 'TP'
+                ious = []
+                for bbox in ground_bbox_list:
+                    iou = self._compute_iou_heatmap_regionwise(
+                        pred_heatmap, bbox, img_w, img_h
+                    )
+                    ious.append(iou)
+                stats['iou'] = float(np.mean(ious)) if ious else 0.0
+            elif num_artifacts > 0 and result_bbox_list and ground_bbox_list:
                 stats['binary_success'] = True
                 stats['classification'] = 'TP'
                 stats['iou'], stats['rouge_l'], stats['css'] = self.get_scores(
@@ -839,31 +1085,43 @@ class Evaluation:
             # RichHF-18K dataset format - use artifact_map for ground truth
             artifact_map = json_data['artifact_map']
             
-            if num_artifacts > 0 and result_bbox_list:
-                stats['binary_success'] = True
-                stats['classification'] = 'TP'
-                if artifact_map is not None:
-                    # Compute IoU for each predicted bbox and take the maximum
-                    iou_scores = []
-                    for bbox in result_bbox_list:
-                        if len(bbox) == 4:
-                            bbox_iou = self._compute_iou_heatmap(
-                                artifact_map, bbox, 512, 512
-                            )
-                            iou_scores.append(bbox_iou)
-                    
-                    # Use mean IoU across all predicted bboxes
-                    stats['iou'] = float(np.mean(iou_scores)) if iou_scores else 0.0
-                
+            # Determine prediction type
+            pred_heatmap = result.get('heatmap', None)
+            if pred_heatmap is not None:
+                # Heatmap vs heatmap comparison
+                # Binary presence
+                has_pred_regions = bool(np.any((pred_heatmap > 0.3)))
+                stats['has_pred_artifacts'] = has_pred_regions
+                stats['binary_success'] = has_pred_regions  # richhf generally has artifacts
+                stats['classification'] = 'TP' if has_pred_regions else 'FN'
+                try:
+                    stats['iou'] = self._compute_heatmap_to_heatmap_iou_regionwise(
+                        pred_heatmap, artifact_map, threshold_pred=0.3, threshold_gt=0.3
+                    )
+                except Exception:
+                    stats['iou'] = 0.0
             else:
-                # False negative - artifacts exist but none predicted
-                stats['binary_success'] = False
-                stats['classification'] = 'FN'
+                # BBox vs heatmap
+                if num_artifacts > 0 and result_bbox_list:
+                    stats['binary_success'] = True
+                    stats['classification'] = 'TP'
+                    if artifact_map is not None:
+                        iou_scores = []
+                        for bbox in result_bbox_list:
+                            if len(bbox) == 4:
+                                bbox_iou = self._compute_iou_heatmap_regionwise(
+                                    artifact_map, bbox, 512, 512
+                                )
+                                iou_scores.append(bbox_iou)
+                        stats['iou'] = float(np.mean(iou_scores)) if iou_scores else 0.0
+                else:
+                    stats['binary_success'] = False
+                    stats['classification'] = 'FN'
 
         return stats
 
     @staticmethod
-    def compute_f1_metrics(results: List[Dict]) -> Dict:
+    def compute_f1_metrics(results: Dict[int, Dict]) -> Dict:
         """
         Compute F1, precision, recall from detailed evaluation results.
         

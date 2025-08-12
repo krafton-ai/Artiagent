@@ -496,6 +496,23 @@ class GPTEval:
             print(f"Error analyzing sampled instance: {e}")
             return None
 
+    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        """Batch inference by looping per image (API-friendly)."""
+        results: List[Dict[str, Any]] = []
+        for img in images:
+            try:
+                res = self.inference(img)
+            except Exception as e:
+                res = {
+                    "number_of_artifacts": 0,
+                    "artifacts": [],
+                    "error": str(e),
+                }
+            if res is None:
+                res = {"number_of_artifacts": 0, "artifacts": []}
+            results.append(res)
+        return results
+
 class GeminiEval:
     """
     Wrapper class for Gemini model evaluation.
@@ -644,102 +661,64 @@ class GeminiEval:
 
 
     def inference(self, image: Image.Image) -> Dict[str, Any]:
+        if self.client is None:
+            return {"number_of_artifacts": 0, "artifacts": [], "error": "gemini_client_not_initialized"}
         prompt = create_prompt('legion')
         try:
-            myfile = client.files.upload(file=image)
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[
-                    myfile,
-                    "\n\n",
-                    prompt,
-                ],
+            # Upload image bytes
+            buf = io.BytesIO()
+            image.convert("PNG").save(buf, format="PNG")
+            buf.seek(0)
+            img_part = types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png")
+            response = self.client.models.generate_content(
+                model="gemini-2.5-pro",
+                contents=[img_part, "\n\n", prompt],
+                config=types.GenerateContentConfig(max_output_tokens=1024, temperature=0.2, top_p=0.8),
             )
 
             if self.money_manager:
                 self.money_manager(response)
 
-            raw_text = response.choices[0].message.content.strip()
+            # Extract text from response
+            raw_text = ""
+            if hasattr(response, "candidates") and response.candidates:
+                for cand in response.candidates:
+                    if getattr(cand, "content", None) and getattr(cand.content, "parts", None):
+                        for part in cand.content.parts:
+                            if hasattr(part, "text") and part.text:
+                                raw_text += part.text
+            raw_text = raw_text.strip()
 
             try:
-                raw_text = response.choices[0].message.content.strip()
-
-                # Handle markdown-style code block like ```json ... ```
                 if raw_text.startswith("```json"):
                     raw_text = raw_text[len("```json"):].strip()
                 elif raw_text.startswith("```"):
                     raw_text = raw_text[len("```"):].strip()
                 if raw_text.endswith("```"):
                     raw_text = raw_text[:-3].strip()
-
-                return json.loads(raw_text)
-
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, list) and parsed:
+                    parsed = parsed[0]
+                return parsed
             except json.JSONDecodeError:
-                json_match = re.search(r'\{[\s\S]*?\}', raw_text)
+                json_match = re.search(r"\{[\s\S]*?\}", raw_text)
                 if json_match:
                     try:
-                        return json.loads(json_match.group())
+                        parsed = json.loads(json_match.group())
+                        if isinstance(parsed, list) and parsed:
+                            parsed = parsed[0]
+                        return parsed
                     except json.JSONDecodeError:
                         pass
-
-                print(f"Could not parse JSON from response: {raw_text}")
-                return {
-                    "error": "json_parse_failed",
-                    "raw_response": raw_text
-                }
-
+                return {"number_of_artifacts": 0, "artifacts": [], "raw_response": raw_text, "error": "json_parse_failed"}
         except Exception as e:
-            print(f"Error analyzing sampled instance: {e}")
-            return None
+            return {"number_of_artifacts": 0, "artifacts": [], "error": str(e)}
     
-    def inference_batch(self, image: Image.Image) -> Dict[str, Any]:
-        prompt = create_prompt('legion')
-        try:
-            myfile = client.files.upload(file=image)
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[
-                    myfile,
-                    "\n\n",
-                    prompt,
-                ],
-            )
-
-            if self.money_manager:
-                self.money_manager(response)
-
-            raw_text = response.choices[0].message.content.strip()
-
-            try:
-                raw_text = response.choices[0].message.content.strip()
-
-                # Handle markdown-style code block like ```json ... ```
-                if raw_text.startswith("```json"):
-                    raw_text = raw_text[len("```json"):].strip()
-                elif raw_text.startswith("```"):
-                    raw_text = raw_text[len("```"):].strip()
-                if raw_text.endswith("```"):
-                    raw_text = raw_text[:-3].strip()
-
-                return json.loads(raw_text)
-
-            except json.JSONDecodeError:
-                json_match = re.search(r'\{[\s\S]*?\}', raw_text)
-                if json_match:
-                    try:
-                        return json.loads(json_match.group())
-                    except json.JSONDecodeError:
-                        pass
-
-                print(f"Could not parse JSON from response: {raw_text}")
-                return {
-                    "error": "json_parse_failed",
-                    "raw_response": raw_text
-                }
-
-        except Exception as e:
-            print(f"Error analyzing sampled instance: {e}")
-            return None
+    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        for img in images:
+            results.append(self.inference(img))
+        return results
 
 
 class PalEval:
@@ -773,8 +752,16 @@ class PalEval:
         img_tensor = self._prepare_input(np.array(image.resize((512, 512))))
 
         result = self.model(img_tensor).cpu().data.numpy()[0][0]
-            
-        return result
+        return {"heatmap": result}
+
+    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        outputs: List[Dict[str, Any]] = []
+        for img in images:
+            try:
+                outputs.append(self.inference(img))
+            except Exception as e:
+                outputs.append({"heatmap": None, "error": str(e)})
+        return outputs
     
     def _get_mean_stdinv(self, img):
         """
@@ -821,4 +808,54 @@ class PalEval:
         img_tensor = img_tensor * stdinv_img_tensor
 
         return img_tensor
+
+
+class DiffEval:
+    """
+    DiffDoctor artifact detector wrapper.
+    Outputs heatmap of shape (1, 1, 512, 512) under key 'heatmap'.
+    Reference: https://github.com/ali-vilab/DiffDoctor.git
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
+        self._load_model()
+
+    def _load_model(self) -> None:
+        base_dir = "/home/jovyan/image-artifacts/baselines/DiffDoctor"
+        ckpt = os.path.join(base_dir, "checkpoints", "ad_pytorch_model.bin")
+        self.model = None
+        if os.path.exists(ckpt):
+            try:
+                self.model = torch.jit.load(ckpt, map_location=self.device)
+            except Exception:
+                try:
+                    self.model = torch.load(ckpt, map_location=self.device)
+                except Exception:
+                    self.model = None
+
+    def _prepare(self, image: Image.Image) -> torch.Tensor:
+        arr = np.array(image.resize((512, 512)).convert('RGB'), dtype=np.float32) / 255.0
+        x = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+        return x.to(self.device)
+
+    def inference(self, image: Image.Image) -> Dict[str, Any]:
+        if self.model is None:
+            return {"heatmap": None, "error": "diffdoctor_model_not_loaded"}
+        x = self._prepare(image)
+        with torch.no_grad():
+            out = self.model(x)
+        if isinstance(out, torch.Tensor):
+            out_np = out.detach().cpu().numpy()
+        else:
+            out_np = np.array(out)
+        if out_np.ndim == 2:
+            out_np = out_np[None, None, ...]
+        elif out_np.ndim == 3:
+            out_np = out_np[None, ...]
+        return {"heatmap": out_np}
+
+    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        return [self.inference(img) for img in images]
    

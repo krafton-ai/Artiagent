@@ -11,11 +11,11 @@ import json
 import argparse
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-from PIL import Image
+from typing import Dict, List, Optional, Tuple, Any
+from PIL import Image  # type: ignore
 from pathlib import Path
 
-from models import QwenEval, GPTEval, GeminiEval, PalEval
+from models import QwenEval, GPTEval, GeminiEval, PalEval, DiffEval
 from eval_utils import Evaluation, Visualizer, parse_tfrecord_file
 
 
@@ -160,6 +160,8 @@ class DatasetIterator:
             json_data = sample
             image_path = self.base_dir / json_data["filename"]
             return json_data, image_path
+        # Should not reach here
+        raise RuntimeError("Unsupported dataset type in _process_sample")
     
     def _load_synthscars(self):
         """Load SynthScars dataset."""
@@ -196,10 +198,12 @@ def create_model(config: Dict):
         return QwenEval(config)
     elif model_type == 'gpt':
         return GPTEval(config)
-    # elif model_type == 'gemini':
-    #     return GeminiEval(config)
+    elif model_type == 'gemini':
+        return GeminiEval(config)
     elif model_type == 'pal':
         return PalEval(config)
+    elif model_type == 'diff':
+        return DiffEval(config)
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -228,6 +232,7 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None, enable_visua
     data_iterator = DatasetIterator(config)
     evaluator = Evaluation()
 
+    visualizer: Optional[Visualizer] = None
     if enable_visualization:
         viz_dir = os.path.join(config['log_dir'], 'visualizations')
         visualizer = Visualizer(viz_dir)
@@ -255,7 +260,7 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None, enable_visua
                 logger.warning(f"Image not found: {image_path}")
                 continue
                 
-            image = Image.open(image_path).convert("RGB")
+            image = Image.open(str(image_path)).convert("RGB")
             if dataset_type == 'richhf':
                 image = image.resize((512, 512), Image.LANCZOS)
             
@@ -264,11 +269,8 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None, enable_visua
             print(prediction)
             
             # Evaluate results
-            # if config['model_type'] == 'pal':
-                
-            # else:
             stats = evaluator.generate_statistics(
-                dataset_type, json_data, prediction
+                dataset_type, json_data, prediction, image_size=image.size
             )
 
             sample_result = {
@@ -286,7 +288,7 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None, enable_visua
             # Store results
             results[i] = sample_result
 
-            if enable_visualization:
+            if enable_visualization and visualizer is not None:
                 try:
                     if dataset_type == 'loki':
                         viz_path = visualizer.visualize_loki(image, prediction, json_data, i)
@@ -301,13 +303,14 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None, enable_visua
 
                     if viz_path:
                         logger.info(f"Visualization saved to: {viz_path}")
-            
                 except Exception as e:
                     logger.warning(f"Visualization failed: {e}")
-            
-            logger.info(f"Sample {i+1} - Binary: {stats['binary_success']}, IoU: {stats['iou']:.3f}, "
-                       f"ROUGE-L: {stats['rouge_l']:.3f}, CSS: {stats['css']:.3f}")
-                       
+
+            logger.info(
+                f"Sample {i+1} - Binary: {stats['binary_success']}, IoU: {stats['iou']:.3f}, "
+                f"ROUGE-L: {stats['rouge_l']:.3f}, CSS: {stats['css']:.3f}"
+            )
+
         except Exception as e:
             logger.error(f"Error processing sample {i+1}: {e}")
             continue
@@ -339,8 +342,11 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None, enable_visua
         logger.info(f"  Mean TP ROUGE-L: {f1_metrics['mean_tp_rouge']:.3f}")
         logger.info(f"  Mean TP CSS: {f1_metrics['mean_tp_css']:.3f}")
 
-    if config['model_type'] == 'gpt':
-        logger.info(f"Total cost: {model.money_manager.total_cost}")
+    if isinstance(model, GPTEval):
+        try:
+            logger.info(f"Total cost: {model.money_manager.total_cost}")
+        except Exception:
+            pass
     
     return results
 
@@ -369,12 +375,13 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
     
     # Initialize components
     logger.info("Initializing model and data iterator...")
-    model = QwenEval(config)
+    model = create_model(config)
     data_iterator = DatasetIterator(config)
     evaluator = Evaluation()
     
+    visualizer: Optional[Visualizer] = None
     if enable_visualization:
-        viz_dir = os.path.join(log_dir, 'visualizations')
+        viz_dir = os.path.join(config['log_dir'], 'visualizations')
         visualizer = Visualizer(viz_dir)
         logger.info(f"Visualization enabled. Outputs will be saved to: {viz_dir}")
     
@@ -394,8 +401,8 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
             if max_samples and processed >= max_samples:
                 break
             # Collect a batch of samples
-            batch_json_data: List[Dict] = []
-            batch_image_paths: List[str] = []
+            batch_json_data: List[Dict[str, Any]] = []
+            batch_image_paths: List[Path] = []
             batch_images: List[Image.Image] = []
             while len(batch_images) < current_batch_size:
                 try:
@@ -423,7 +430,11 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
             )
             # Run batched inference with OOM fallback
             try:
-                batch_results = model.inference_batch(batch_images)
+                # Prefer batched inference when available
+                if hasattr(model, 'inference_batch'):
+                    batch_results = model.inference_batch(batch_images)
+                else:
+                    batch_results = [model.inference(img) for img in batch_images]
             except RuntimeError as e:
                 if "out of memory" in str(e).lower() and len(batch_images) > 1:
                     logger.warning("OOM during batched inference. Falling back to per-sample inference for this batch.")
@@ -447,7 +458,7 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
                 zip(batch_json_data, batch_image_paths, batch_images, batch_results)
             ):
                 stats = evaluator.generate_statistics(
-                    dataset_type, json_data, result
+                    dataset_type, json_data, result, image_size=image.size
                 )
                 sample_result = {
                     'image_path': str(image_path),
@@ -529,8 +540,8 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
         logger.info(f"  Mean TP CSS: {f1_metrics['mean_tp_css']:.3f}")
         
         # Save summary report if visualization was enabled
-        if enable_visualization and results:
-            report_path = visualizer.save_summary_report(results, dataset_type)
+        if enable_visualization and results and visualizer is not None:
+            report_path = visualizer.save_summary_report(list(results.values()), dataset_type)
             logger.info(f"Visualization report saved to: {report_path}")
     
     return results
@@ -540,7 +551,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Evaluate VLM/MLLM models on artifact detection tasks'
     )
-    parser.add_argument('--model', type=str, choices=['qwen', 'gpt', 'gemini', 'pal'], 
+    parser.add_argument('--model', type=str, choices=['qwen', 'gpt', 'gemini', 'pal', 'diff'], 
                        default='qwen', help='Model type to evaluate (default: qwen)')
     parser.add_argument('--dataset', type=str, 
                        choices=['synthscars', 'synartifact', 'loki', 'richhf'], 
