@@ -15,7 +15,8 @@ import re
 import io
 import base64
 import numpy as np
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoModel, AutoTokenizer
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoModel, AutoConfig, AutoTokenizer, SegformerImageProcessor, SegformerForSemanticSegmentation
+from torchvision import transforms
 from qwen_vl_utils import process_vision_info
 import openai
 from openai.types.chat import ChatCompletion
@@ -27,7 +28,8 @@ def create_prompt(option):
     if option == 'default':
         prompt = "Analyze the image and describe any visual anomalies. Provide whether there is an artifact, and if so, provide bboxes and descriptions for all anomalies. Respond with a JSON array of these objects in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
     elif option == 'legion':
-        prompt = "You are a helpful assistant. Analyze the given images based on the following three criteria and return the visible artifacts in the image. You need to return the bbox and explanations for all visible artifacts, and if none, assign 0 to the number of artifacts.  Evaluation Criteria: (a) The image should be well-lit, sharp, and visually clear without blurriness, noise, or distortion. (b) The image must not show obvious signs of artificial manipulation, such as pixelated edges or unnatural distortions. (c) The image should look realistic and have a photo-like appearance. Localization Task : Return all the visible artifacts in the structured JSON format:  ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n``` Please strictly follow the instructions to label the input image."
+        # prompt = "Please provide a detailed analysis of this photo, considering the following: Physics artifacts (e.g., optical display issues, violations of physical laws, and spatial/perspective errors), Structure artifacts (e.g., deformed objects, asymmetry, or distorted text), and Distortion artifacts (e.g., color/texture distortion, noise/blur, artistic style errors, and material misrepresentation). Output with interleaved bboxes for the corresponding parts of the answer in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n   \"caption\": \"Upon examining the image, I have found: ... .\",\n   \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"... .\"\n    }, ...\n]\n}\n]\n```"
+        prompt = "You are a helpful assistant. Analyze the given images based on the following three criteria and return the visible artifacts in the image. You need to return the bbox and explanations for all visible artifacts, and if none, assign 0 to the number of artifacts. Evaluation Criteria: (a) The image should be well-lit, sharp, and visually clear without blurriness, noise, or distortion. (b) The image must not show obvious signs of artificial manipulation, such as pixelated edges or unnatural distortions. (c) The image should look realistic and have a photo-like appearance. Localization Task : Return all the visible artifacts in the structured JSON format:  ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"... .\"\n    }, ...\n]\n}\n]\n``` Please strictly follow the instructions to label the input image."
     elif option == 'synartifact':
         prompt = "Step 1: You are my assistant to analyze whether artifacts exist in this image. If there are any artifacts, go to step 2. If not, go to step 5. Step 2: You are my assistant to locate artifacts in this image. Please provide the coordinates for artifacts that you choose using the format of [x1,y1,x2,y2]. Step 3: You are my assistant to explain anomalies in this image. Please provide detailed explanations of the artifact in the bbox you have selected in step 2. Step 4: You are my assistant to analyze other artifacts in this image. If there are any other artifacts except the above in this image, go back to step 2 and repeat. If not, go to step 5. Step 5: Gather all the information above and return the JSON output in the structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
 
@@ -207,16 +209,21 @@ class QwenEval:
     def _load_model(self):
         """Load the Qwen2.5-VL model and processor."""
         if self.use_finetuned:
-            model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts"
+            model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/sft_artifacts_gpt"
+            # config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            self.tokenizer.padding_side = "left"
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map=self.device)
         else:
             model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/Qwen/Qwen2.5-VL-7B-Instruct"
             
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-            device_map=self.device
-        )
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16,
+                device_map=self.device
+            )
         self.processor = AutoProcessor.from_pretrained(model_name)
+        self.processor.tokenizer.padding_side = "left"
     
     def inference(self, image: Image.Image) -> Dict[str, Any]:
         """
@@ -269,20 +276,23 @@ class QwenEval:
         output_text = self.processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
-        print(output_text)
         
         # Parse the JSON response
         try:
             result = self._parse_response(output_text)
         except Exception as e:
             # Fallback if JSON parsing fails
-            result = {
-                "number_of_artifacts": 0,
-                "artifacts": [],
-                "raw_response": output_text,
-                "error": str(e)
-            }
-            
+            try:
+                output_text = output_text.replace("addCriterion", "")
+                result = self._parse_response(output_text)
+            except Exception as e:
+                result = {
+                    "number_of_artifacts": 0,
+                    "artifacts": [],
+                    "raw_response": output_text,
+                    "error": str(e)
+                }
+        print(f"Generated output: {output_text}")
         return result
 
     def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
@@ -298,7 +308,7 @@ class QwenEval:
         if not images:
             return []
 
-        prompt = create_prompt('default')
+        prompt = create_prompt('synartifact')
 
         # Build batched messages
         messages_list = []
@@ -334,9 +344,10 @@ class QwenEval:
         inputs = inputs.to(self.device)
 
         # Generate batched outputs
-        generated_ids = self.model.generate(
-            **inputs, max_new_tokens=512
-        )
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs, max_new_tokens=512
+            )
 
         generated_ids_trimmed = [
             out_ids[len(in_ids) :]
@@ -360,6 +371,7 @@ class QwenEval:
                         "error": str(e),
                     }
                 )
+            print(output_text)
 
         return results
     
@@ -441,7 +453,7 @@ class GPTEval:
         return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
     def inference(self, image: Image.Image) -> Dict[str, Any]:
-        prompt = create_prompt('synartifact')
+        prompt = create_prompt('legion')
         base64_image = self._encode_image_to_base64(image)
 
         try:
@@ -822,30 +834,33 @@ class DiffEval:
         self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
         self._load_model()
 
+    def _get_segformer(self, path_or_hub, out_channels=1):
+        # load a pretrained Segformer model
+        self.preprocessor = SegformerImageProcessor.from_pretrained(path_or_hub)
+        model = SegformerForSemanticSegmentation.from_pretrained(path_or_hub)
+        # change the number of output channels
+        model.decode_head.classifier = torch.nn.Conv2d(model.decode_head.classifier.in_channels, out_channels, kernel_size=1)
+        return model
+
     def _load_model(self) -> None:
         base_dir = "/home/jovyan/image-artifacts/baselines/DiffDoctor"
         ckpt = os.path.join(base_dir, "checkpoints", "ad_pytorch_model.bin")
-        self.model = None
-        if os.path.exists(ckpt):
-            try:
-                self.model = torch.jit.load(ckpt, map_location=self.device)
-            except Exception:
-                try:
-                    self.model = torch.load(ckpt, map_location=self.device)
-                except Exception:
-                    self.model = None
-
-    def _prepare(self, image: Image.Image) -> torch.Tensor:
-        arr = np.array(image.resize((512, 512)).convert('RGB'), dtype=np.float32) / 255.0
-        x = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
-        return x.to(self.device)
+        self.model = self._get_segformer("nvidia/mit-b5", out_channels=1)
+        self.model.load_state_dict(torch.load(ckpt))
+        self.model.to(self.device)
+        self.model.eval()
 
     def inference(self, image: Image.Image) -> Dict[str, Any]:
         if self.model is None:
             return {"heatmap": None, "error": "diffdoctor_model_not_loaded"}
-        x = self._prepare(image)
         with torch.no_grad():
-            out = self.model(x)
+            image = transforms.ToTensor()(image).to(self.device)
+            x = self.preprocessor(image, return_tensors='pt',do_rescale=False)['pixel_values'].to(self.device)
+            pred = self.model(x)
+            pred = torch.nn.functional.interpolate(
+                pred.logits, size=x.shape[-2:], mode="bilinear", align_corners=False
+            )
+            out = torch.sigmoid(pred)
         if isinstance(out, torch.Tensor):
             out_np = out.detach().cpu().numpy()
         else:

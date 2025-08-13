@@ -867,6 +867,32 @@ class Evaluation:
         cosine_sim = util.cos_sim(emb1, emb2).cpu().item()
         return cosine_sim
 
+    def compute_global_caption_scores(self, reference: str, hypothesis: str) -> Tuple[float, float]:
+        """
+        Compute global text scores (ROUGE-L, CSS) between a reference caption and a predicted caption.
+
+        Args:
+            reference: Ground-truth caption text
+            hypothesis: Predicted caption text
+
+        Returns:
+            Tuple of (rouge_l_f1, css_cosine_similarity)
+        """
+        rouge_l = 0.0
+        css = 0.0
+        try:
+            if self.rouge_scorer is not None and reference and hypothesis:
+                score = self.rouge_scorer.score(reference, hypothesis)
+                rouge_l = float(score['rougeL'].fmeasure)
+        except Exception:
+            rouge_l = 0.0
+        try:
+            if self.css_model is not None and reference and hypothesis:
+                css = float(self._css_score(reference, hypothesis))
+        except Exception:
+            css = 0.0
+        return rouge_l, css
+
     def get_scores(
         self, 
         ground_data: List[Union[List[float], List[List[float]]]], 
@@ -946,7 +972,10 @@ class Evaluation:
             'css': 0.0,
             'classification': None,  # Will be 'TP', 'FP', 'FN', or 'TN'
             'has_gt_artifacts': False,
-            'has_pred_artifacts': False
+            'has_pred_artifacts': False,
+            # Global caption metrics (optional; used for certain datasets)
+            'global_rouge_l': 0.0,
+            'global_css': 0.0,
         }
         
         # Extract prediction data if artifacts were detected
@@ -957,7 +986,7 @@ class Evaluation:
             result_bbox_list = [d.get('bbox_2d', []) for d in result['artifacts'] if 'bbox_2d' in d]
             result_desc_list = [d.get('explanation', '') for d in result['artifacts'] if 'explanation' in d]
 
-        stats['has_pred_artifacts'] = num_artifacts > 0    
+        stats['has_pred_artifacts'] = num_artifacts > 0 if pred_heatmap is None else np.sum(pred_heatmap) > 0   
 
         if dataset_type == 'synthscars':
             stats['has_gt_artifacts'] = True    # No negative samples
@@ -968,8 +997,10 @@ class Evaluation:
             
             if pred_heatmap is not None:
                 # Heatmap vs polygon regions
-                stats['classification'] = 'TP'  # synthscars has only positive samples
-                stats['binary_success'] = True
+                has_pred_regions = bool(np.any((pred_heatmap > 0)))
+                stats['has_pred_artifacts'] = has_pred_regions
+                stats['binary_success'] = has_pred_regions
+                stats['classification'] = 'TP' if has_pred_regions else 'FN'
                 # Compute mean over GT regions
                 ious = []
                 for seg in ground_seg_list:
@@ -994,17 +1025,18 @@ class Evaluation:
             # SynArtifact contains negative samples
             has_gt_artifacts = json_data.get('Artifacts annotation', [])
             stats['has_gt_artifacts'] = bool(has_gt_artifacts)
+            stats['has_pred_artifacts'] = num_artifacts > 0 if pred_heatmap is None else bool(np.any((pred_heatmap > 0)))
             
             if not has_gt_artifacts:
                 # No artifacts in ground truth
-                stats['binary_success'] = (num_artifacts == 0)
+                stats['binary_success'] = not stats['has_pred_artifacts']
                 stats['classification'] = 'TN' if stats['binary_success'] else 'FP'
             else:
                 # Ground truth has artifacts
                 if pred_heatmap is not None:
                     # Heatmap vs GT bbox list
-                    stats['classification'] = 'TP'
-                    stats['binary_success'] = True
+                    stats['binary_success'] = stats['has_pred_artifacts']
+                    stats['classification'] = 'TP' if stats['has_pred_artifacts'] else 'FN'
                     ground_bbox_list = []
                     ground_desc_list = []
                     for annotation in has_gt_artifacts:
@@ -1059,8 +1091,10 @@ class Evaluation:
                     ground_desc_list.append(problem.get('desc', ''))
             
             if pred_heatmap is not None and ground_bbox_list:
-                stats['binary_success'] = True
-                stats['classification'] = 'TP'
+                has_pred_regions = bool(np.any((pred_heatmap > 0)))
+                stats['has_pred_artifacts'] = has_pred_regions
+                stats['binary_success'] = has_pred_regions
+                stats['classification'] = 'TP' if has_pred_regions else 'FN'
                 ious = []
                 for bbox in ground_bbox_list:
                     iou = self._compute_iou_heatmap_regionwise(
@@ -1090,7 +1124,7 @@ class Evaluation:
             if pred_heatmap is not None:
                 # Heatmap vs heatmap comparison
                 # Binary presence
-                has_pred_regions = bool(np.any((pred_heatmap > 0.3)))
+                has_pred_regions = bool(np.any((pred_heatmap > 0)))
                 stats['has_pred_artifacts'] = has_pred_regions
                 stats['binary_success'] = has_pred_regions  # richhf generally has artifacts
                 stats['classification'] = 'TP' if has_pred_regions else 'FN'
@@ -1103,6 +1137,7 @@ class Evaluation:
             else:
                 # BBox vs heatmap
                 if num_artifacts > 0 and result_bbox_list:
+                    stats['has_pred_artifacts'] = True
                     stats['binary_success'] = True
                     stats['classification'] = 'TP'
                     if artifact_map is not None:
@@ -1117,6 +1152,25 @@ class Evaluation:
                 else:
                     stats['binary_success'] = False
                     stats['classification'] = 'FN'
+
+            # Compute global caption text scores for specific datasets if prediction contains a caption
+        try:
+            pred_caption = (result.get('caption') or '').strip()
+            if pred_caption:
+                if dataset_type == 'synthscars':
+                    ref_caption = (json_data.get('caption') or '').strip()
+                    if ref_caption:
+                        g_rouge, g_css = self.compute_global_caption_scores(ref_caption, pred_caption)
+                        stats['global_rouge_l'] = g_rouge
+                        stats['global_css'] = g_css
+                elif dataset_type == 'loki':
+                    ref_caption = (json_data.get('problems', {}).get('global', {}).get('desc') or '').strip()
+                    if ref_caption:
+                        g_rouge, g_css = self.compute_global_caption_scores(ref_caption, pred_caption)
+                        stats['global_rouge_l'] = g_rouge
+                        stats['global_css'] = g_css
+        except Exception:
+            pass
 
         return stats
 

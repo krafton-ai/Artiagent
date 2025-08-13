@@ -282,7 +282,9 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None, enable_visua
                 'classification': stats['classification'],
                 'has_gt_artifacts': stats['has_gt_artifacts'],
                 'has_pred_artifacts': stats['has_pred_artifacts'],
-                'prediction': prediction
+                'prediction': prediction if prediction.get('heatmap', None) is None else str(prediction['heatmap']),
+                'global_rouge_l': stats['global_rouge_l'],
+                'global_css': stats['global_css']
             }
             
             # Store results
@@ -469,7 +471,9 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
                     'classification': stats['classification'],
                     'has_gt_artifacts': stats['has_gt_artifacts'],
                     'has_pred_artifacts': stats['has_pred_artifacts'],
-                    'prediction': result,
+                    'prediction': str(result),
+                    'global_rouge_l': stats['global_rouge_l'],
+                    'global_css': stats['global_css']
                 }
                 # Visualization per item if enabled
                 if enable_visualization and visualizer is not None:
@@ -498,7 +502,8 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
                 logger.info(
                     f"Sample {processed + idx + 1} - Binary: {sample_result['binary_success']}, "
                     f"IoU: {sample_result['iou']:.3f}, ROUGE-L: {sample_result['rouge_l']:.3f}, "
-                    f"CSS: {sample_result['css']:.3f}"
+                    f"CSS: {sample_result['css']:.3f}, Global ROUGE-L: {sample_result['global_rouge_l']:.3f}, "
+                    f"Global CSS: {sample_result['global_css']:.3f}"
                 )
             processed += len(batch_images)
             
@@ -514,6 +519,9 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
         mean_iou = sum(r['iou'] for _, r in results.items()) / total_samples
         mean_rouge_l = sum(r['rouge_l'] for _, r in results.items()) / total_samples
         mean_css = sum(r['css'] for _, r in results.items()) / total_samples
+
+        mean_global_rouge_l = sum(r['global_rouge_l'] for _, r in results.items()) / total_samples
+        mean_global_css = sum(r['global_css'] for _, r in results.items()) / total_samples
         
         # Compute F1 metrics
         f1_metrics = evaluator.compute_f1_metrics(results)
@@ -526,6 +534,8 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None, enable
         logger.info(f"Mean IoU (all samples): {mean_iou:.3f}")
         logger.info(f"Mean ROUGE-L (all samples): {mean_rouge_l:.3f}")
         logger.info(f"Mean CSS (all samples): {mean_css:.3f}")
+        logger.info(f"Mean GLOBAL ROUGE-L: {mean_global_rouge_l:.3f}")
+        logger.info(f"Mean GLOBAL CSS: {mean_global_css:.3f}")
         logger.info("")
         logger.info("F1 METRICS:")
         logger.info(f"  TP: {f1_metrics['tp']}, FP: {f1_metrics['fp']}, FN: {f1_metrics['fn']}, TN: {f1_metrics['tn']}")
