@@ -36,7 +36,7 @@ from pipeline import (
     GSAMDetector, InstanceProcessor, ImageVisualizer,
 )
 from pipeline.data_loader import _initialize_data_loader, _get_image_list
-from pipeline.prompts import get_all_entity_subparts, MoneyManager
+from pipeline.prompts import get_entity_subentities, MoneyManager
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
@@ -100,49 +100,52 @@ def _try_process_all_artifact_types(
 
     
     # Step 1: Get all entity subparts from API
-    all_subparts_response = get_all_entity_subparts(openai_client, img_array, money_manager)
-    if not all_subparts_response or 'error' in all_subparts_response:
+    entity_subentity_response = get_entity_subentities(openai_client, img_array, money_manager)
+    if not entity_subentity_response or 'error' in entity_subentity_response:
         raise RuntimeError("Failed to get entity subparts")
         
     # Transform the response into a nested dictionary structure
-    # First level: entity, Second level: subpart, Value: list of artifact types
-    entities = set()
-    subentities = set()
-    entity_subpart_artifacts = defaultdict(lambda: defaultdict(list))
-    for artifact_type, vocab_data in all_subparts_response.items():
-        entity = vocab_data['entity']
-        subparts = vocab_data['subparts']
-        entities.add(entity)
-        for subentity in subparts:
-            subentities.add(subentity)
-            entity_subpart_artifacts[entity][subentity].append(artifact_type)
+    # First level: entity, Second level: subentity, Value: list of artifact types
+    entities_list = list(set(entity_subentity_response.keys()))
+    subentities_list = list(set([subentity for sublist in entity_subentity_response.values() for subentity in (sublist if isinstance(sublist, list) else [sublist])]))
+    entity_mapping = defaultdict(list)
+    for entity, subentities in entity_subentity_response.items():
+        for subentity in subentities:
+            entity_mapping[subentity].append(entity)
 
     # Step 3: Single detection call with combined vocabulary
     logger.info(f"Detecting parts using Grounded SAM...")
-    predictions, entity_predictions, visualized_output = gsam_detector.detect_parts(img_array, list(entities), list(subentities), min_area_ratio=0.005, max_area_ratio=0.5)
+    predictions, entity_predictions, visualized_output = gsam_detector.detect_parts(img_array, entities_list, subentities_list, entity_mapping, min_area_ratio=0.005, max_area_ratio=0.5)
     # Step 4: Sample target parts with entity-aware logic
     logger.info(f"Sampling target parts across all entities...")
+
+
+    ## for all predictions, retrieve the nearby subentities that are able for fusion type of artifacts
 
     artifacts = []
     for prediction in predictions:
         entity = prediction['entity']
         subentity = prediction['subentity']
-        
-        artifact_type = random.choice(entity_subpart_artifacts[entity][subentity])
-        logger.info(f"Creating {artifact_type} artifact for {entity} of {subentity}")
+        # + get nearby subentities that are able for fusion type of artifacts
+        # if there are any subentities nearby, add fusion to the entity_mapping
+    
+        # for artifact_type in ['addition', 'removal', 'distortion', 'fusion']:
+        # for artifact_type in ['fusion']:
+        artifact_type = 'fusion'
         try:
             annotation = create_artifact_annotations(
                 artifact_type, prediction,
                 predictions, entity_predictions, entity, subentity, img_array, config,
                 image_output_dir, img_filename, logger, openai_client
             )
+            artifacts.append(annotation)
+            break
         except Exception as e:
-            logger.error(f"Error creating {artifact_type} artifact for {entity} of {subentity}: {str(e)}")
+            logger.error(f"Error creating {artifact_type} artifact for {subentity} of {entity}: {str(e)}")
             continue
         
-        artifacts.append(annotation)
     
-    if not artifacts:
+    if len(artifacts) == 0:
         logger.error(f"No artifacts were created successfully")
         raise RuntimeError("No artifacts were created successfully")
     
@@ -234,15 +237,15 @@ def create_artifact_annotations(
     openai_client
 ) -> Dict[str, Any]:
     """
-    Create artifact annotations for a detected entity-subpart combination.
+    Create artifact annotations for a detected entity-subentity combination.
     
     Args:
-        artifact_type: Type of artifact ('addition', 'removal', 'distortion')
+        artifact_type: Type of artifact ('addition', 'removal', 'distortion', 'fusion')
         prediction: Prediction data containing mask and bbox information
         predictions: All detection predictions from the model
         entity_predictions: Entity-level detection predictions
         entity: Entity name (e.g., 'person')
-        subpart: Subpart name (e.g., 'hand')
+        subentity: Subentity name (e.g., 'hand')
         img_array: Image array data
         config: Configuration dictionary with artifact parameters
         image_output_dir: Output directory for this image
@@ -260,7 +263,7 @@ def create_artifact_annotations(
             logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
     
     # Create artifact patches
-    target_patches, reference_patches = InstanceProcessor.create_artifact_patches(
+    target_patches, reference_patches, artifact_metadata = InstanceProcessor.create_artifact_patches(
         artifact_type, 
         prediction, 
         predictions, 
@@ -292,8 +295,8 @@ def create_artifact_annotations(
     logger.info(f"    Target patches: {len(target_patches)} patches -> {len(target_patch_indices)} patch indices")
     logger.info(f"    Reference patches: {len(reference_patches)} patches -> {len(reference_patch_indices)} patch indices")
 
-    # Return structured annotations with artifact index
-    return {
+    # Prepare return dict with base metadata
+    result_dict = {
         'artifact_type': artifact_type,
         'entity': entity,
         'subentity': subentity,
@@ -305,6 +308,12 @@ def create_artifact_annotations(
         'reference_mask': reference_mask,
         'distortion_kernel': distortion_kernel if artifact_type == 'distortion' else None
     }
+    
+    # Add fusion metadata if available
+    if artifact_metadata is not None:
+        result_dict['fusion_metadata'] = artifact_metadata
+    
+    return result_dict
 
 
 def process_single_image(
@@ -578,7 +587,7 @@ def _print_processing_summary(
             logger.info("CLASS DISTRIBUTION:")
             logger.info("-" * 30)
             sorted_classes = sorted(detailed_stats['class_distribution'].items(), 
-                                  key=lambda x: x[1], reverse=True)
+                                    key=lambda x: x[1], reverse=True)
             for class_name, count in sorted_classes[:10]:  # Show top 10
                 percentaged = (count / total_artifacts) * 100 if total_artifacts > 0 else 0
                 logger.info(f"  {class_name}: {count} ({percentage:.1f}%)")
@@ -587,7 +596,7 @@ def _print_processing_summary(
                 logger.info(f"  ... and {len(sorted_classes) - 10} more classes")
     
     elapsed_time = (datetime.now() - 
-                   datetime.fromisoformat(stats['start_time'])).total_seconds()
+                    datetime.fromisoformat(stats['start_time'])).total_seconds()
     logger.info("")
     logger.info(f"Total time: {elapsed_time/3600:.1f} hours")
     logger.info(f"Results saved in: {output_dir}")
@@ -833,7 +842,7 @@ def _setup_argument_parser() -> Any:
     parser.add_argument(
         'categories', nargs='+', 
         help='Categories to process. For COCO: supercategories (person, animal, vehicle, etc.). '
-             'For ImageNet: class names (dog, cat, car, etc.)'
+                'For ImageNet: class names (dog, cat, car, etc.)'
     )
     
     # Dataset configuration
@@ -844,7 +853,7 @@ def _setup_argument_parser() -> Any:
     parser.add_argument(
         '--dataset-path', type=str, default='/home/jhpark/image-artifacts/data/eval_coco_animals',
         help='Path to dataset. For COCO: annotations directory. For ImageNet: root directory '
-             'containing train/val folders. For custom: root directory with class subdirectories'
+                'containing train/val folders. For custom: root directory with class subdirectories'
     )
     parser.add_argument(
         '--image-path', type=str, default=None,
@@ -914,7 +923,7 @@ def _setup_argument_parser() -> Any:
     parser.add_argument(
         '--predefined-vocab', nargs='+', default=None,
         help='Pre-defined vocabulary list (e.g., --predefined-vocab "person head" "person arm" '
-             '"person leg"). If provided, skips OpenAI API calls for vocabulary generation.'
+                '"person leg"). If provided, skips OpenAI API calls for vocabulary generation.'
     )
     
     # GSAM model configuration

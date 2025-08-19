@@ -12,7 +12,7 @@ class InstanceProcessor:
     """Handler for processing detection instances and generating bbox suggestions"""
     
     @staticmethod
-    def filter_instances_by_size(predictions: Dict, min_area_ratio: float = 0.01, max_area_ratio: float = 1.0) -> Tuple[any, torch.Tensor]:
+    def filter_instances_by_size(predictions: Dict, min_area_ratio: float = 0.01, max_area_ratio: float = 1.0) -> Tuple[any, torch.Tensor]: # type: ignore
         """
         Filter instances by minimum and maximum area ratio relative to image size
         
@@ -48,7 +48,7 @@ class InstanceProcessor:
         return filtered_instances, valid_indices
     
     @staticmethod
-    def sample_instance_by_score(predictions: Dict, min_area_ratio: float = 0.01, max_area_ratio: float = 1.0) -> Tuple[Optional[any], Optional[int]]:
+    def sample_instance_by_score(predictions: Dict, min_area_ratio: float = 0.01, max_area_ratio: float = 1.0) -> Tuple[Optional[any], Optional[int]]: # type: ignore
         """
         Filter instances by size then sample using scores as weights
         
@@ -104,199 +104,17 @@ class InstanceProcessor:
         union = area1 + area2 - intersection
         
         return intersection / union if union > 0 else 0.0
-
-
-
-    @staticmethod
-    def generate_candidate_addition_region(reference_instance, predictions, mask_patch_coords, img_shape, patch_size: int = 16, overlap_threshold: float = 0.05) -> Tuple[Optional[List], Optional[Dict]]:
-        """
-        Generate sophisticated bbox suggestion for addition artifacts using IoU calculations
-        
-        Args:
-            predictions: VLPart model predictions
-            reference_instance: The reference instance
-            reference_class_name: Name of the reference class (e.g., "person hand")
-            vocab: List of class names
-            img_shape: Image shape (height, width, channels)
-            artifact_direction: Direction for artifact placement
-            max_ref_overlap: Maximum allowed overlap with reference bbox (default: 0.3)
-            min_entity_overlap: Minimum required overlap with entity bbox (default: 0.1)
-            
-        Returns:
-            Tuple of (candidate_list, metadata_dict) or (None, None) if no valid suggestion
-        """        
-        H, W = img_shape[:2]
-        
-        # Get reference bbox and mask
-        ref_bbox = reference_instance['pred_box'].cpu().numpy()
-        ref_mask = reference_instance['pred_mask'].cpu().numpy()
-        
-        # Step 1: Choose entity (vocab[0]) with highest overlap with reference_instance
-        entity_instances = []
-        
-        for i, pred_instance in enumerate(predictions):
-            if pred_instance['pred_class'] == 0:
-                entity_instances.append({
-                    'idx': i,
-                    'bbox': pred_instance['pred_box'].cpu().numpy(),
-                    'mask': pred_instance['pred_mask'].cpu().numpy()
-                })
-        
-        if not entity_instances:
-            raise ValueError("No entity instances found")
-        
-        # Find entity with highest overlap with reference
-        best_entity = None
-        max_overlap = 0.9
-        
-        for entity in entity_instances:
-            # Calculate mask overlap using patch-aligned masks
-            entity_mask_patch = InstanceProcessor._align_mask_to_patches(entity['mask'].astype(np.uint8), patch_size)
-            intersection = np.sum(ref_mask_patch & entity_mask_patch)
-            ref_area = np.sum(ref_mask_patch)
-            overlap = intersection / ref_area if ref_area > 0 else 0.0
-            
-            if overlap > max_overlap:
-                max_overlap = overlap
-                best_entity = entity
-        
-        if best_entity is None:
-            raise ValueError("No overlapping entity found")
-        
-        # Step 2: Get instances that are not reference_instance but have same class_name
-        reference_class_idx = reference_instance['pred_class'].item()
-        
-        same_class_instances = []
-        for i, pred_instance in enumerate(predictions):
-            if (pred_instance['pred_class'] == reference_class_idx and 
-                not torch.equal(pred_instance['pred_box'], torch.from_numpy(ref_bbox).float())):
-                same_class_instances.append({
-                    'idx': i,
-                    'bbox': pred_instance['pred_box'].cpu().numpy(),
-                    'mask': pred_instance['pred_mask'].cpu().numpy()
-                })
-        
-        # Step 3: Generate stratified angles
-        def generate_stratified_offsets(n_bins=6):
-            angles = np.linspace(0, 2*np.pi, n_bins, endpoint=False)
-            offsets = []
-            for angle in angles:
-                dx = np.cos(angle)
-                dy = np.sin(angle)
-                offsets.append((dx, dy))
-            return offsets
-        
-        stratified_offsets = generate_stratified_offsets(8)
-        
-        # Get reference dimensions
-        ref_h = ref_bbox[3] - ref_bbox[1]
-        ref_w = ref_bbox[2] - ref_bbox[0]
-        
-        # Step 4: For each radius, test candidate positions
-        radii = [0.8, 1.0, 1.2]  # Multiples of reference size
-        candidates = []
-        
-        for dx, dy in stratified_offsets:
-            for radius in radii:
-                
-                # Step 4-1: Calculate offset
-                offset_x = dx * radius * ref_w
-                offset_y = dy * radius * ref_h
-                
-                # Step 4-2: Get target mask by shifting reference mask
-                offset_x_int = int(round(offset_x))
-                offset_y_int = int(round(offset_y))
-                
-                # Create target mask by shifting reference mask
-                target_mask = np.zeros((H, W), dtype=np.uint8)
-                
-                # Find reference mask pixels
-                ref_y_coords, ref_x_coords = np.where(ref_mask > 0)
-                
-                # Apply offset to coordinates
-                target_y_coords = ref_y_coords + offset_y_int
-                target_x_coords = ref_x_coords + offset_x_int
-                
-                # Filter coordinates that are within image bounds
-                valid_mask = ((target_y_coords >= 0) & (target_y_coords < H) & 
-                             (target_x_coords >= 0) & (target_x_coords < W))
-                
-                valid_target_y = target_y_coords[valid_mask]
-                valid_target_x = target_x_coords[valid_mask]
-                
-                # Skip if too few pixels remain after translation
-                if len(valid_target_y) < 0.5 * np.sum(ref_mask > 0):
-                    continue
-                
-                # Set target mask pixels
-                target_mask[valid_target_y, valid_target_x] = 1
-                
-                # Calculate target bbox from the actual mask for metadata
-                if np.sum(target_mask > 0) > 0:
-                    y_indices, x_indices = np.where(target_mask > 0)
-                    target_bbox = np.array([
-                        np.min(x_indices),  # xmin
-                        np.min(y_indices),  # ymin
-                        np.max(x_indices),  # xmax
-                        np.max(y_indices)   # ymax
-                    ], dtype=np.float32)
-                else:
-                    continue
-                
-                # Step 4-3: Calculate three thresholds
-                
-                # Step 4-3-1: Overlap with entity
-                intersection = np.sum(target_mask & (best_entity['mask'] > 0))
-                target_area = np.sum(target_mask > 0)
-                entity_overlap = intersection / target_area if target_area > 0 else 0.0
-                
-                # Step 4-3-2: Inter-instance overlap (with same class instances)
-                max_inter_overlap = 0.0
-                for same_inst in same_class_instances:
-                    intersection = np.sum(target_mask & (same_inst['mask'] > 0))
-                    target_area = np.sum(target_mask > 0)
-                    overlap = intersection / target_area if target_area > 0 else 0.0
-                    max_inter_overlap = max(max_inter_overlap, overlap)
-                
-                # Step 4-3-3: Intra-instance overlap (with reference)
-                intersection = np.sum(target_mask & (ref_mask > 0))
-                target_area = np.sum(target_mask > 0)
-                intra_overlap = intersection / target_area if target_area > 0 else 0.0
-                
-                # Step 4-3-4: Check thresholds
-                if (entity_overlap >= overlap_threshold and 
-                    max_inter_overlap <= overlap_threshold and 
-                    intra_overlap <= overlap_threshold):
-                    
-                    candidate = {
-                        'target_mask': target_mask,
-                        'target_bbox': target_bbox,
-                        'offset': (offset_x, offset_y),
-                        'entity_overlap': entity_overlap,
-                        'inter_overlap': max_inter_overlap,
-                        'intra_overlap': intra_overlap,
-                        'radius': radius,
-                        'angle': np.arctan2(dy, dx)
-                    }
-                    candidates.append(candidate)
-                    break  # Break from radius loop for this angle
-        
-        # Step 5: Return list of candidates
-        if not candidates:
-            raise ValueError("No valid candidate regions found")
-        
-        metadata = {
-            'best_entity': best_entity,
-            'same_class_count': len(same_class_instances),
-            'tested_positions': len(radii) * len(stratified_offsets)
-        }
-        
-        return candidates, metadata
     
     @staticmethod
-    def create_artifact_patches(artifact_type: str, prediction: Dict, predictions: Dict, entity_predictions: Dict, img_array, patch_size: int = 16, distortion_kernel: str = 'none', output_dir: str = None, img_filename: str = None) -> Tuple[List[int], List[int]]:
+    def create_artifact_patches(artifact_type: str, prediction: Dict, predictions: Dict, entity_predictions: Dict, img_array, patch_size: int = 16, distortion_kernel: str = 'none', output_dir: str = None, img_filename: str = None) -> Tuple[List[int], List[int], Optional[Dict]]:
         """
         Create artifact patches for different artifact types
+        
+        Returns:
+            Tuple containing:
+            - target_patches: List of target patch coordinates
+            - reference_patches: List of reference patch coordinates  
+            - metadata: Optional dictionary with additional information (e.g., fusion metadata)
         """
         H, W = img_array.shape[:2]
         patch_H = (H // patch_size) * patch_size
@@ -372,7 +190,8 @@ class InstanceProcessor:
                 raise ValueError("No valid surrounding patches found")
             
             target_patches = mask_patch_coords
-            reference_patches = filtered_surrounding_patches
+            reference_patches = filtered_surrounding_patches           
+
         elif artifact_type == 'distortion':
             target_patches = mask_patch_coords
             
@@ -397,7 +216,7 @@ class InstanceProcessor:
             elif distortion_kernel == 'coarse':
                 # Apply coarse shuffling kernel
                 reference_patches = InstanceProcessor.coarse_shuffling_kernel(
-                    mask_patch_coords, num_partitions=5, patch_h=patch_h, patch_w=patch_w
+                    mask_patch_coords, num_partitions=5, patch_h=patch_h, patch_w=patch_w   
                 )
             elif distortion_kernel == 'strip':
                 # Apply stripped shifting kernel
@@ -408,15 +227,130 @@ class InstanceProcessor:
                 raise ValueError(f"Unknown distortion kernel: {distortion_kernel}")
             
             print(f"Applied {distortion_kernel} distortion kernel: {len(mask_patch_coords)} -> {len(reference_patches)} patches")
+
+        elif artifact_type == 'fusion':
+            # Build A_set from mask_patch_coords (already computed above)
+            A_set = set(mask_patch_coords)
+            
+            # Neighbor discovery
+            neighbors = []
+            for pred_instance in predictions:
+                if torch.equal(pred_instance['pred_box'], prediction['pred_box']):
+                    continue
+
+                B_mask = pred_instance['pred_mask'].cpu().numpy()
+                B_patch_coords = mask_to_patch_coords(B_mask, patch_size=patch_size)
+                B_set = set(B_patch_coords)
+
+                overlap_set = A_set & B_set
+                # # if not overlap_set:
+                # min_l1_dist = float('inf')
+                # for a_py, a_px in A_set:
+                #     for b_py, b_px in B_set:
+                #         l1_dist = abs(a_py - b_py) + abs(a_px - b_px)
+                #         if l1_dist < min_l1_dist:
+                #             min_l1_dist = l1_dist
+                # print(f"L1 distance: {min_l1_dist}")
+                # if min_l1_dist < 2:
+                #     neighbors.append((pred_instance, B_set, min_l1_dist))
+                if overlap_set:
+                    # Calculate IoU between A_set and B_set
+                    union_set = A_set | B_set
+                    iou = len(overlap_set) / len(union_set) if union_set else 0
+                    
+                    # Only add to neighbors if IoU < 0.5
+                    if iou < 0.5:
+                        neighbors.append((pred_instance, B_set, overlap_set, len(overlap_set)))
+            
+            if not neighbors:
+                raise ValueError("No neighboring instances for fusion")
+            # import ipdb; ipdb.set_trace(context=30)
+            # Select closest neighbor (largest overlap)
+            closest_neighbor = max(neighbors, key=lambda x: x[3])
+            fused_instance, B_set, overlap_set, overlap_count = closest_neighbor
+            
+            # Process only the closest neighbor
+            bandA, bandB = InstanceProcessor.build_bands(A_set, B_set, overlap_set, R=3)
+            if not bandA or not bandB:
+                raise ValueError("No valid fusion pairs found")
+            
+            bandA_list = sorted(list(bandA))
+            bandB_list = sorted(list(bandB))
+            
+            if not bandA_list or not bandB_list:
+                return [], [], None
+            
+            # Target patch is the union of bandA and bandB
+            target_patches = sorted(list(bandA | bandB))
+            
+            # Generate reference patches by randomly permuting partitions
+            kA = max(1, min(5, len(bandA_list)))
+            kB = max(1, min(5, len(bandB_list)))
+            
+            partsA = InstanceProcessor._partition_band_by_seeds(bandA_list, kA)
+            partsB = InstanceProcessor._partition_band_by_seeds(bandB_list, kB)
+            
+            reference_patches = []
+            
+            # For partsA, randomly permute partsB with replacement
+            for part_a in partsA:
+                # If partsA has more segments than partsB, sample with replacement
+                sampled_part_b_indices = random.choices(range(len(partsB)), k=len(part_a))
+                for a_idx, b_part_idx in zip(part_a, sampled_part_b_indices):
+                    # Get a random patch from the selected B partition
+                    b_part = partsB[b_part_idx]
+                    if b_part:  # Ensure the partition is not empty
+                        ref_patch_idx = random.choice(b_part)
+                        reference_patches.append(bandB_list[ref_patch_idx])
+            
+            # For partsB, randomly permute partsA with replacement
+            for part_b in partsB:
+                # If partsB has more segments than partsA, sample with replacement
+                sampled_part_a_indices = random.choices(range(len(partsA)), k=len(part_b))
+                for b_idx, a_part_idx in zip(part_b, sampled_part_a_indices):
+                    # Get a random patch from the selected A partition
+                    a_part = partsA[a_part_idx]
+                    if a_part:  # Ensure the partition is not empty
+                        ref_patch_idx = random.choice(a_part)
+                        reference_patches.append(bandA_list[ref_patch_idx])
+            
+            if not reference_patches:
+                raise ValueError("No valid reference patches generated")
+            
+            # Convert to list format to match expected output
+            target_patches = list(target_patches)
+            reference_patches = list(reference_patches)
+            
+            # Create fusion metadata
+            fusion_metadata = {
+                'fusion_type': 'overlap_based',
+                'fused_instance_bbox': fused_instance['pred_box'].cpu().numpy().tolist(),
+                'overlap_count': overlap_count,
+                'band_a_size': len(bandA_list),
+                'band_b_size': len(bandB_list),
+                'num_partitions_a': len(partsA),
+                'num_partitions_b': len(partsB),
+                'reference_patches_count': len(reference_patches),
+                'part_a_entity': prediction.get('entity', 'unknown'),
+                'part_a_subentity': prediction.get('subentity', 'unknown'),
+                'part_b_entity': fused_instance.get('entity', 'unknown'),
+                'part_b_subentity': fused_instance.get('subentity', 'unknown')
+            }
+
         else:
             raise ValueError(f"Unknown artifact type: {artifact_type}")
-        return target_patches, reference_patches
+        
+        # Return metadata only for fusion, None for other types
+        if artifact_type == 'fusion':
+            return target_patches, reference_patches, fusion_metadata
+        else:
+            return target_patches, reference_patches, None
     
     @staticmethod
     def map_coords_to_patch_indices(artifact_type: str, target_patches: List[Tuple[int, int]], reference_patches: List[Tuple[int, int]],
-                           img_shape: Tuple[int, int], 
-                           patch_size: int = 16,
-                           txt_len: int = 512) -> Dict:
+                        img_shape: Tuple[int, int], 
+                        patch_size: int = 16,
+                        txt_len: int = 512) -> Dict:
         """
         Create patch mapping for different artifact types
         
@@ -469,6 +403,10 @@ class InstanceProcessor:
             target_patch_indices = [patch_coor_to_ind(tar_px, tar_py, patch_w, txt_len) for tar_py, tar_px in target_patches]
             return target_patch_indices, reference_patch_indices
         
+        elif artifact_type == 'fusion':
+            reference_patch_indices = [patch_coor_to_ind(ref_px, ref_py, patch_w, txt_len) for ref_py, ref_px in reference_patches]
+            target_patch_indices = [patch_coor_to_ind(tar_px, tar_py, patch_w, txt_len) for tar_py, tar_px in target_patches]
+            return target_patch_indices, reference_patch_indices
         else:
             raise ValueError(f"Unknown artifact type: {artifact_type}")
 
@@ -1146,11 +1084,11 @@ class InstanceProcessor:
             if direction == 'vertical':
                 # Sort by y-coordinate (vertical position) for vertical strips
                 sorted_indices = sorted(range(len(strip_patches)), 
-                                     key=lambda idx: strip_patches[idx][0])
+                                    key=lambda idx: strip_patches[idx][0])
             else:  # horizontal
                 # Sort by x-coordinate (horizontal position) for horizontal strips
                 sorted_indices = sorted(range(len(strip_patches)), 
-                                     key=lambda idx: strip_patches[idx][1])
+                                    key=lambda idx: strip_patches[idx][1])
             
             # Apply circular shift within the strip
             num_patches_in_strip = len(strip_patches)
@@ -1361,7 +1299,7 @@ class InstanceProcessor:
             
             # Filter coordinates that are within image bounds
             valid_mask = ((target_y_coords >= 0) & (target_y_coords < H) & 
-                         (target_x_coords >= 0) & (target_x_coords < W))
+                        (target_x_coords >= 0) & (target_x_coords < W))
             
             valid_target_y = target_y_coords[valid_mask]
             valid_target_x = target_x_coords[valid_mask]
@@ -1481,10 +1419,10 @@ class InstanceProcessor:
 
     @staticmethod
     def visualize_addition_probability_map(img_array: np.ndarray, probability_map: np.ndarray, 
-                                         reference_instance, metadata: Dict,
-                                         patch_size: int = 16, output_dir: str = None, 
-                                         img_filename: str = None, colormap: str = 'hot',
-                                         alpha: float = 0.6) -> None:
+                                        reference_instance, metadata: Dict,
+                                        patch_size: int = 16, output_dir: str = None, 
+                                        img_filename: str = None, colormap: str = 'hot',
+                                        alpha: float = 0.6) -> None:
         """
         Visualize the addition probability map overlaid on the original image
         
@@ -1631,3 +1569,140 @@ class InstanceProcessor:
             print(f"Probability map visualization saved to: {output_path}")
         
         plt.close()
+
+######### FUSION helper functions #########
+
+    @staticmethod
+    def build_bands(A_set, B_set, overlap_set, R=3):
+        union_set = A_set | B_set
+        band = set()
+        for p in union_set:
+            py, px = p
+            for o in overlap_set:
+                oy, ox = o
+                if abs(py - oy) + abs(px - ox) <= R:
+                    band.add(p)
+                    break
+        bandA = band & A_set
+        bandB = band & B_set
+        return bandA, bandB
+    
+    @staticmethod
+    def _partition_band_by_seeds(band_list, k):
+        if not band_list:
+            return []
+        
+        k = max(1, min(k, len(band_list)))
+        seeds_indices = random.sample(range(len(band_list)), k)
+        seeds = [band_list[i] for i in seeds_indices]
+        
+        parts = [[] for _ in range(k)]
+        for i, coord in enumerate(band_list):
+            py, px = coord
+            min_dist_sq = float('inf')
+            best_seed_idx = 0
+            for seed_idx, seed_coord in enumerate(seeds):
+                sy, sx = seed_coord
+                dist_sq = abs(py - sy) + abs(px - sx)
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    best_seed_idx = seed_idx
+            parts[best_seed_idx].append(i)
+        
+        return parts
+    
+    @staticmethod
+    def _deranged_partition_map(kA, kB):
+        """
+        Build A->B partition mapping with oversampling and randomization:
+        - If kA < kB: oversample A so every B is assigned; each A gets ~ceil(kB/kA) Bs.
+        - If kA > kB: oversample B so every A gets a B; some Bs are reused.
+        - If kA == kB: 1-to-1 random mapping.
+        Returns: dict {a_partition_id: [list_of_b_partition_ids]}
+        """
+        if kA <= 0 or kB <= 0:
+            return {}
+
+        # Randomized orders to avoid structured bias
+        A_ids = list(range(kA))
+        B_ids = list(range(kB))
+        random.shuffle(A_ids)
+        random.shuffle(B_ids)
+
+        # Prepare mapping: each A id maps to a (possibly multi) list of B ids
+        map_dict = {a: [] for a in range(kA)}
+
+        # Number of assignments to generate
+        # - If kA < kB: generate kB assignments so all B partitions are covered
+        # - If kA > kB: generate kA assignments so all A partitions get at least one B
+        # - If equal: generate kA (== kB) assignments for a 1-1 mapping
+        L = max(kA, kB)
+
+        for i in range(L):
+            a = A_ids[i % kA]
+            b = B_ids[i % kB]
+            map_dict[a].append(b)
+
+        return map_dict
+    
+    @staticmethod
+    def _pair_within_partitions(bandA_list, bandB_list, partsA, partsB, mapAtoB, cap_pairs=128, intra_pick='nearest'):
+        targets = []
+        refs = []
+        used_B_indices = set()
+        
+        for a_part_id in range(len(partsA)):
+            if len(targets) >= cap_pairs:
+                break
+                
+            a_indices = partsA[a_part_id][:]
+            
+            for a_idx in a_indices:
+                if len(targets) >= cap_pairs:
+                    break
+                
+                # Get mapped B partitions
+                mapped_b_parts = mapAtoB.get(a_part_id, [])
+                
+                best_b_idx = None
+                if intra_pick == 'nearest':
+                    a_coord = bandA_list[a_idx]
+                    ay, ax = a_coord
+                    min_dist = float('inf')
+                    
+                    for b_part_id in mapped_b_parts:
+                        for b_idx in partsB[b_part_id]:
+                            if b_idx in used_B_indices:
+                                continue
+                            b_coord = bandB_list[b_idx]
+                            by, bx = b_coord
+                            dist = abs(ay - by) + abs(ax - bx)
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_b_idx = b_idx
+                
+                # Fallback to any remaining B index
+                if best_b_idx is None:
+                    for b_part_id in mapped_b_parts:
+                        for b_idx in partsB[b_part_id]:
+                            if b_idx not in used_B_indices:
+                                best_b_idx = b_idx
+                                break
+                        if best_b_idx is not None:
+                            break
+                
+                # Last resort fallback
+                if best_b_idx is None:
+                    for b_idx in range(len(bandB_list)):
+                        if b_idx not in used_B_indices:
+                            best_b_idx = b_idx
+                            break
+                
+                if best_b_idx is not None:
+                    targets.append(bandA_list[a_idx])
+                    refs.append(bandB_list[best_b_idx])
+                    used_B_indices.add(best_b_idx)
+        
+        return targets, refs
+    
+########## END OF FUSION helper functions #########
