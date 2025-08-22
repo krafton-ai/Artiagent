@@ -236,64 +236,258 @@ def get_entity_subentities(client, image, money_manager=None):
             "error": "json_parse_failed",
             "raw_response": response
         }
-
-
-def encode_image_to_base64(image):
-    """Convert PIL Image or numpy array to base64 string"""
-    if isinstance(image, np.ndarray):
-        # Convert numpy array to PIL Image
-        pil_image = Image.fromarray(image)
-    else:
-        pil_image = image
     
-    # Convert to RGB if necessary
-    if pil_image.mode != 'RGB':
-        pil_image = pil_image.convert('RGB')
-    
-    # Save to bytes buffer
-    buffer = io.BytesIO()
-    pil_image.save(buffer, format='JPEG')
-    buffer.seek(0)
-    
-    # Encode to base64
-    return base64.b64encode(buffer.getvalue()).decode('utf-8')
-
-def caption_image_with_openai(client, image, money_manager=None):
-    """Generate caption for image using OpenAI Vision API"""
-    
-    # Encode image to base64
+def get_entity_subentities_new(client, image, money_manager=None):
     base64_image = encode_image_to_base64(image)
-    
+    system_prompt = """
+    You are given an image. Identify the visible **entities** and their **subentities**, split into two layers:
+    - **Peripheral (outermost) subentities** first (e.g., hands, fingers, eyes, ears, paws, tails, wheels, mirrors).
+    - **Intermediate/Core subentities** second (e.g., arms, legs, face, head, door, window).
+
+    **Return ONLY JSON (no prose, no code fences).** Output must be a single JSON **array of length 2**:
+    [
+    {"<entity>": ["<peripheral_sub1>", "<peripheral_sub2>", "..."], ...},
+    {"<entity>": ["<intermediate_sub1>", "<intermediate_sub2>", "..."], ...}
+    ]
+
+    Hard rules:
+    1) Each returned entity MUST have **at least one** subentity in its dictionary. **Never** return an empty list for any entity.
+    2) If you cannot name at least one clearly visible subentity for an entity **in that layer**, omit that entity from that dictionary.
+    3) Subentities must be **clearly visible** and **reasonably segmentable** in the image.
+    4) **Exclude** parts that are tightly bound to or visually fused with the torso/core body (e.g., arms pressed to sides, folded wings against body). Only include subentities with clear visual separation.
+    5) Do **not** invent parts that are occluded, cropped out, or ambiguous.
+    6) Use concise, lowercase **nouns**; de-duplicate terms. Prefer 1–6 subentities per entity per dictionary.
+    7) **Return exactly one JSON array of length 2** (not multiple arrays, not objects).
+    8) **Granularity rule (coarsity):** Choose the **most specific visible entity**. If only a part is clearly visible (e.g., a leg without enough evidence of the full person), output that part as the entity (e.g., "leg") rather than its parent (e.g., "person"). Do **not** infer parent entities that are not clearly visible.
+
+    Layering guidance:
+    - **Peripheral dictionary (index 0):** Include outermost parts with clear boundaries (e.g., arm, leg, wing, fin, hand, finger, nail, ear, eye, paw, tail, wheel, mirror, antenna).
+    - **Intermediate/Core dictionary (index 1):** Include mid-level structural parts (e.g., arm, leg, face, door, window).
+    - If a subentity fits both notions, prefer **peripheral** only if it is clearly distal and separable (e.g., "hand" → peripheral; "arm" → intermediate).
+    - If a candidate layer has no valid entities with visible subentities, return an empty object `{}` in that position to preserve array length = 2.
+
+    Clarifications:
+    - Examples of valid subentities:
+    • person → face, arm, hand, leg, foot, ear, eye
+    • hand → finger, nail, palm
+    • dog → ear, snout, leg, tail, paw
+    • car → wheel, door, window, mirror
+    - Avoid generic torso-like regions. If no fine-grained parts are clearly separable for a candidate entity, **omit the entity** rather than returning an empty list.
+    - Granularity examples:
+    • If only a single **leg** is clearly visible: [{"leg": ["knee", "ankle", "foot"]}, {}]  # leg as entity in peripheral vs intermediate depends on visible parts; see examples below.
+
+    Bad examples (NOT allowed):
+    - Returning a single object instead of an array
+    - Returning more or fewer than 2 dictionaries
+    - {"dog": []}  # empty subentities list
+    - Multiple separate top-level JSON objects
+
+    Good format examples (illustrative only):
+    [
+    { "person": ["hand", "finger", "leg", "arm"], "car": ["wheel", "mirror"], "dog": ["ear", "paw", "leg", "tail"] },
+    { "person": ["face", "palm"], "car": ["door", "window"], "dog": ["leg", "face"] }
+    ]
+
+    [
+    { "cat": ["ear", "paw", "leg", "tail"], "bicycle": ["wheel", "pedal"] },
+    { "cat": ["face"], "bicycle": ["frame", "seat"] }
+    ]
+
+    Edge-case examples:
+    - Only distal parts visible:
+    [
+    { "hand": ["finger", "nail"] },
+    {}
+    ]
+
+    - Only intermediate parts visible:
+    [
+    {},
+    { "person": ["face", "palm"] }
+    ]
+
+    - Multiple distal entities visible, no intermediate:
+    [
+    { "hand": ["finger", "nail"], "dog": ["ear", "paw", "tail", "leg"] },
+    {}
+    ]
+    """
+
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": "Please provide a detailed caption describing this image."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
+                        {"type": "text", "text": system_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
             ],
-            max_tokens=300
+            max_tokens=1000,
+            temperature=0.2
         )
-        
-        # Track costs with money manager
+
         if money_manager:
             money_manager(response)
-        
-        return response.choices[0].message.content
+
+        raw_text = response.choices[0].message.content.strip()
+
+        try:
+            raw_text = response.choices[0].message.content.strip()
+
+            # Handle markdown-style code block like ```json ... ```
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[len("```json"):].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[len("```"):].strip()
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3].strip()
+
+            return json.loads(raw_text)
+
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{[\s\S]*?\}', raw_text)
+            if json_match:
+                try:
+                    return json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+
+            print(f"Could not parse JSON from response: {raw_text}")
+            return {
+                "error": "json_parse_failed",
+                "raw_response": raw_text
+            }
+
     except Exception as e:
-        print(f"Error generating caption: {e}")
+        print(f"Error analyzing sampled instance: {e}")
+        return None
+
+def get_all_entity_subparts(client, image, money_manager=None):
+    base64_image = encode_image_to_base64(image)
+
+    system_prompt = """
+    You are an image artifact agent. Image artifacts refer to unintended, implausible, or visibly corrupted regions within images generated by diffusion models. These artifacts often break the natural semantics or visual coherence of an image, such as a person with extra fingers, a car with warped wheels, or missing parts of animals, and can significantly degrade image quality or realism.
+    
+    Your task is to analyze the image and output **visible entities and their suitable subparts** for three types of artifact injection: **addition**, **removal**, and **distortion**.
+    ---
+
+    ### 1. Addition: Involves duplicating an existing part of the image and placing it somewhere else, creating implausible duplication (e.g., extra thumb, leg, or ear). The added part is placed adjacent to the original, in one of four directions. 
+        - Common on peripheral or terminal parts of objects/entities:
+            - Human/Animal: fingers, hands, toes, legs, etc.
+            - Vehicles: mirrors, wheels, wipers.
+        - Constraint: Do **not** include parts that are tightly overlapping or fused with the entity's torso or core body. For example, if a bird's wings are folded closely against its torso, they should not be selected. In such cases, the addition artifact may appear as if it's modifying the torso itself, which is not appropriate.
+    ---
+
+    ### 2. Removal: A specific object or part is deleted, and the area is inpainted using background textures, resulting in missing limbs, features, or objects, sometimes with visible traces.
+        - Common on terminal or protruding elements:
+            - Human/Animal: fingers, toes, legs, ears, horns, etc.
+            - Vehicles: antennas, side mirrors, etc.
+        - Constraint: Do **not** include parts that are tightly overlapping or fused with the entity's torso or core body. For example, if a bird’s wings are folded closely against its body, removing them would resemble torso removal, which is not a valid removal artifact.
+
+    ---
+
+    ### 3. Distortion: The object or part remains in place but the structure is altered (e.g., twisted, warped, scrambled), making the object unrecognizable or visually broken, like a warped face or twisted wheel.
+        - Can occur anywhere, especially in central or continuous regions:
+            - Human/Animal: face, torso, entire leg, etc.
+            - Vehicles: car doors, etc.
+
+    ---
+
+    Important constraint:
+    - You must **only recommend parts that are clearly visible in the image**. Do **not** include parts that are occluded, cropped out, or ambiguous. Artifact injection should only be applied to parts that are identifiable and visually distinguishable.
+
+    Return the results in **JSON** format. I will provide you with some examples:
+
+    ```json
+    {
+    "addition": {
+        "entity": "giraffe",
+        "subparts": ['ear', 'leg']
+    },
+    "removal": {
+        "entity": "giraffe",
+        "subparts": ['ear', 'horn', 'leg']
+    },
+    "distortion": {
+        "entity": "dog",
+        "subparts": ['face', 'torso', 'legs']
+    }
+    }
+    ```
+
+    ```json
+    {
+    "addition": {
+        "entity": "hand",
+        "subparts": ['finger', 'thumb']
+    },
+    "removal": {
+        "entity": "hand",
+        "subparts": ['finger', 'thumb']
+    },
+    "distortion": {
+        "entity": "hand",
+        "subparts": ['fingers', 'palm']
+    }
+    }
+    ```
+
+    ### Output:
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": system_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]
+                }
+            ],
+            max_tokens=1000,
+            temperature=0.2
+        )
+
+        if money_manager:
+            money_manager(response)
+
+        raw_text = response.choices[0].message.content.strip()
+
+        try:
+            raw_text = response.choices[0].message.content.strip()
+
+            # Handle markdown-style code block like ```json ... ```
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[len("```json"):].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[len("```"):].strip()
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3].strip()
+
+            return json.loads(raw_text)
+
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{[\s\S]*?\}', raw_text)
+            if json_match:
+                try:
+                    return json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+
+            print(f"Could not parse JSON from response: {raw_text}")
+            return {
+                "error": "json_parse_failed",
+                "raw_response": raw_text
+            }
+
+    except Exception as e:
+        print(f"Error analyzing sampled instance: {e}")
         return None
 
 def query_addition_artifact_success(client, img_array, mask_image, part_entity_name, money_manager=None):
@@ -658,6 +852,26 @@ Return your response in this exact JSON format:
             "explanation": "",
             "error": f"API error: {str(e)}"
         } 
+    
+def encode_image_to_base64(image):
+    """Convert PIL Image or numpy array to base64 string"""
+    if isinstance(image, np.ndarray):
+        # Convert numpy array to PIL Image
+        pil_image = Image.fromarray(image)
+    else:
+        pil_image = image
+    
+    # Convert to RGB if necessary
+    if pil_image.mode != 'RGB':
+        pil_image = pil_image.convert('RGB')
+    
+    # Save to bytes buffer
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format='JPEG')
+    buffer.seek(0)
+    
+    # Encode to base64
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
         
 
 ########## deprecated ##########
@@ -806,136 +1020,6 @@ def get_entity_subparts_by_type(client, image, artifact_type, money_manager=None
     except Exception as e:
         print(f"Error analyzing sampled instance: {e}")
         return None
-
-def get_all_entity_subparts(client, image, money_manager=None):
-    base64_image = encode_image_to_base64(image)
-
-    system_prompt = """
-    You are an image artifact agent. Image artifacts refer to unintended, implausible, or visibly corrupted regions within images generated by diffusion models. These artifacts often break the natural semantics or visual coherence of an image, such as a person with extra fingers, a car with warped wheels, or missing parts of animals, and can significantly degrade image quality or realism.
-    
-    Your task is to analyze the image and output **visible entities and their suitable subparts** for three types of artifact injection: **addition**, **removal**, and **distortion**.
-
-    ---
-
-    ### 1. Addition: Involves duplicating an existing part of the image and placing it somewhere else, creating implausible duplication (e.g., extra thumb, leg, or ear). The added part is placed adjacent to the original, in one of four directions. 
-        - Common on peripheral or terminal parts of objects/entities:
-            - Human/Animal: fingers, hands, toes, legs, etc.
-            - Vehicles: mirrors, wheels, wipers.
-        - Constraint: Do **not** include parts that are tightly overlapping or fused with the entity's torso or core body. For example, if a bird's wings are folded closely against its torso, they should not be selected. In such cases, the addition artifact may appear as if it's modifying the torso itself, which is not appropriate.
-    ---
-
-    ### 2. Removal: A specific object or part is deleted, and the area is inpainted using background textures, resulting in missing limbs, features, or objects, sometimes with visible traces.
-        - Common on terminal or protruding elements:
-            - Human/Animal: fingers, toes, legs, ears, horns, etc.
-            - Vehicles: antennas, side mirrors, etc.
-        - Constraint: Do **not** include parts that are tightly overlapping or fused with the entity's torso or core body. For example, if a bird’s wings are folded closely against its body, removing them would resemble torso removal, which is not a valid removal artifact.
-
-    ---
-
-    ### 3. Distortion: The object or part remains in place but the structure is altered (e.g., twisted, warped, scrambled), making the object unrecognizable or visually broken, like a warped face or twisted wheel.
-        - Can occur anywhere, especially in central or continuous regions:
-            - Human/Animal: face, torso, entire leg, etc.
-            - Vehicles: car doors, etc.
-
-    ---
-
-    Important constraint:
-    - You must **only recommend parts that are clearly visible in the image**. Do **not** include parts that are occluded, cropped out, or ambiguous. Artifact injection should only be applied to parts that are identifiable and visually distinguishable.
-
-    Return the results in **JSON** format. I will provide you with some examples:
-
-    ```json
-    {
-    "addition": {
-        "entity": "giraffe",
-        "subparts": ['ear', 'leg']
-    },
-    "removal": {
-        "entity": "giraffe",
-        "subparts": ['ear', 'horn', 'leg']
-    },
-    "distortion": {
-        "entity": "dog",
-        "subparts": ['face', 'torso', 'legs']
-    }
-    }
-    ```
-
-    ```json
-    {
-    "addition": {
-        "entity": "hand",
-        "subparts": ['finger', 'thumb']
-    },
-    "removal": {
-        "entity": "hand",
-        "subparts": ['finger', 'thumb']
-    },
-    "distortion": {
-        "entity": "hand",
-        "subparts": ['fingers', 'palm']
-    }
-    }
-    ```
-
-    ### Output:
-    """
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": system_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }
-            ],
-            max_tokens=1000,
-            temperature=0.2
-        )
-
-        if money_manager:
-            money_manager(response)
-
-        raw_text = response.choices[0].message.content.strip()
-
-        try:
-            raw_text = response.choices[0].message.content.strip()
-
-            # Handle markdown-style code block like ```json ... ```
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[len("```json"):].strip()
-            elif raw_text.startswith("```"):
-                raw_text = raw_text[len("```"):].strip()
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3].strip()
-
-            return json.loads(raw_text)
-
-        except json.JSONDecodeError:
-            json_match = re.search(r'\{[\s\S]*?\}', raw_text)
-            if json_match:
-                try:
-                    return json.loads(json_match.group())
-                except json.JSONDecodeError:
-                    pass
-
-            print(f"Could not parse JSON from response: {raw_text}")
-            return {
-                "error": "json_parse_failed",
-                "raw_response": raw_text
-            }
-
-    except Exception as e:
-        print(f"Error analyzing sampled instance: {e}")
-        return None
-
-
-
-
 
 '''
 ########## deprecated ##########

@@ -143,6 +143,14 @@ class Flux(nn.Module):
                     # Accumulate IDs (after any ref_ids modification)
                     accumulated_target_ids.extend(target_ids)
                     accumulated_ref_ids.extend(ref_ids)
+                elif artifact_data['artifact_type'] == 'fusion' and timesteps > info['pe_step_fusion']:
+                    ref_ids = artifact_data['reference_patch_indices'].copy()
+                    target_ids = artifact_data['target_patch_indices'].copy()
+                    # np.random.shuffle(ref_ids)
+                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+                    # Accumulate IDs
+                    accumulated_target_ids.extend(target_ids)
+                    accumulated_ref_ids.extend(ref_ids)
 
 
             info['patch_ids'] = accumulated_target_ids
@@ -151,7 +159,7 @@ class Flux(nn.Module):
 
 
         for block in self.double_blocks:
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, info=info)
+            img, txt = block(img=img, txt=txt, vec=vec, pe=inject_pe, info=info)
 
         cnt = 0
         img = torch.cat((txt, img), 1) 

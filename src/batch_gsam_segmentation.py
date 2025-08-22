@@ -36,7 +36,7 @@ from pipeline import (
     GSAMDetector, InstanceProcessor, ImageVisualizer,
 )
 from pipeline.data_loader import _initialize_data_loader, _get_image_list
-from pipeline.prompts import get_entity_subentities, MoneyManager
+from pipeline.prompts import get_entity_subentities_new, get_all_entity_subparts, MoneyManager
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
@@ -100,49 +100,94 @@ def _try_process_all_artifact_types(
 
     
     # Step 1: Get all entity subparts from API
-    entity_subentity_response = get_entity_subentities(openai_client, img_array, money_manager)
+    entity_subentity_response = get_entity_subentities_new(openai_client, img_array, money_manager)
     if not entity_subentity_response or 'error' in entity_subentity_response:
         raise RuntimeError("Failed to get entity subparts")
+    if not entity_subentity_response[0] and not entity_subentity_response[1]:
+        raise ValueError("Both peripheral and intermediate entity subentity lists are empty")
         
     # Transform the response into a nested dictionary structure
     # First level: entity, Second level: subentity, Value: list of artifact types
-    entities_list = list(set(entity_subentity_response.keys()))
-    subentities_list = list(set([subentity for sublist in entity_subentity_response.values() for subentity in (sublist if isinstance(sublist, list) else [sublist])]))
-    entity_mapping = defaultdict(list)
-    for entity, subentities in entity_subentity_response.items():
+    peripheral_entities = set()
+    peripheral_subentities = set()
+    peripheral_entity_subentity_mapping = defaultdict(list)
+    intermediate_entities = set()
+    intermediate_subentities = set()
+    intermediate_entity_subentity_mapping = defaultdict(list)
+    all_entity_subentity_mapping = defaultdict(list)
+
+    for entity, subentities in entity_subentity_response[0].items():
+        peripheral_entities.add(entity)
+        peripheral_subentities.update(subentities)
         for subentity in subentities:
-            entity_mapping[subentity].append(entity)
+            peripheral_entity_subentity_mapping[subentity].append(entity)
+            all_entity_subentity_mapping[subentity].append(entity)
+    for entity, subentities in entity_subentity_response[1].items():
+        intermediate_entities.add(entity)
+        intermediate_subentities.update(subentities)
+        for subentity in subentities:
+            intermediate_entity_subentity_mapping[subentity].append(entity)
+            all_entity_subentity_mapping[subentity].append(entity)
+    all_entities = peripheral_entities | intermediate_entities
+    all_subentities = peripheral_subentities | intermediate_subentities
 
     # Step 3: Single detection call with combined vocabulary
     logger.info(f"Detecting parts using Grounded SAM...")
-    predictions, entity_predictions, visualized_output = gsam_detector.detect_parts(img_array, entities_list, subentities_list, entity_mapping, min_area_ratio=0.005, max_area_ratio=0.5)
+    predictions, entity_predictions, visualized_output = gsam_detector.detect_parts(img_array, list(all_entities), list(all_subentities), all_entity_subentity_mapping, min_area_ratio=0.005, max_area_ratio=0.5)
     # Step 4: Sample target parts with entity-aware logic
     logger.info(f"Sampling target parts across all entities...")
+
 
 
     ## for all predictions, retrieve the nearby subentities that are able for fusion type of artifacts
 
     artifacts = []
-    for prediction in predictions:
-        entity = prediction['entity']
-        subentity = prediction['subentity']
-        # + get nearby subentities that are able for fusion type of artifacts
-        # if there are any subentities nearby, add fusion to the entity_mapping
-    
-        # for artifact_type in ['addition', 'removal', 'distortion', 'fusion']:
-        # for artifact_type in ['fusion']:
-        artifact_type = 'fusion'
+    for entity_prediction in entity_predictions:
+        entity = entity_prediction['entity']
         try:
-            annotation = create_artifact_annotations(
-                artifact_type, prediction,
-                predictions, entity_predictions, entity, subentity, img_array, config,
-                image_output_dir, img_filename, logger, openai_client
+            annotation = create_fusion_artifact_annotations(
+                entity_prediction,
+                entity_predictions,
+                predictions,
+                entity,
+                img_array,
+                image_output_dir,
+                img_filename,
             )
             artifacts.append(annotation)
-            break
+                # + get nearby subentities that are able for fusion type of artifacts
+                # if there are any subentities nearby, add fusion to the entity_mapping
         except Exception as e:
-            logger.error(f"Error creating {artifact_type} artifact for {subentity} of {entity}: {str(e)}")
+            logger.error(f"Error creating fusion artifact for {entity}: {str(e)}")
             continue
+
+    # for prediction in predictions:
+    #     entity = prediction['entity']
+    #     subentity = prediction['subentity']
+    #     # + get nearby subentities that are able for fusion type of artifacts
+    #     # if there are any subentities nearby, add fusion to the entity_mapping
+    
+    #     for artifact_type in ['addition', 'removal', 'distortion']:
+    #         if artifact_type in ['addition', 'removal']:
+    #             if subentity not in peripheral_subentities:
+    #                 continue
+    #             if entity not in peripheral_entity_subentity_mapping[subentity]:
+    #                 continue
+    #         elif artifact_type == 'distortion':
+    #             if subentity not in intermediate_subentities:
+    #                 continue
+    #             if entity not in intermediate_entity_subentity_mapping[subentity]:
+    #                 continue
+    #         try:
+    #             annotation = create_artifact_annotations(
+    #                 artifact_type, prediction,
+    #                 predictions, entity_predictions, entity, subentity, img_array, config,
+    #                 image_output_dir, img_filename, logger, openai_client
+    #             )
+    #             artifacts.append(annotation)
+    #         except Exception as e:
+    #             logger.error(f"Error creating {artifact_type} artifact for {subentity} of {entity}: {str(e)}")
+    #             continue
         
     
     if len(artifacts) == 0:
@@ -263,9 +308,9 @@ def create_artifact_annotations(
             logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
     
     # Create artifact patches
-    target_patches, reference_patches, artifact_metadata = InstanceProcessor.create_artifact_patches(
+    target_patches, reference_patches = InstanceProcessor.create_artifact_patches(
         artifact_type, 
-        prediction, 
+        prediction,
         predictions, 
         entity_predictions,
         img_array, 
@@ -310,10 +355,62 @@ def create_artifact_annotations(
     }
     
     # Add fusion metadata if available
-    if artifact_metadata is not None:
-        result_dict['fusion_metadata'] = artifact_metadata
+    # if artifact_metadata is not None:
+    #     result_dict['fusion_metadata'] = artifact_metadata
     
     return result_dict
+
+def create_fusion_artifact_annotations(
+    entity_prediction: Dict,
+    entity_predictions: Any,
+    predictions: Any,
+    entity: str,
+    img_array: np.ndarray,
+    image_output_dir: str,
+    img_filename: str,
+
+) -> Dict[str, Any]:
+    target_patches, reference_patches, metadata = InstanceProcessor.create_fusion_artifact_patches(
+        entity_prediction,
+        entity_predictions,
+        predictions,
+        img_array,
+        patch_size=16,
+        output_dir=image_output_dir,
+        img_filename=img_filename
+    )
+
+    target_bbox = InstanceProcessor.patch_coords_to_bbox(target_patches, patch_size=16)
+    reference_bbox = InstanceProcessor.patch_coords_to_bbox(reference_patches, patch_size=16)
+
+    target_mask = InstanceProcessor.patches_to_masks(target_patches, img_array.shape, patch_size=16)
+    reference_mask = InstanceProcessor.patches_to_masks(reference_patches, img_array.shape, patch_size=16)
+
+    target_patch_indices, reference_patch_indices = InstanceProcessor.map_coords_to_patch_indices(
+        artifact_type='fusion',
+        target_patches=target_patches,
+        reference_patches=reference_patches,
+        img_shape=img_array.shape,
+        patch_size=16
+    )
+    print(len(target_patch_indices), len(reference_patch_indices))
+
+    result_dict = {
+        'artifact_type': 'fusion',
+        'entity': entity,
+        'subentity': None,
+        'target_bbox': target_bbox,
+        'reference_bbox': reference_bbox,
+        'target_patch_indices': target_patch_indices,
+        'reference_patch_indices': reference_patch_indices,
+        'target_mask': target_mask,
+        'reference_mask': reference_mask,
+        'distortion_kernel': None,
+        'fusion_metadata': metadata
+    }
+
+    return result_dict
+    
 
 
 def process_single_image(
@@ -383,7 +480,7 @@ def process_single_image(
             logger.error(f"Error processing image {img_id}: {str(e)}")
             shutil.rmtree(image_output_dir)
             logger.error(traceback.format_exc())
-            raise e
+            raise Exception(f"Error processing image {img_id}: {str(e)}")
 
         if not artifacts:
             results['error'] = "No valid target parts found for any artifact type after filtering"
@@ -630,6 +727,7 @@ def run_gsam_processing(
     os.makedirs(output_dir, exist_ok=True)
     
     # Setup logging
+    print(categories)
     category_str = "-".join(categories)
     logger = setup_logging(output_dir, f"{dataset_type}_{category_str}")
     logger.info(f"Starting GSAM processing for {dataset_type} dataset")

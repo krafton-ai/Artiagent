@@ -228,123 +228,189 @@ class InstanceProcessor:
             
             print(f"Applied {distortion_kernel} distortion kernel: {len(mask_patch_coords)} -> {len(reference_patches)} patches")
 
-        elif artifact_type == 'fusion':
-            # Build A_set from mask_patch_coords (already computed above)
-            A_set = set(mask_patch_coords)
-            
-            # Neighbor discovery
-            neighbors = []
-            for pred_instance in predictions:
-                if torch.equal(pred_instance['pred_box'], prediction['pred_box']):
-                    continue
-
-                B_mask = pred_instance['pred_mask'].cpu().numpy()
-                B_patch_coords = mask_to_patch_coords(B_mask, patch_size=patch_size)
-                B_set = set(B_patch_coords)
-
-                overlap_set = A_set & B_set
-                # # if not overlap_set:
-                # min_l1_dist = float('inf')
-                # for a_py, a_px in A_set:
-                #     for b_py, b_px in B_set:
-                #         l1_dist = abs(a_py - b_py) + abs(a_px - b_px)
-                #         if l1_dist < min_l1_dist:
-                #             min_l1_dist = l1_dist
-                # print(f"L1 distance: {min_l1_dist}")
-                # if min_l1_dist < 2:
-                #     neighbors.append((pred_instance, B_set, min_l1_dist))
-                if overlap_set:
-                    # Calculate IoU between A_set and B_set
-                    union_set = A_set | B_set
-                    iou = len(overlap_set) / len(union_set) if union_set else 0
-                    
-                    # Only add to neighbors if IoU < 0.5
-                    if iou < 0.5:
-                        neighbors.append((pred_instance, B_set, overlap_set, len(overlap_set)))
-            
-            if not neighbors:
-                raise ValueError("No neighboring instances for fusion")
-            # import ipdb; ipdb.set_trace(context=30)
-            # Select closest neighbor (largest overlap)
-            closest_neighbor = max(neighbors, key=lambda x: x[3])
-            fused_instance, B_set, overlap_set, overlap_count = closest_neighbor
-            
-            # Process only the closest neighbor
-            bandA, bandB = InstanceProcessor.build_bands(A_set, B_set, overlap_set, R=3)
-            if not bandA or not bandB:
-                raise ValueError("No valid fusion pairs found")
-            
-            bandA_list = sorted(list(bandA))
-            bandB_list = sorted(list(bandB))
-            
-            if not bandA_list or not bandB_list:
-                return [], [], None
-            
-            # Target patch is the union of bandA and bandB
-            target_patches = sorted(list(bandA | bandB))
-            
-            # Generate reference patches by randomly permuting partitions
-            kA = max(1, min(5, len(bandA_list)))
-            kB = max(1, min(5, len(bandB_list)))
-            
-            partsA = InstanceProcessor._partition_band_by_seeds(bandA_list, kA)
-            partsB = InstanceProcessor._partition_band_by_seeds(bandB_list, kB)
-            
-            reference_patches = []
-            
-            # For partsA, randomly permute partsB with replacement
-            for part_a in partsA:
-                # If partsA has more segments than partsB, sample with replacement
-                sampled_part_b_indices = random.choices(range(len(partsB)), k=len(part_a))
-                for a_idx, b_part_idx in zip(part_a, sampled_part_b_indices):
-                    # Get a random patch from the selected B partition
-                    b_part = partsB[b_part_idx]
-                    if b_part:  # Ensure the partition is not empty
-                        ref_patch_idx = random.choice(b_part)
-                        reference_patches.append(bandB_list[ref_patch_idx])
-            
-            # For partsB, randomly permute partsA with replacement
-            for part_b in partsB:
-                # If partsB has more segments than partsA, sample with replacement
-                sampled_part_a_indices = random.choices(range(len(partsA)), k=len(part_b))
-                for b_idx, a_part_idx in zip(part_b, sampled_part_a_indices):
-                    # Get a random patch from the selected A partition
-                    a_part = partsA[a_part_idx]
-                    if a_part:  # Ensure the partition is not empty
-                        ref_patch_idx = random.choice(a_part)
-                        reference_patches.append(bandA_list[ref_patch_idx])
-            
-            if not reference_patches:
-                raise ValueError("No valid reference patches generated")
-            
-            # Convert to list format to match expected output
-            target_patches = list(target_patches)
-            reference_patches = list(reference_patches)
-            
-            # Create fusion metadata
-            fusion_metadata = {
-                'fusion_type': 'overlap_based',
-                'fused_instance_bbox': fused_instance['pred_box'].cpu().numpy().tolist(),
-                'overlap_count': overlap_count,
-                'band_a_size': len(bandA_list),
-                'band_b_size': len(bandB_list),
-                'num_partitions_a': len(partsA),
-                'num_partitions_b': len(partsB),
-                'reference_patches_count': len(reference_patches),
-                'part_a_entity': prediction.get('entity', 'unknown'),
-                'part_a_subentity': prediction.get('subentity', 'unknown'),
-                'part_b_entity': fused_instance.get('entity', 'unknown'),
-                'part_b_subentity': fused_instance.get('subentity', 'unknown')
-            }
-
         else:
             raise ValueError(f"Unknown artifact type: {artifact_type}")
         
-        # Return metadata only for fusion, None for other types
-        if artifact_type == 'fusion':
-            return target_patches, reference_patches, fusion_metadata
-        else:
-            return target_patches, reference_patches, None
+        return target_patches, reference_patches, None
+    
+    @staticmethod
+    def create_fusion_artifact_patches(entity_prediction, entity_predictions, predictions, img_array, patch_size: int = 16, output_dir: str = None, img_filename: str = None) -> Tuple[List[int], List[int], Optional[Dict]]:
+        """
+        Create fusion artifact patches for a detected entity-subentity combination.
+        
+        This function implements fusion artifact logic:
+        1. Find overlapping entity instances
+        2. Filter by containment ratio (< 0.5)
+        3. Select entity with highest overlap
+        4. Create target patches (overlapping region + 1 Manhattan distance)
+        5. Create reference patch pool (2-3 Manhattan distance)
+        6. Map patches according to region-specific sampling strategy
+        """
+        H, W = img_array.shape[:2]
+        patch_H = (H // patch_size) * patch_size
+        patch_W = (W // patch_size) * patch_size
+        patch_w = patch_W // patch_size
+        patch_h = patch_H // patch_size
+
+        # Get entity A (current entity) information
+        entity_A = entity_prediction['entity']
+        mask_A = entity_prediction['pred_mask'].cpu().numpy()
+        
+        mask_A_patch_coords = mask_to_patch_coords(mask_A, patch_size=patch_size)
+        mask_A_patch_set = set(mask_A_patch_coords)
+
+        # Step 1: Find overlapping instances for the same entity
+        overlapping_candidates = []
+        for i, other_prediction in enumerate(entity_predictions):
+            if other_prediction['entity'] == entity_A:
+                # Skip if same instance
+                if torch.equal(entity_prediction['pred_box'], other_prediction['pred_box']):
+                    continue
+                
+                mask_B = other_prediction['pred_mask'].cpu().numpy()
+                
+                # Convert mask B to patch coordinates
+                mask_B_patch_coords = mask_to_patch_coords(mask_B, patch_size=patch_size)
+                mask_B_patch_set = set(mask_B_patch_coords)
+                
+                # Calculate intersection and areas using patch coordinate sets
+                intersection_patches = mask_A_patch_set & mask_B_patch_set
+                intersection = len(intersection_patches)
+                area_A = len(mask_A_patch_set)
+                area_B = len(mask_B_patch_set)
+                
+                if area_A == 0 or area_B == 0:
+                    continue
+                
+                # Containment ratio (how much each instance contains the other)
+                containment_A_in_B = intersection / area_A
+                containment_B_in_A = intersection / area_B
+                
+                # Filter out instances that contain one another (containment ratio >= 0.5)
+                if containment_A_in_B >= 0.7 or containment_B_in_A >= 0.7:
+                    continue
+                
+                
+                if intersection > 5:
+                    overlapping_candidates.append({
+                        'index': i,
+                        'prediction': other_prediction,
+                        'mask_B_patch_set': mask_B_patch_set,
+                        'intersection': intersection
+                    })
+
+        if not overlapping_candidates:
+            raise ValueError("No valid overlapping entity found for fusion artifact")
+
+        # Step 2: Select entity with highest overlap
+        best_candidate = max(overlapping_candidates, key=lambda x: x['intersection'])
+        entity_B_prediction = best_candidate['prediction']
+        mask_B_patch_set = best_candidate['mask_B_patch_set']
+        mask_B_patch_coords = list(mask_B_patch_set)
+
+        # Step 3: Create overlapping region using patch coordinate intersection
+        overlap_patch_set = mask_A_patch_set & mask_B_patch_set
+        overlap_patch_coords = list(overlap_patch_set)
+
+
+        # Step 4: Create target patches - overlapping region + 1 Manhattan distance
+        target_patch_set = set(overlap_patch_coords)
+        
+        # Add patches 1 Manhattan distance away from overlapping region
+        for oy, ox in overlap_patch_coords:
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if abs(dy) + abs(dx) <= 1:  # Manhattan distance <= 1
+                        ny, nx = oy + dy, ox + dx
+                        if 0 <= ny < patch_h and 0 <= nx < patch_w:
+                            target_patch_set.add((ny, nx))
+
+        # Ensure all target patches are foreground patches (part of either entity A or B)
+        foreground_patch_set = mask_A_patch_set | mask_B_patch_set
+        target_patch_set = target_patch_set & foreground_patch_set
+        target_patch_coords = list(target_patch_set)
+
+        # Step 5: Partition target region into three parts
+        A_only_coords = [coord for coord in target_patch_coords if coord in mask_A_patch_set and coord not in overlap_patch_set]
+        B_only_coords = [coord for coord in target_patch_coords if coord in mask_B_patch_set and coord not in overlap_patch_set]
+        overlap_target_coords = [coord for coord in target_patch_coords if coord in overlap_patch_set]
+
+        # Step 6: Create reference patch pool (2-3 Manhattan distance from target patches)
+        reference_patch_set = set()
+        for ty, tx in target_patch_coords:
+            for dy in range(-3, 4):
+                for dx in range(-3, 4):
+                    manhattan_dist = abs(dy) + abs(dx)
+                    if 2 <= manhattan_dist <= 3:  # Manhattan distance between 2-3
+                        ny, nx = ty + dy, tx + dx
+                        if 0 <= ny < patch_h and 0 <= nx < patch_w:
+                            reference_patch_set.add((ny, nx))
+
+        # Ensure reference patches are foreground patches
+        reference_patch_set = reference_patch_set & foreground_patch_set
+        # Remove target patches from reference pool
+        reference_patch_set = reference_patch_set - target_patch_set
+        
+        # Create region-specific reference pools
+        A_only_ref_coords = [coord for coord in reference_patch_set if coord in mask_A_patch_set and coord not in mask_B_patch_set]
+        B_only_ref_coords = [coord for coord in reference_patch_set if coord in mask_B_patch_set and coord not in mask_A_patch_set]
+        full_ref_coords = list(reference_patch_set)
+
+        # Step 7: Map target patches to reference patches according to sampling strategy
+        target_coords_final = []
+        reference_coords_final = []
+
+        # For A entity only target region → sample from B entity only reference patch pool
+        for coord in A_only_coords:
+            target_coords_final.append(coord)
+            if B_only_ref_coords:
+                # Find closest patch in B-only reference pool
+                best_ref = min(B_only_ref_coords, key=lambda ref: abs(coord[0] - ref[0]) + abs(coord[1] - ref[1]))
+                reference_coords_final.append(best_ref)
+            elif full_ref_coords:
+                # Fallback to full reference pool
+                best_ref = min(full_ref_coords, key=lambda ref: abs(coord[0] - ref[0]) + abs(coord[1] - ref[1]))
+                reference_coords_final.append(best_ref)
+
+        # For B entity only target region → sample from A entity only reference patch pool
+        for coord in B_only_coords:
+            target_coords_final.append(coord)
+            if A_only_ref_coords:
+                # Find closest patch in A-only reference pool
+                best_ref = min(A_only_ref_coords, key=lambda ref: abs(coord[0] - ref[0]) + abs(coord[1] - ref[1]))
+                reference_coords_final.append(best_ref)
+            elif full_ref_coords:
+                # Fallback to full reference pool
+                best_ref = min(full_ref_coords, key=lambda ref: abs(coord[0] - ref[0]) + abs(coord[1] - ref[1]))
+                reference_coords_final.append(best_ref)
+
+        # For overlapping target region → sample from whole reference patch pool
+        for coord in overlap_target_coords:
+            target_coords_final.append(coord)
+            if full_ref_coords:
+                # Find closest patch in full reference pool
+                best_ref = min(full_ref_coords, key=lambda ref: abs(coord[0] - ref[0]) + abs(coord[1] - ref[1]))
+                reference_coords_final.append(best_ref)
+
+        # Create metadata
+        metadata = {
+            'entity_A': entity_A,
+            'entity_B': entity_B_prediction['entity'],
+            'intersection': best_candidate['intersection'],
+            'num_overlapping_candidates': len(overlapping_candidates),
+            'target_regions': {
+                'A_only': len(A_only_coords),
+                'B_only': len(B_only_coords),
+                'overlap': len(overlap_target_coords)
+            },
+            'reference_pools': {
+                'A_only': len(A_only_ref_coords),
+                'B_only': len(B_only_ref_coords),
+                'full': len(full_ref_coords)
+            }
+        }
+
+        return target_coords_final, reference_coords_final, metadata
     
     @staticmethod
     def map_coords_to_patch_indices(artifact_type: str, target_patches: List[Tuple[int, int]], reference_patches: List[Tuple[int, int]],
