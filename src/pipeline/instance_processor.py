@@ -341,7 +341,7 @@ class InstanceProcessor:
             for dy in range(-3, 4):
                 for dx in range(-3, 4):
                     manhattan_dist = abs(dy) + abs(dx)
-                    if 2 <= manhattan_dist <= 3:  # Manhattan distance between 2-3
+                    if 2 <= manhattan_dist <= 4:  # Manhattan distance between 2-3
                         ny, nx = ty + dy, tx + dx
                         if 0 <= ny < patch_h and 0 <= nx < patch_w:
                             reference_patch_set.add((ny, nx))
