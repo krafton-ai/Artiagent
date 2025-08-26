@@ -176,8 +176,8 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
 def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
                        resume: bool = False, device: str = 'cuda',
                        output_dir: Optional[str] = None, inject_step: int=20,
-                       pe_step_addition: float=0.0, pe_step_removal: float=0.0, pe_step_distortion: float=0.3,
-                       pe_step_fusion: float=0.3,
+                       pe_step_addition: int=25, pe_step_removal: int=25, pe_step_distortion: int=15,
+                       pe_step_fusion: int=15,
                        guidance: float=5.0, num_steps: int=25, seed: int=42, use_rf_solver: bool=False):
     """Run FLUX artifact generation on processed data"""
     
@@ -362,14 +362,14 @@ def main():
                        help='Output directory (default: flux_output_{supercategory})')
     parser.add_argument('--inject', type=int, default=25,
                        help='Inject step for FLUX generation (default: 25)')
-    parser.add_argument('--pe-step-addition', type=float, default=0.0,
-                       help='PE step for addition artifacts (default: 0.3)')
-    parser.add_argument('--pe-step-removal', type=float, default=0.0,
-                       help='PE step for removal artifacts (default: 0.3)')
-    parser.add_argument('--pe-step-distortion', type=float, default=0.3,
-                       help='PE step for distortion artifacts (default: 0.3)')
-    parser.add_argument('--pe-step-fusion', type=float, default=0.0,
-                       help='PE step for fusion artifacts (default: 0.0)')
+    parser.add_argument('--pe-step-addition', type=int, default=25,
+                       help='PE step count for addition artifacts (default: 25)')
+    parser.add_argument('--pe-step-removal', type=int, default=25,
+                       help='PE step count for removal artifacts (default: 25)')
+    parser.add_argument('--pe-step-distortion', type=int, default=15,
+                       help='PE step count for distortion artifacts (default: 15)')
+    parser.add_argument('--pe-step-fusion', type=int, default=15,
+                       help='PE step count for fusion artifacts (default: 15)')
     parser.add_argument('--guidance', type=float, default=5.0,
                        help='Guidance for FLUX generation (default: 5.0)')
     parser.add_argument('--num-steps', type=int, default=25,

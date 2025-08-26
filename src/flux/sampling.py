@@ -107,10 +107,15 @@ def denoise_first_order(
     # this is ignored for schnell
     inject_list = [True] * int(info['inject_step']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['inject_step']))
     attn_mask_list = [True] * int(info['attn_mask_step']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['attn_mask_step']))
+    
+    # PE step lists for each artifact type
+    pe_step_addition_list = [True] * int(info['pe_step_addition']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['pe_step_addition']))
+    pe_step_removal_list = [True] * int(info['pe_step_removal']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['pe_step_removal']))
+    pe_step_distortion_list = [True] * int(info['pe_step_distortion']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['pe_step_distortion']))
+    pe_step_fusion_list = [True] * int(info['pe_step_fusion']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['pe_step_fusion']))
     if inverse:
         timesteps = timesteps[::-1]
         inject_list = inject_list[::-1]
-
     if percentage_of_steps != 1:
         end_timestep_idx = int(len(timesteps) * percentage_of_steps)
         if inverse:
@@ -130,6 +135,10 @@ def denoise_first_order(
         info['second_order'] = False
         info['inject'] = inject_list[i]
         info['attn_mask'] = attn_mask_list[i]
+        info['addition'] = pe_step_addition_list[i]
+        info['removal'] = pe_step_removal_list[i]
+        info['distortion'] = pe_step_distortion_list[i]
+        info['fusion'] = pe_step_fusion_list[i]
 
         pred, info = model(
             img=img,
@@ -164,10 +173,20 @@ def denoise(
     # this is ignored for schnell
     inject_list = [True] * int(info['inject_step']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['inject_step']))
     attn_mask_list = [True] * int(info['attn_mask_step']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['attn_mask_step']))
+    
+    # PE step lists for each artifact type
+    pe_step_addition_list = [True] * int(info['pe_step_addition']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['pe_step_addition']))
+    pe_step_removal_list = [True] * int(info['pe_step_removal']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['pe_step_removal']))
+    pe_step_distortion_list = [True] * int(info['pe_step_distortion']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['pe_step_distortion']))
+    pe_step_fusion_list = [True] * int(info['pe_step_fusion']) + [False] * (int(len(timesteps) * percentage_of_steps) -1 - int(info['pe_step_fusion']))
 
     if inverse:
         timesteps = timesteps[::-1]
         inject_list = inject_list[::-1]
+        pe_step_addition_list = pe_step_addition_list[::-1]
+        pe_step_removal_list = pe_step_removal_list[::-1]
+        pe_step_distortion_list = pe_step_distortion_list[::-1]
+        pe_step_fusion_list = pe_step_fusion_list[::-1]
         # patch_ids = None
         # info['double_stream_block_mask'] = 'none'
         # info['single_stream_block_mask'] = 'none'
@@ -190,6 +209,10 @@ def denoise(
         info['second_order'] = False
         info['inject'] = inject_list[i]
         info['attn_mask'] = attn_mask_list[i]
+        info['addition'] = pe_step_addition_list[i]
+        info['removal'] = pe_step_removal_list[i]
+        info['distortion'] = pe_step_distortion_list[i]
+        info['fusion'] = pe_step_fusion_list[i]
 
         pred, info = model(
             img=img,

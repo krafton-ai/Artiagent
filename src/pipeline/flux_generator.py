@@ -25,7 +25,7 @@ class FluxConfig:
     guidance: float = 5.0
     num_steps: int = 25
     inject_step: int = 15
-    pe_step: Union[float, Dict[str, float]] = 0.2  # Can be float or dict with artifact type keys
+    pe_step: Union[int, Dict[str, int]] = 25  # Can be int or dict with artifact type keys
     attn_mask_step: int = 0
     seed: int = 42
     masks: list = None
@@ -47,12 +47,12 @@ class FluxConfig:
                 missing_keys = required_keys - provided_keys
                 raise ValueError(f"pe_step dict missing required artifact types: {missing_keys}")
             
-            # Validate all values are numeric
+            # Validate all values are integers
             for artifact_type, value in self.pe_step.items():
-                if not isinstance(value, (int, float)):
-                    raise ValueError(f"pe_step value for '{artifact_type}' must be numeric, got {type(value)}")
+                if not isinstance(value, int):
+                    raise ValueError(f"pe_step value for '{artifact_type}' must be an integer, got {type(value)}")
     
-    def get_pe_step(self, artifact_type: str) -> float:
+    def get_pe_step(self, artifact_type: str) -> int:
         """
         Get pe_step value for specific artifact type
         
