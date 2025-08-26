@@ -225,11 +225,6 @@ class FluxGenerator:
         info['pe_step_removal'] = flux_args.pe_step_removal
         info['pe_step_addition'] = flux_args.pe_step_addition
         info['pe_step_fusion'] = flux_args.pe_step_fusion
-        if flux_args.pe_step:
-            info['pe_step_distortion'] = flux_args.pe_step
-            info['pe_step_removal'] = flux_args.pe_step
-            info['pe_step_addition'] = flux_args.pe_step
-            info['pe_step_fusion'] = flux_args.pe_step
         info['artifact_data'] = flux_args.artifact_data
         info['guidance'] = flux_args.guidance
         if not os.path.exists(flux_args.feature_path):
