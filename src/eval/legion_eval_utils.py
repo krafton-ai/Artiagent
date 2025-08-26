@@ -17,6 +17,7 @@ import matplotlib.patches as patches
 from rouge_score import rouge_scorer
 from shapely.geometry import Polygon, box
 from sentence_transformers import SentenceTransformer, util
+from sklearn import metrics
 
 def create_prompt(option):
     # Integrate artifact prior into prompts
@@ -137,10 +138,10 @@ class Evaluation:
     
     def __init__(self):
         """Initialize evaluation metrics."""
-        # if SentenceTransformer is not None:
-        #     self.css_model = SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L6-v2')
-        # else:
-        self.css_model = None
+        if SentenceTransformer is not None:
+            self.css_model = SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L6-v2')
+        else:
+            self.css_model = None
             
         if rouge_scorer is not None:
             self.rouge_scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
@@ -216,252 +217,252 @@ class Evaluation:
             return 0.0
 
     @staticmethod
-    def _normalize_heatmap(heatmap: np.ndarray) -> np.ndarray:
-        """
-        Per-image min-max normalization of heatmap as described in the reference paper.
-        
-        Args:
-            heatmap: Input heatmap array
+    def _binarize_heatmap(artifact_map: Optional[np.ndarray], threshold: float = 0.3) -> Optional[np.ndarray]:
+        """Binarize a heatmap with a threshold. Ensures 2D array output."""
+        if artifact_map is None:
+            return None
+        try:
+            arr_map = artifact_map
+            if isinstance(arr_map, list):
+                arr_map = np.array(arr_map)
+            # Handle tensor-like objects with detach method
+            if hasattr(arr_map, 'detach'):
+                arr_map = arr_map.detach().cpu().numpy()  # type: ignore
             
-        Returns:
-            Normalized heatmap with values between 0 and 1
-        """
-        # Ensure 2D
-        if len(heatmap.shape) == 4:
-            heatmap = heatmap[0, 0]
-        elif len(heatmap.shape) == 3:
-            heatmap = heatmap[:, :, 0]
-            
-        # Min-max normalization
-        min_val = np.min(heatmap)
-        max_val = np.max(heatmap)
-        
-        if max_val - min_val > 0:
-            normalized = (heatmap - min_val) / (max_val - min_val)
-        else:
-            normalized = np.zeros_like(heatmap)
-            
-        return normalized.astype(np.float32)
-    
+            # Ensure we have a numpy array at this point
+            if not isinstance(arr_map, np.ndarray):
+                return None
+                
+            if len(arr_map.shape) == 4:
+                # e.g., (1,1,512,512)
+                arr_map = arr_map[0, 0]
+            elif len(arr_map.shape) == 3:
+                arr_map = arr_map[:, :, 0]
+            # Normalize if the values look like logits
+            arr = arr_map.astype(np.float32)
+            # Thresholding
+            binary = (arr > threshold).astype(np.uint8)
+            return binary
+        except Exception:
+            return None
+
     @staticmethod
-    def _heatmap_to_tightest_bbox(heatmap: np.ndarray, threshold: float, image_width: int, image_height: int) -> List[float]:
+    def _connected_components(binary_mask: np.ndarray) -> List[np.ndarray]:
         """
-        Convert heatmap to tightest bounding box using threshold.
-        
-        Args:
-            heatmap: Normalized heatmap
-            threshold: Threshold value
-            image_width: Width for scaling coordinates
-            image_height: Height for scaling coordinates
-            
-        Returns:
-            Bounding box in format [x1, y1, x2, y2], empty list if no regions found
+        Simple 8-connected component extraction returning a list of masks.
+        Avoids external dependencies.
         """
-        # Threshold heatmap
-        binary_mask = (heatmap > threshold).astype(np.uint8)
-        
-        # Find coordinates of positive pixels
-        coords = np.where(binary_mask > 0)
-        if len(coords[0]) == 0:
+        if binary_mask is None:
             return []
-            
-        # Get bounding box
-        y_min, y_max = np.min(coords[0]), np.max(coords[0])
-        x_min, x_max = np.min(coords[1]), np.max(coords[1])
-        
-        # Scale to image coordinates
-        h, w = heatmap.shape
-        x1 = (x_min / w) * image_width
-        y1 = (y_min / h) * image_height
-        x2 = (x_max / w) * image_width  
-        y2 = (y_max / h) * image_height
-        
-        return [x1, y1, x2, y2]
-    
+        h, w = binary_mask.shape
+        visited = np.zeros_like(binary_mask, dtype=np.uint8)
+        components: List[np.ndarray] = []
+
+        def neighbors(y: int, x: int):
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        yield ny, nx
+
+        for y in range(h):
+            for x in range(w):
+                if binary_mask[y, x] and not visited[y, x]:
+                    # BFS/DFS
+                    stack = [(y, x)]
+                    visited[y, x] = 1
+                    comp_coords = []
+                    while stack:
+                        cy, cx = stack.pop()
+                        comp_coords.append((cy, cx))
+                        for ny, nx in neighbors(cy, cx):
+                            if binary_mask[ny, nx] and not visited[ny, nx]:
+                                visited[ny, nx] = 1
+                                stack.append((ny, nx))
+                    comp_mask = np.zeros_like(binary_mask, dtype=np.uint8)
+                    for cy, cx in comp_coords:
+                        comp_mask[cy, cx] = 1
+                    components.append(comp_mask)
+        return components
+
     @staticmethod
-    def _segmentation_to_tightest_bbox(segmentation: List[float], image_width: int, image_height: int) -> List[float]:
-        """
-        Convert segmentation polygon to tightest bounding box.
-        
-        Args:
-            segmentation: Polygon coordinates as flat list [x1, y1, x2, y2, ..., xn, yn]
-            image_width: Image width 
-            image_height: Image height
-            
-        Returns:
-            Bounding box in format [x1, y1, x2, y2]
-        """
-        if len(segmentation) < 6:  # At least 3 points needed
-            return []
-            
-        # Extract x and y coordinates
-        x_coords = [segmentation[i] for i in range(0, len(segmentation), 2)]
-        y_coords = [segmentation[i] for i in range(1, len(segmentation), 2)]
-        
-        # Get bounding box
-        x1 = max(0, min(x_coords))
-        y1 = max(0, min(y_coords))
-        x2 = min(image_width, max(x_coords))
-        y2 = min(image_height, max(y_coords))
-        
-        return [x1, y1, x2, y2]
-    
+    def _bbox_mask_on_heatmap_grid(
+        bbox: List[float], heatmap_w: int, heatmap_h: int, image_w: int, image_h: int
+    ) -> np.ndarray:
+        """Rasterize a bbox to heatmap grid as binary mask."""
+        x1, y1, x2, y2 = bbox
+        hx1 = int(max(0, min(heatmap_w - 1, (x1 / image_w) * heatmap_w)))
+        hy1 = int(max(0, min(heatmap_h - 1, (y1 / image_h) * heatmap_h)))
+        hx2 = int(max(0, min(heatmap_w - 1, (x2 / image_w) * heatmap_w)))
+        hy2 = int(max(0, min(heatmap_h - 1, (y2 / image_h) * heatmap_h)))
+        mask = np.zeros((heatmap_h, heatmap_w), dtype=np.uint8)
+        if hx2 >= hx1 and hy2 >= hy1:
+            mask[hy1 : hy2 + 1, hx1 : hx2 + 1] = 1
+        return mask
+
     @staticmethod
-    def _compute_threshold_independent_bbox_metrics(
-        pred_data: Any,
-        gt_data: Any,
-        pred_type: str,
-        gt_type: str,
+    def _polygon_mask_on_heatmap_grid(
+        seg: List[float], heatmap_w: int, heatmap_h: int, image_w: int, image_h: int
+    ) -> np.ndarray:
+        """Rasterize polygon to heatmap grid using PIL drawing."""
+        # Scale points
+        pts = []
+        for i in range(0, len(seg), 2):
+            x = int((seg[i] / image_w) * heatmap_w)
+            y = int((seg[i + 1] / image_h) * heatmap_h)
+            x = max(0, min(heatmap_w - 1, x))
+            y = max(0, min(heatmap_h - 1, y))
+            pts.append((x, y))
+        img = Image.new('L', (heatmap_w, heatmap_h), 0)
+        draw = ImageDraw.Draw(img)
+        if len(pts) >= 3:
+            draw.polygon(pts, outline=1, fill=1)
+        return (np.array(img) > 0).astype(np.uint8)
+
+    @staticmethod
+    def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+        inter = np.sum((a > 0) & (b > 0))
+        if inter == 0:
+            return 0.0
+        union = np.sum((a > 0) | (b > 0))
+        return float(inter / union) if union > 0 else 0.0
+
+    @staticmethod
+    def _compute_iou_heatmap_regionwise(
+        artifact_map: np.ndarray,
+        bbox: List[float],
         image_width: int,
         image_height: int,
-        num_thresholds: int = 100
-    ) -> Dict[str, float]:
+        threshold: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
         """
-        Compute threshold-independent IoU and F1 metrics by converting everything to bboxes.
-        
-        Args:
-            pred_data: Prediction data (heatmap, bbox, or segmentation)
-            gt_data: Ground truth data (heatmap, bbox, or segmentation)
-            pred_type: Type of prediction ('heatmap', 'bbox', 'segmentation') 
-            gt_type: Type of ground truth ('heatmap', 'bbox', 'segmentation')
-            image_width: Image width
-            image_height: Image height
-            num_thresholds: Number of thresholds to sweep
-            
-        Returns:
-            Dictionary with best IoU and F1 metrics across all thresholds
+        Region-wise IoU between a bbox and the best-matching connected region of the heatmap.
         """
-        thresholds = np.linspace(0.0, 1.0, num_thresholds)
-        best_metrics = {
-            'iou': 0.0,
-            'loc_tp': 0,
-            'loc_fp': 0,
-            'loc_fn': 0,
-            'loc_precision': 0.0,
-            'loc_recall': 0.0,
-            'loc_f1': 0.0
-        }
-        
-        # Convert ground truth to bbox
-        gt_bboxes = []
-        if gt_type == 'bbox':
-            if isinstance(gt_data, list) and len(gt_data) > 0:
-                if isinstance(gt_data[0], list):
-                    gt_bboxes = gt_data  # Multiple bboxes
-                else:
-                    gt_bboxes = [gt_data]  # Single bbox
-        elif gt_type == 'segmentation':
-            if isinstance(gt_data, list) and len(gt_data) > 0:
-                if isinstance(gt_data[0], list):
-                    # Multiple segmentations
-                    for seg in gt_data:
-                        bbox = Evaluation._segmentation_to_tightest_bbox(seg, image_width, image_height)
-                        if bbox:
-                            gt_bboxes.append(bbox)
-                else:
-                    # Single segmentation
-                    bbox = Evaluation._segmentation_to_tightest_bbox(gt_data, image_width, image_height)
-                    if bbox:
-                        gt_bboxes.append(bbox)
-        elif gt_type == 'heatmap':
-            # For GT heatmap, use a single threshold to extract bbox
-            gt_norm = Evaluation._normalize_heatmap(gt_data)
-            gt_bbox = Evaluation._heatmap_to_tightest_bbox(gt_norm, 0.3, image_width, image_height)
-            if gt_bbox:
-                gt_bboxes = [gt_bbox]
-        
-        if not gt_bboxes:
-            return best_metrics
-        
-        # Convert predictions to bboxes and sweep thresholds
-        if pred_type == 'bbox':
-            pred_bboxes = []
-            if isinstance(pred_data, list) and len(pred_data) > 0:
-                if isinstance(pred_data[0], list):
-                    pred_bboxes = pred_data  # Multiple bboxes
-                else:
-                    pred_bboxes = [pred_data]  # Single bbox
-            
-            # For bbox predictions, no threshold sweep needed
-            if pred_bboxes:
-                # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
-                # Compute F1
-                f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
-                
-                if iou > best_metrics['iou']:
-                    best_metrics.update({
-                        'iou': iou,
-                        'loc_tp': f1_metrics['tp'],
-                        'loc_fp': f1_metrics['fp'],
-                        'loc_fn': f1_metrics['fn'],
-                        'loc_precision': f1_metrics['precision'],
-                        'loc_recall': f1_metrics['recall'],
-                        'loc_f1': f1_metrics['f1']
-                    })
-                    
-        elif pred_type == 'segmentation':
-            pred_bboxes = []
-            if isinstance(pred_data, list) and len(pred_data) > 0:
-                if isinstance(pred_data[0], list):
-                    # Multiple segmentations
-                    for seg in pred_data:
-                        bbox = Evaluation._segmentation_to_tightest_bbox(seg, image_width, image_height)
-                        if bbox:
-                            pred_bboxes.append(bbox)
-                else:
-                    # Single segmentation
-                    bbox = Evaluation._segmentation_to_tightest_bbox(pred_data, image_width, image_height)
-                    if bbox:
-                        pred_bboxes.append(bbox)
-            
-            # For segmentation predictions, no threshold sweep needed
-            if pred_bboxes:
-                # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
-                # Compute F1
-                f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
-                
-                if iou > best_metrics['iou']:
-                    best_metrics.update({
-                        'iou': iou,
-                        'loc_tp': f1_metrics['tp'],
-                        'loc_fp': f1_metrics['fp'],
-                        'loc_fn': f1_metrics['fn'],
-                        'loc_precision': f1_metrics['precision'],
-                        'loc_recall': f1_metrics['recall'],
-                        'loc_f1': f1_metrics['f1']
-                    })
-                    
-        elif pred_type == 'heatmap':
-            # For heatmap predictions, sweep thresholds
-            pred_norm = Evaluation._normalize_heatmap(pred_data)
-            
-            for tau in thresholds:
-                pred_bbox = Evaluation._heatmap_to_tightest_bbox(pred_norm, tau, image_width, image_height)
-                if not pred_bbox:
-                    continue
-                    
-                pred_bboxes = [pred_bbox]
-                
-                # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
-                # Compute F1
-                f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
-                
-                # Keep the best metrics across all thresholds
-                if iou > best_metrics['iou']:
-                    best_metrics.update({
-                        'iou': iou,
-                        'loc_tp': f1_metrics['tp'],
-                        'loc_fp': f1_metrics['fp'],
-                        'loc_fn': f1_metrics['fn'],
-                        'loc_precision': f1_metrics['precision'],
-                        'loc_recall': f1_metrics['recall'],
-                        'loc_f1': f1_metrics['f1']
-                    })
-        
-        return best_metrics
+        try:
+            if artifact_map is None:
+                return 0.0
+            if len(artifact_map.shape) == 4:
+                artifact_map = artifact_map[0, 0]
+            elif len(artifact_map.shape) == 3:
+                artifact_map = artifact_map[:, :, 0]
+            h, w = artifact_map.shape
+            bin_map = (artifact_map > threshold).astype(np.uint8)
+            regions = Evaluation._connected_components(bin_map)
+            if not regions:
+                return 0.0
+            # Remove tiny regions
+            regions = [r for r in regions if int(np.sum(r)) >= min_region_area]
+            if not regions:
+                return 0.0
+            bbox_mask = Evaluation._bbox_mask_on_heatmap_grid(bbox, w, h, image_width, image_height)
+            best = 0.0
+            for region in regions:
+                iou = Evaluation._mask_iou(region, bbox_mask)
+                if iou > best:
+                    best = iou
+            return best
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _compute_polygon_vs_heatmap_regionwise(
+        artifact_map: np.ndarray,
+        polygon_seg: List[float],
+        image_width: int,
+        image_height: int,
+        threshold: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
+        """
+        Region-wise IoU between a polygon (GT) and the best-matching connected region of the heatmap.
+        """
+        try:
+            if artifact_map is None:
+                return 0.0
+            if len(artifact_map.shape) == 4:
+                artifact_map = artifact_map[0, 0]
+            elif len(artifact_map.shape) == 3:
+                artifact_map = artifact_map[:, :, 0]
+            h, w = artifact_map.shape
+            bin_map = (artifact_map > threshold).astype(np.uint8)
+            regions = Evaluation._connected_components(bin_map)
+            if not regions:
+                return 0.0
+            regions = [r for r in regions if int(np.sum(r)) >= min_region_area]
+            if not regions:
+                return 0.0
+            poly_mask = Evaluation._polygon_mask_on_heatmap_grid(polygon_seg, w, h, image_width, image_height)
+            best = 0.0
+            for region in regions:
+                iou = Evaluation._mask_iou(region, poly_mask)
+                if iou > best:
+                    best = iou
+            return best
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _compute_heatmap_to_heatmap_iou_regionwise(
+        pred_heatmap: np.ndarray,
+        gt_heatmap: np.ndarray,
+        threshold_pred: float = 0.3,
+        threshold_gt: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
+        """
+        Compute mean IoU between connected regions of pred and GT heatmaps via greedy best-match.
+        """
+        try:
+            # Normalize shapes to 2D
+            if len(pred_heatmap.shape) == 4:
+                pred_heatmap = pred_heatmap[0, 0]
+            elif len(pred_heatmap.shape) == 3:
+                pred_heatmap = pred_heatmap[:, :, 0]
+            if len(gt_heatmap.shape) == 4:
+                gt_heatmap = gt_heatmap[0, 0]
+            elif len(gt_heatmap.shape) == 3:
+                gt_heatmap = gt_heatmap[:, :, 0]
+
+            pred_bin = (pred_heatmap > threshold_pred).astype(np.uint8)
+            gt_bin = (gt_heatmap > threshold_gt).astype(np.uint8)
+
+            pred_regions = [r for r in Evaluation._connected_components(pred_bin) if np.sum(r) >= min_region_area]
+            gt_regions = [r for r in Evaluation._connected_components(gt_bin) if np.sum(r) >= min_region_area]
+
+            if not pred_regions or not gt_regions:
+                return 0.0
+
+            # Compute IoU matrix
+            iou_matrix = np.zeros((len(gt_regions), len(pred_regions)), dtype=np.float32)
+            for i, g in enumerate(gt_regions):
+                for j, p in enumerate(pred_regions):
+                    iou_matrix[i, j] = Evaluation._mask_iou(g, p)
+
+            # Greedy matching: for each GT pick best pred and don't reuse preds
+            used_pred = set()
+            ious = []
+            for i in range(len(gt_regions)):
+                # pick best available pred
+                best_j = -1
+                best_iou = 0.0
+                for j in range(len(pred_regions)):
+                    if j in used_pred:
+                        continue
+                    val = float(iou_matrix[i, j])
+                    if val > best_iou:
+                        best_iou = val
+                        best_j = j
+                if best_j >= 0:
+                    used_pred.add(best_j)
+                    if best_iou > 0:
+                        ious.append(best_iou)
+
+            return float(np.mean(ious)) if ious else 0.0
+        except Exception:
+            return 0.0
 
     @staticmethod
     def _match_and_mean_iou(
@@ -800,6 +801,150 @@ class Evaluation:
         except Exception:
             return {'tp': 0, 'fp': 0, 'fn': 0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
 
+    @staticmethod
+    def _convert_to_binary_mask(
+        data: Any, 
+        mask_type: str,
+        image_width: int, 
+        image_height: int,
+        threshold: float = 0.3
+    ) -> np.ndarray:
+        """
+        Convert various annotation formats to binary mask.
+        
+        Args:
+            data: Ground truth or prediction data
+            mask_type: Type of data ('polygon', 'bbox', 'heatmap', 'bbox_list')
+            image_width: Image width
+            image_height: Image height  
+            threshold: Threshold for heatmap binarization
+            
+        Returns:
+            Binary mask with 1 for artifact pixels, 0 for background
+        """
+        mask = np.zeros((image_height, image_width), dtype=np.uint8)
+        
+        if mask_type == 'polygon':
+            # data is polygon segmentation [x1,y1,x2,y2,...,xn,yn]
+            if len(data) >= 6:  # At least 3 points
+                points = [(int(data[i]), int(data[i+1])) for i in range(0, len(data), 2)]
+                # Use PIL to rasterize polygon
+                img = Image.new('L', (image_width, image_height), 0)
+                draw = ImageDraw.Draw(img)
+                draw.polygon(points, outline=1, fill=1)
+                mask = np.array(img)
+                
+        elif mask_type == 'bbox':
+            # data is bounding box [x1, y1, x2, y2]
+            if len(data) == 4:
+                x1, y1, x2, y2 = [int(coord) for coord in data]
+                x1, x2 = max(0, x1), min(image_width-1, x2)
+                y1, y2 = max(0, y1), min(image_height-1, y2)
+                if x2 > x1 and y2 > y1:
+                    mask[y1:y2+1, x1:x2+1] = 1
+                    
+        elif mask_type == 'bbox_list':
+            # data is list of bounding boxes
+            for bbox in data:
+                if len(bbox) == 4:
+                    x1, y1, x2, y2 = [int(coord) for coord in bbox]
+                    x1, x2 = max(0, x1), min(image_width-1, x2)
+                    y1, y2 = max(0, y1), min(image_height-1, y2) 
+                    if x2 > x1 and y2 > y1:
+                        mask[y1:y2+1, x1:x2+1] = 1
+                        
+        elif mask_type == 'heatmap':
+            # data is heatmap array
+            heatmap = data
+            if hasattr(heatmap, 'detach'):
+                heatmap = heatmap.detach().cpu().numpy()  # type: ignore
+            if isinstance(heatmap, list):
+                heatmap = np.array(heatmap)
+                
+            # Normalize to 2D
+            if len(heatmap.shape) == 4:
+                heatmap = heatmap[0, 0]
+            elif len(heatmap.shape) == 3:
+                heatmap = heatmap[:, :, 0]
+                
+            # Resize to match image dimensions if needed
+            if heatmap.shape != (image_height, image_width):
+                from PIL import Image as PILImage
+                heatmap_img = PILImage.fromarray((heatmap * 255).astype(np.uint8))
+                heatmap_img = heatmap_img.resize((image_width, image_height), PILImage.LANCZOS)
+                heatmap = np.array(heatmap_img).astype(np.float32) / 255.0
+                
+            mask = (heatmap > threshold).astype(np.uint8)
+            
+        return mask
+
+    @staticmethod
+    def _compute_pixel_level_metrics(
+        pred_mask: np.ndarray, 
+        gt_mask: np.ndarray
+    ) -> Dict[str, float]:
+        """
+        Compute pixel-level segmentation metrics following the paper's methodology.
+        
+        Args:
+            pred_mask: Predicted binary mask (0=background, 1=foreground/artifact)
+            gt_mask: Ground truth binary mask (0=background, 1=foreground/artifact)
+            
+        Returns:
+            Dictionary with mIoU, IoU_foreground, IoU_background, F1, precision, recall
+        """
+        # Flatten masks for easier computation
+        pred_flat = pred_mask.flatten()
+        gt_flat = gt_mask.flatten()
+        f1 = metrics.f1_score(gt_flat, pred_flat, average='binary')
+
+        # Compute confusion matrix elements
+        tp = np.sum((pred_flat == 1) & (gt_flat == 1))  # True positive pixels
+        tn = np.sum((pred_flat == 0) & (gt_flat == 0))  # True negative pixels  
+        fp = np.sum((pred_flat == 1) & (gt_flat == 0))  # False positive pixels
+        fn = np.sum((pred_flat == 0) & (gt_flat == 1))  # False negative pixels
+        
+        # IoU for foreground (artifact class)
+        if tp + fp + fn > 0:
+            iou_foreground = tp / (tp + fp + fn)
+        else:
+            # No artifacts in GT or predictions
+            iou_foreground = 1.0 if tp == 0 and fp == 0 and fn == 0 else 0.0
+            
+        # IoU for background (non-artifact class)  
+        if tn + fp + fn > 0:
+            iou_background = tn / (tn + fp + fn)
+        else:
+            # This should rarely happen unless image is all artifacts
+            iou_background = 1.0 if tn == 0 and fp == 0 and fn == 0 else 0.0
+        
+        # Mean IoU
+        miou = (iou_foreground + iou_background) / 2.0
+        
+        # Pixel-level F1, precision, recall
+        if tp + fp > 0:
+            precision = tp / (tp + fp)
+        else:
+            precision = 1.0 if tp == 0 and fp == 0 else 0.0
+            
+        if tp + fn > 0:
+            recall = tp / (tp + fn)
+        else:
+            recall = 1.0 if tp == 0 and fn == 0 else 0.0
+            
+        return {
+            'miou': miou,
+            'iou_foreground': iou_foreground, 
+            'iou_background': iou_background,
+            'pixel_f1': f1,
+            'pixel_precision': precision,
+            'pixel_recall': recall,
+            'tp_pixels': int(tp),
+            'tn_pixels': int(tn),
+            'fp_pixels': int(fp), 
+            'fn_pixels': int(fn)
+        }
+
     def _css_score(self, s1: str, s2: str) -> float:
         """
         Compute cosine similarity score between two text strings.
@@ -933,13 +1078,17 @@ class Evaluation:
             # Global caption metrics (optional; used for certain datasets)
             'global_rouge_l': 0.0,
             'global_css': 0.0,
-            # Localization F1 metrics (for localization task)
-            'loc_tp': 0,
-            'loc_fp': 0,
-            'loc_fn': 0,
-            'loc_precision': 0.0,
-            'loc_recall': 0.0,
-            'loc_f1': 0.0,
+            # Paper-style pixel-level segmentation metrics
+            'miou': 0.0,
+            'iou_foreground': 0.0,
+            'iou_background': 0.0,
+            'pixel_f1': 0.0,
+            'pixel_precision': 0.0,
+            'pixel_recall': 0.0,
+            'tp_pixels': 0,
+            'tn_pixels': 0,
+            'fp_pixels': 0,
+            'fn_pixels': 0,
         }
         
         # Handle different evaluation types
@@ -963,7 +1112,6 @@ class Evaluation:
             # SynArtifact has negative samples
             has_gt_artifacts = bool(json_data.get('Artifacts annotation', []))
             stats['has_gt_artifacts'] = has_gt_artifacts
-            print(f"Positive sample?: {has_gt_artifacts}")
         else:
             # Other datasets (synthscars, loki, richhf) typically have only positive samples
             stats['has_gt_artifacts'] = True
@@ -989,102 +1137,85 @@ class Evaluation:
     
     def _handle_localization_evaluation(self, dataset_type: str, json_data: Dict, result: Dict, 
                                         stats: Dict, img_w: int, img_h: int) -> Dict[str, Any]:
-        """Handle localization evaluation using threshold-independent IoU and F1 metrics."""
+        """Handle localization evaluation - return only mean IoU."""
         pred_heatmap = None
         if isinstance(result, Dict):
             pred_heatmap = result.get('heatmap', None)
+            pred_heatmap = self._binarize_heatmap(pred_heatmap)
 
         # Extract prediction data
         result_bbox_list = []
         if len(result) > 0:
             result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
 
-        # Determine prediction type and data
-        pred_type = None
-        pred_data = None
-        if pred_heatmap is not None:
-            pred_type = 'heatmap'
-            pred_data = pred_heatmap
-        elif result_bbox_list:
-            pred_type = 'bbox'
-            pred_data = result_bbox_list
-        else:
-            # No predictions, return zeros
-            stats.update({
-                'iou': 0.0,
-                'loc_tp': 0,
-                'loc_fp': 0,
-                'loc_fn': 0,
-                'loc_precision': 0.0,
-                'loc_recall': 0.0,
-                'loc_f1': 0.0
-            })
-            return stats
-
-        # Compute threshold-independent metrics based on dataset type
+        # Compute IoU and F1 based on dataset type
         if dataset_type == 'synthscars':
             ground_seg_list = [d['segmentation'][0] for d in json_data['refs'] if 'segmentation' in d]
-            gt_type = 'segmentation'
+            # Convert ground truth polygons to binary mask
+            gt_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            for seg in ground_seg_list:
+                seg_mask = self._convert_to_binary_mask(seg, 'polygon', img_w, img_h)
+                gt_mask = np.logical_or(gt_mask, seg_mask).astype(np.uint8)
             
-            if ground_seg_list:
-                # Use threshold-independent evaluation
-                metrics = self._compute_threshold_independent_bbox_metrics(
-                    pred_data, ground_seg_list, pred_type, gt_type, img_w, img_h
-                )
-                stats.update(metrics)
+            # Convert predictions to binary mask
+            if pred_heatmap is not None:
+                pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+            
+            elif result_bbox_list:
+                pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
             else:
-                # No ground truth
-                stats.update({
-                    'iou': 0.0,
-                    'loc_tp': 0,
-                    'loc_fp': 0,
-                    'loc_fn': 0,
-                    'loc_precision': 0.0,
-                    'loc_recall': 0.0,
-                    'loc_f1': 0.0
-                })
+                pred_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            
+            # Compute pixel-level metrics
+            pixel_metrics = self._compute_pixel_level_metrics(pred_mask, gt_mask)
+            stats.update(pixel_metrics)
+            
+            # Keep legacy IoU for backward compatibility
+            stats['iou'] = pixel_metrics['iou_foreground']  # Use foreground IoU as legacy IoU
                 
         elif dataset_type == 'synartifact':
             has_gt_artifacts = json_data.get('Artifacts annotation', [])
-            
+
             if has_gt_artifacts:
-                # Only compute localization metrics for positive samples (samples with artifacts)
                 ground_bbox_list = []
                 for annotation in has_gt_artifacts:
                     if 'rect_start' in annotation and 'rect_end' in annotation:
                         bbox = annotation['rect_start'] + annotation['rect_end']
                         ground_bbox_list.append(bbox)
                 
-                if ground_bbox_list:
-                    gt_type = 'bbox'
-                    # Use threshold-independent evaluation
-                    metrics = self._compute_threshold_independent_bbox_metrics(
-                        pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
-                    )
-                    stats.update(metrics)
+                gt_mask = self._convert_to_binary_mask(ground_bbox_list, 'bbox_list', img_w, img_h)
+            
+                # Convert predictions to binary mask
+                if pred_heatmap is not None:
+                    pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+                elif result_bbox_list:
+                    pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
                 else:
-                    stats.update({
-                        'iou': 0.0,
-                        'loc_tp': 0,
-                        'loc_fp': 0,
-                        'loc_fn': 0,
-                        'loc_precision': 0.0,
-                        'loc_recall': 0.0,
-                        'loc_f1': 0.0
-                    })
+                    pred_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            
+                # Compute pixel-level metrics
+                pixel_metrics = self._compute_pixel_level_metrics(pred_mask, gt_mask)
+                stats.update(pixel_metrics)
+
+                # Keep legacy IoU for backward compatibility
+                stats['iou'] = pixel_metrics['iou_foreground']
             else:
                 # Skip negative samples (samples without artifacts) for localization evaluation
                 # Mark these metrics as None so they can be filtered out during aggregation
                 stats.update({
                     'iou': None,
-                    'loc_tp': None,
-                    'loc_fp': None,
-                    'loc_fn': None,
-                    'loc_precision': None,
-                    'loc_recall': None,
-                    'loc_f1': None
+                    'miou': None,
+                    'iou_foreground': None,
+                    'iou_background': None,
+                    'pixel_f1': None,
+                    'pixel_precision': None,
+                    'pixel_recall': None,
+                    'tp_pixels': None,
+                    'tn_pixels': None,
+                    'fp_pixels': None,
+                    'fn_pixels': None
                 })
-                    
+            
         elif dataset_type == 'loki':
             regional_problems = json_data['problems']['regional']
             ground_bbox_list = []
@@ -1094,46 +1225,49 @@ class Evaluation:
                     x, y, w, h = problem['region']
                     bbox = [x, y, x + w, y + h]
                     ground_bbox_list.append(bbox)
+
+            # Convert ground truth to binary mask
+            gt_mask = self._convert_to_binary_mask(ground_bbox_list, 'bbox_list', img_w, img_h)
             
-            if ground_bbox_list:
-                gt_type = 'bbox'
-                # Use threshold-independent evaluation
-                metrics = self._compute_threshold_independent_bbox_metrics(
-                    pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
-                )
-                stats.update(metrics)
+            if pred_heatmap is not None:
+                    pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+            elif result_bbox_list:
+                pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
             else:
-                stats.update({
-                    'iou': 0.0,
-                    'loc_tp': 0,
-                    'loc_fp': 0,
-                    'loc_fn': 0,
-                    'loc_precision': 0.0,
-                    'loc_recall': 0.0,
-                    'loc_f1': 0.0
-                })
+                pred_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            
+            # Compute pixel-level metrics
+            pixel_metrics = self._compute_pixel_level_metrics(pred_mask, gt_mask)
+            
+            stats.update(pixel_metrics)
+            
+            # Keep legacy IoU for backward compatibility
+            stats['iou'] = pixel_metrics['iou_foreground']
                 
         elif dataset_type == 'richhf':
             artifact_map_path = "/home/jovyan/image-artifacts/data/richhf-18k/" + json_data['artifact_map_path']
             artifact_map = np.load(artifact_map_path)
-            gt_type = 'heatmap'
+            gt_mask = self._convert_to_binary_mask(artifact_map, 'heatmap', img_w, img_h)
+            if gt_mask is not None:
+                binarized_gt = self._binarize_heatmap(gt_mask)
+                if binarized_gt is not None:
+                    gt_mask = binarized_gt
+                else:
+                    gt_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+
+            if pred_heatmap is not None:
+                pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+            elif result_bbox_list:
+                pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
+            else:
+                pred_mask = np.zeros((img_h, img_w), dtype=np.uint8)
             
-            try:
-                # Use threshold-independent evaluation
-                metrics = self._compute_threshold_independent_bbox_metrics(
-                    pred_data, artifact_map, pred_type, gt_type, img_w, img_h
-                )
-                stats.update(metrics)
-            except Exception:
-                stats.update({
-                    'iou': 0.0,
-                    'loc_tp': 0,
-                    'loc_fp': 0,
-                    'loc_fn': 0,
-                    'loc_precision': 0.0,
-                    'loc_recall': 0.0,
-                    'loc_f1': 0.0
-                })
+            # Compute pixel-level metrics
+            pixel_metrics = self._compute_pixel_level_metrics(pred_mask, gt_mask)
+            stats.update(pixel_metrics)
+            
+            # Keep legacy IoU for backward compatibility
+            stats['iou'] = pixel_metrics['iou_foreground']
         
         return stats
     
@@ -1149,8 +1283,8 @@ class Evaluation:
                 ref_caption = ""
 
                 if dataset_type == 'synthscars':
-                    # ref_caption = (json_data.get('caption') or '').strip()
-                    ref_caption = (json_data.get('caption') or '').strip().split('\n')[0]   # only use before To elaborate...
+                    ref_caption = (json_data.get('caption') or '').strip()
+                    # ref_caption = (json_data.get('caption') or '').strip().split('\n')[0]   # only use before To elaborate...
                 elif dataset_type == 'loki':
                     ref_caption = (json_data['problems']['global'][0].get('desc', "")).strip()
 
@@ -1172,14 +1306,14 @@ class Evaluation:
             results: List of detailed evaluation results
             
         Returns:
-            Dictionary with F1 metrics, macro F1, and TP/FP/FN/TN counts
+            Dictionary with F1 metrics and TP/FP/FN/TN counts
         """
         tp = sum(1 for _, r in results.items() if r.get('classification') == 'TP')
         fp = sum(1 for _, r in results.items() if r.get('classification') == 'FP')
         fn = sum(1 for _, r in results.items() if r.get('classification') == 'FN')
         tn = sum(1 for _, r in results.items() if r.get('classification') == 'TN')
         
-        # Compute standard precision, recall, F1 (for positive class)
+        # Compute precision, recall, F1
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         f1_positive = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
