@@ -34,6 +34,7 @@ USE_RF_SOLVER=false
 PE_STEP_ADDITION=0.0
 PE_STEP_REMOVAL=0.0
 PE_STEP_DISTORTION=0.3
+PE_STEP_FUSION=0.3
 GUIDANCE=5.0
 NUM_STEPS=25
 
@@ -91,6 +92,7 @@ OPTIONS:
     --pe-step-addition FLOAT PE step value for addition artifacts (default: 0.3)
     --pe-step-removal FLOAT  PE step value for removal artifacts (default: 0.5)
     --pe-step-distortion FLOAT PE step value for distortion artifacts (default: 0.7)
+    --pe-step-fusion FLOAT PE step value for fusion artifacts (default: 0.3)
     --guidance FLOAT        FLUX guidance value (default: 5.0)
     --num-steps INT         Number of FLUX generation steps (default: 25)
     --use-rf-solver         Use RF solver (second-order) instead of first-order denoising (default: False)
@@ -173,6 +175,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --pe-step-distortion)
             PE_STEP_DISTORTION="$2"
+            shift 2
+            ;;
+        --pe-step-fusion)
+            PE_STEP_FUSION="$2"
             shift 2
             ;;
         --guidance)
@@ -307,6 +313,7 @@ print_configuration() {
     echo "PE step addition:      $PE_STEP_ADDITION"
     echo "PE step removal:       $PE_STEP_REMOVAL"
     echo "PE step distortion:    $PE_STEP_DISTORTION"
+    echo "PE step fusion:        $PE_STEP_FUSION"
     echo "Guidance:              $GUIDANCE"
     echo "Number of steps:       $NUM_STEPS"
     echo "Use RF solver:         $USE_RF_SOLVER"
@@ -329,6 +336,7 @@ run_flux_generation() {
     flux_cmd="$flux_cmd --pe-step-addition $PE_STEP_ADDITION"
     flux_cmd="$flux_cmd --pe-step-removal $PE_STEP_REMOVAL"
     flux_cmd="$flux_cmd --pe-step-distortion $PE_STEP_DISTORTION"
+    flux_cmd="$flux_cmd --pe-step-fusion $PE_STEP_FUSION"
     flux_cmd="$flux_cmd --guidance $GUIDANCE"
     flux_cmd="$flux_cmd --num-steps $NUM_STEPS"
     

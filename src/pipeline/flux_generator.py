@@ -41,7 +41,7 @@ class FluxConfig:
         
         # Validate pe_step configuration
         if isinstance(self.pe_step, dict):
-            required_keys = {'addition', 'removal', 'distortion'}
+            required_keys = {'addition', 'removal', 'distortion', 'fusion'}
             provided_keys = set(self.pe_step.keys())
             if not required_keys.issubset(provided_keys):
                 missing_keys = required_keys - provided_keys
@@ -131,6 +131,7 @@ class FluxGenerator:
         flux_args.pe_step_addition = self.config.pe_step['addition']
         flux_args.pe_step_removal = self.config.pe_step['removal']
         flux_args.pe_step_distortion = self.config.pe_step['distortion']
+        flux_args.pe_step_fusion = self.config.pe_step['fusion']
         flux_args.seed = self.config.seed
         flux_args.masks = self.config.masks.copy()
         flux_args.alpha = self.config.alpha
@@ -223,6 +224,7 @@ class FluxGenerator:
         info['pe_step_distortion'] = flux_args.pe_step_distortion
         info['pe_step_removal'] = flux_args.pe_step_removal
         info['pe_step_addition'] = flux_args.pe_step_addition
+        info['pe_step_fusion'] = flux_args.pe_step_fusion
         info['artifact_data'] = flux_args.artifact_data
         info['guidance'] = flux_args.guidance
         if not os.path.exists(flux_args.feature_path):

@@ -176,7 +176,8 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
 def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
                        resume: bool = False, device: str = 'cuda',
                        output_dir: Optional[str] = None, inject_step: int=20,
-                       pe_step_addition: float=0.3, pe_step_removal: float=0.3, pe_step_distortion: float=0.5,
+                       pe_step_addition: float=0.0, pe_step_removal: float=0.0, pe_step_distortion: float=0.3,
+                       pe_step_fusion: float=0.3,
                        guidance: float=5.0, num_steps: int=25, seed: int=42, use_rf_solver: bool=False):
     """Run FLUX artifact generation on processed data"""
     
@@ -223,7 +224,8 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
         pe_step={
             'addition': pe_step_addition,     
             'removal': pe_step_removal,      
-            'distortion': pe_step_distortion
+            'distortion': pe_step_distortion,
+            'fusion': pe_step_fusion
         },
         inject_step=inject_step,
         attn_mask_step=0,
@@ -240,6 +242,7 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
     logger.info(f"PE step addition: {pe_step_addition}")
     logger.info(f"PE step removal: {pe_step_removal}")
     logger.info(f"PE step distortion: {pe_step_distortion}")
+    logger.info(f"PE step fusion: {pe_step_fusion}")
     logger.info(f"Guidance: {guidance}")
     logger.info(f"Number of steps: {num_steps}")
     visualizer = ImageVisualizer()
@@ -289,7 +292,11 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
                 
                 # Update artifact stats
                 for artifact in result['artifacts']['artifacts']:
-                    stats['artifact_stats'][artifact['artifact_type']]['success'] += 1
+                    artifact_type = artifact['artifact_type']
+                    # Initialize artifact type if not already in stats
+                    if artifact_type not in stats['artifact_stats']:
+                        stats['artifact_stats'][artifact_type] = {'success': 0, 'failure': 0}
+                    stats['artifact_stats'][artifact_type]['success'] += 1
                 
                 # Update progress bar
                 status = "✅" if result['success'] else "❌"
@@ -361,6 +368,8 @@ def main():
                        help='PE step for removal artifacts (default: 0.3)')
     parser.add_argument('--pe-step-distortion', type=float, default=0.3,
                        help='PE step for distortion artifacts (default: 0.3)')
+    parser.add_argument('--pe-step-fusion', type=float, default=0.0,
+                       help='PE step for fusion artifacts (default: 0.0)')
     parser.add_argument('--guidance', type=float, default=5.0,
                        help='Guidance for FLUX generation (default: 5.0)')
     parser.add_argument('--num-steps', type=int, default=25,
@@ -381,6 +390,7 @@ def main():
         pe_step_addition=args.pe_step_addition,
         pe_step_removal=args.pe_step_removal,
         pe_step_distortion=args.pe_step_distortion,
+        pe_step_fusion=args.pe_step_fusion,
         guidance=args.guidance,
         num_steps=args.num_steps,
         seed=args.seed,
