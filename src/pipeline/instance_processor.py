@@ -195,13 +195,27 @@ class InstanceProcessor:
         elif artifact_type == 'distortion':
             target_patches = mask_patch_coords
             
+            # Pre-compute set of patches that contain ANY prediction instance pixels (foreground patches)
+            foreground_patches = set()
+            for entity_pred_instance in entity_predictions:
+                if prediction['entity'] == entity_pred_instance['entity']:
+                    entity_mask = entity_pred_instance['pred_mask'].cpu().numpy()
+                    entity_patch_indices = mask_to_patch_indices(entity_mask, patch_size=patch_size, txt_len=512)
+                    entity_patch_coords = patch_indices_to_coords(entity_patch_indices, patch_w, txt_len=512)
+                    entity_patch_coords = [tuple(coord) for coord in entity_patch_coords]
+                    foreground_patches.update(entity_patch_coords)
+            
             # Apply distortion kernel based on specified type
             if distortion_kernel == 'none':
                 reference_patches = []
+            elif distortion_kernel == 'shuffle':
+                reference_patches = mask_patch_coords.copy()
+                random.shuffle(reference_patches)
             elif distortion_kernel == 'jitter':
-                # Apply Gaussian jitter kernel
+                # Apply Gaussian jitter kernel with foreground patch constraint
                 reference_patches = InstanceProcessor.gaussian_jitter_kernel(
-                    mask_patch_coords, sigma=1.0, patch_h=patch_h, patch_w=patch_w
+                    mask_patch_coords, sigma=1.0, patch_h=patch_h, patch_w=patch_w,
+                    foreground_patches=foreground_patches
                 )
             elif distortion_kernel == 'swirl':
                 # Apply swirl kernel
@@ -231,7 +245,7 @@ class InstanceProcessor:
         else:
             raise ValueError(f"Unknown artifact type: {artifact_type}")
         
-        return target_patches, reference_patches, None
+        return target_patches, reference_patches
     
     @staticmethod
     def create_fusion_artifact_patches(entity_prediction, entity_predictions, predictions, img_array, patch_size: int = 16, output_dir: str = None, img_filename: str = None) -> Tuple[List[int], List[int], Optional[Dict]]:
@@ -392,25 +406,7 @@ class InstanceProcessor:
                 best_ref = min(full_ref_coords, key=lambda ref: abs(coord[0] - ref[0]) + abs(coord[1] - ref[1]))
                 reference_coords_final.append(best_ref)
 
-        # Create metadata
-        metadata = {
-            'entity_A': entity_A,
-            'entity_B': entity_B_prediction['entity'],
-            'intersection': best_candidate['intersection'],
-            'num_overlapping_candidates': len(overlapping_candidates),
-            'target_regions': {
-                'A_only': len(A_only_coords),
-                'B_only': len(B_only_coords),
-                'overlap': len(overlap_target_coords)
-            },
-            'reference_pools': {
-                'A_only': len(A_only_ref_coords),
-                'B_only': len(B_only_ref_coords),
-                'full': len(full_ref_coords)
-            }
-        }
-
-        return target_coords_final, reference_coords_final, metadata
+        return target_coords_final, reference_coords_final, entity_B_prediction['entity']
     
     @staticmethod
     def map_coords_to_patch_indices(artifact_type: str, target_patches: List[Tuple[int, int]], reference_patches: List[Tuple[int, int]],
@@ -826,6 +822,7 @@ class InstanceProcessor:
         sigma: float = 1.0,
         patch_h: Optional[int] = None,
         patch_w: Optional[int] = None,
+        foreground_patches: Optional[set] = None,
     ) -> List[Tuple[int, int]]:
         """
         Apply i.i.d. Gaussian jitter to each patch coordinate.
@@ -835,6 +832,8 @@ class InstanceProcessor:
             sigma: Standard deviation of the normal noise added to each axis, in patch units.
             patch_h, patch_w: Optional explicit patch‑grid height/width.  If not given they
                 are inferred from the maximum coordinates in `mask_patch_coords`.
+            foreground_patches: Optional set of valid foreground patch coordinates. If provided,
+                jittered coordinates are constrained to stay within this set.
 
         Returns:
             A list of jittered (py, px) coordinates, one‑to‑one with the input order.
@@ -850,11 +849,38 @@ class InstanceProcessor:
 
         jittered = []
         for py, px in mask_patch_coords:
-            n_py = int(round(py + np.random.normal(0, sigma)))
-            n_px = int(round(px + np.random.normal(0, sigma)))
-            n_py = max(0, min(n_py, patch_h - 1))
-            n_px = max(0, min(n_px, patch_w - 1))
-            jittered.append((n_py, n_px))
+            # Try to find a valid jittered coordinate within foreground patches
+            attempts = 0
+            max_attempts = 10  # Limit attempts to avoid infinite loops
+            
+            while attempts < max_attempts:
+                n_py = int(round(py + np.random.normal(0, sigma)))
+                n_px = int(round(px + np.random.normal(0, sigma)))
+                n_py = max(0, min(n_py, patch_h - 1))
+                n_px = max(0, min(n_px, patch_w - 1))
+                
+                # If foreground_patches is provided, check if jittered coordinate is valid
+                if foreground_patches is None or (n_py, n_px) in foreground_patches:
+                    jittered.append((n_py, n_px))
+                    break
+                    
+                attempts += 1
+            
+            # If no valid jittered coordinate found within attempts, fall back to original
+            if attempts >= max_attempts:
+                if foreground_patches is None or (py, px) in foreground_patches:
+                    jittered.append((py, px))
+                else:
+                    # Find nearest foreground patch as fallback
+                    min_dist = float('inf')
+                    nearest_patch = (py, px)
+                    for fg_py, fg_px in foreground_patches:
+                        dist = abs(py - fg_py) + abs(px - fg_px)
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest_patch = (fg_py, fg_px)
+                    jittered.append(nearest_patch)
+                    
         return jittered
 
     @staticmethod
