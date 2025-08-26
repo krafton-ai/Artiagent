@@ -107,20 +107,20 @@ class Flux(nn.Module):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
         inject_pe = pe.clone()
-
+        print(info['addition'], info['removal'], info['distortion'], info['fusion'])
         if not info['inverse']:
         # Initialize accumulated lists for tracking all processed IDs
             accumulated_target_ids = []
             accumulated_ref_ids = []
             for artifact_data in info['artifact_data']:
-                if artifact_data['artifact_type'] == 'addition' and timesteps > info['pe_step_addition']:
+                if artifact_data['artifact_type'] == 'addition' and info['addition']:
                     ref_ids = artifact_data['reference_patch_indices'].copy()
                     target_ids = artifact_data['target_patch_indices'].copy()
                     inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
                     # Accumulate IDs
                     accumulated_target_ids.extend(target_ids)
                     accumulated_ref_ids.extend(ref_ids)
-                elif artifact_data['artifact_type'] == 'removal' and timesteps > info['pe_step_removal']:
+                elif artifact_data['artifact_type'] == 'removal' and info['removal']:
                     ref_ids = artifact_data['reference_patch_indices'].copy()
                     target_ids = artifact_data['target_patch_indices'].copy()
                     ref_ids = sample_closest_patch_ind(
@@ -131,7 +131,7 @@ class Flux(nn.Module):
                     # Accumulate IDs (after target_ids modification)
                     accumulated_target_ids.extend(target_ids)
                     accumulated_ref_ids.extend(ref_ids)
-                elif artifact_data['artifact_type'] == 'distortion' and timesteps > info['pe_step_distortion']:
+                elif artifact_data['artifact_type'] == 'distortion' and info['distortion']:
                     ref_ids = artifact_data['reference_patch_indices'].copy()
                     target_ids = artifact_data['target_patch_indices'].copy()
                     if len(ref_ids) == 0:
@@ -143,6 +143,14 @@ class Flux(nn.Module):
                     # Accumulate IDs (after any ref_ids modification)
                     accumulated_target_ids.extend(target_ids)
                     accumulated_ref_ids.extend(ref_ids)
+                elif artifact_data['artifact_type'] == 'fusion' and info['fusion']:
+                    ref_ids = artifact_data['reference_patch_indices'].copy()
+                    target_ids = artifact_data['target_patch_indices'].copy()
+                    # np.random.shuffle(ref_ids)
+                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+                    # Accumulate IDs
+                    accumulated_target_ids.extend(target_ids)
+                    accumulated_ref_ids.extend(ref_ids)
 
 
             info['patch_ids'] = accumulated_target_ids
@@ -151,7 +159,7 @@ class Flux(nn.Module):
 
 
         for block in self.double_blocks:
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, info=info)
+            img, txt = block(img=img, txt=txt, vec=vec, pe=inject_pe, info=info)
 
         cnt = 0
         img = torch.cat((txt, img), 1) 

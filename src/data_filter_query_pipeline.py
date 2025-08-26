@@ -32,7 +32,7 @@ from datetime import datetime
 import torch.nn.functional as F
 
 # Import query functions from prompts
-from pipeline.prompts import query_addition_artifact_success, query_removal_artifact_success, MoneyManager
+from pipeline.prompts import artifact_success, MoneyManager
 from openai import OpenAI
 import lpips
 
@@ -103,9 +103,9 @@ class DataFilterPipeline:
         """Find matching directories that start with 'image' between GSAM and FLUX experiments"""
         # Only consider directories that start with "image"
         gsam_image_dirs = {d.name: d for d in self.gsam_dir.iterdir() 
-                          if d.is_dir() and not d.name.startswith('log')}
+                            if d.is_dir() and not d.name.startswith('log')}
         flux_image_dirs = {d.name: d for d in self.flux_dir.iterdir()
-                          if d.is_dir() and not d.name.startswith('log')}
+                            if d.is_dir() and not d.name.startswith('log')}
         
         # Find exact matches between image directories
         matching_ids = set(gsam_image_dirs.keys()) & set(flux_image_dirs.keys())
@@ -155,7 +155,7 @@ class DataFilterPipeline:
         return self.experiment_data
 
     def check_distortion_with_lpips(self, artifact: Dict, artifact_type: str,
-                                  orig_img: np.ndarray, img: np.ndarray, exp_id: str, logger) -> bool: 
+                                    orig_img: np.ndarray, img: np.ndarray, exp_id: str, logger) -> bool: 
         """
         Use DINO to check if two images are similar as a distortion artifact.
         Returns a dict with pass/fail, similarity, and classification.
@@ -163,7 +163,7 @@ class DataFilterPipeline:
         # Set default thresholds
         thresholds = {
             'similar': 0.8,
-            'strange': 0.7,
+            # 'strange': 0.7,
         }
 
         def preprocess_for_lpips(np_img):
@@ -195,7 +195,7 @@ class DataFilterPipeline:
 
         logger.info(f"LPIPS similarity: {d:.4f}")
 
-        if d < thresholds['similar'] and d >= thresholds['strange']:
+        if d < thresholds['similar']:
             passed = True
         else:
             passed = False
@@ -267,52 +267,67 @@ class DataFilterPipeline:
         data = self.experiment_data[exp_id]
         with open(data['metadata_path'], 'rb') as f:
             metadata = pickle.load(f)        
+        
         artifact_image = data['artifact_path']
         # Process each artifact image
-        
+        real_image = data['real_image_path']
+        original_img = Image.open(real_image)
+        original_img_array = np.array(original_img.convert('RGB'))
         # Load image
-        img = Image.open(artifact_image)
-        img_array = np.array(img.convert('RGB'))
+        artifact_img = Image.open(artifact_image)
+        artifact_img_array = np.array(artifact_img.convert('RGB'))
+        
+        # Filter artifacts - keep only those that pass the tests
+        passing_artifacts = []
+        
         # Run GSAM detection
         for artifact in metadata['artifacts']:
             artifact_type = artifact['artifact_type']
 
             target_mask =np.array(artifact['target_mask'], dtype=np.uint8)*255
-            mask_image = Image.fromarray(target_mask)
+            
+            # Create binary mask for image processing
+            binary_mask = target_mask > 0  # True where mask is non-zero
+            
+            # Create the three required images
+            # 1. Original image with target region masked out (filled with black)
+            masked_original_img_array = original_img_array.copy()
+            masked_original_img_array[binary_mask] = 0
+            
+            # 2. Original image with only target region visible (everything else black)
+            target_original_img_array = np.zeros_like(original_img_array)
+            target_original_img_array[binary_mask] = original_img_array[binary_mask]
+            
+            # 3. Artifact image with only target region visible (everything else black)
+            target_artifact_img_array = np.zeros_like(artifact_img_array)
+            target_artifact_img_array[binary_mask] = artifact_img_array[binary_mask]
+            
             if artifact_type == 'distortion':
                 kernel_type = artifact['distortion_kernel']
             # Create part entity name description
-            subentity = artifact['subentity']
             entity = artifact['entity']
-            part_entity_name = f"a {subentity} of a {entity}"
+            if artifact_type in ['addition', 'removal']:
+                subentity = artifact['subentity']
+                object_name = f"a {subentity} of a {entity}"
+            elif artifact_type == 'fusion':
+                fused_entity = artifact['fused_entity']
+                object_name = f"a {entity} and a {fused_entity}"
+
             # Apply appropriate filtering function based on artifact type
-            if artifact_type == 'addition':
-                # Check if the part is present in the mask region
-                result = query_addition_artifact_success(
-                    self.client, img_array, mask_image, part_entity_name, self.money_manager
+            if artifact_type in ['addition', 'removal', 'fusion']:
+
+                result = artifact_success(
+                    self.client, masked_original_img_array, target_original_img_array, target_artifact_img_array, object_name, artifact_type, self.money_manager
                 )
-                passed = result.get('success', False)
-                reasoning = result.get('reasoning', 'No reasoning provided')
-                
-                print(f"Addition artifact {artifact_image.name}: {'PASSED' if passed else 'FAILED'}")
+                passed = result.success
+                reasoning = result.reasoning
+
+                print(f"{artifact_type} artifact {artifact_image.name}: {'PASSED' if passed else 'FAILED'}")
                 print(f"  Reasoning: {reasoning}")
-                
-            elif artifact_type == 'removal':  # removal
-                # Check if the part is absent from the mask region
-                result = query_removal_artifact_success(
-                    self.client, img_array, mask_image, part_entity_name, self.money_manager
-                )
-                passed = result.get('success', False)
-                reasoning = result.get('reasoning', 'No reasoning provided')
-                
-                print(f"Removal artifact {artifact_image.name}: {'PASSED' if passed else 'FAILED'}")
-                print(f"  Reasoning: {reasoning}")
+
             else:  # distortion
-                real_image = data['real_image_path']
-                original_img = Image.open(real_image)
-                original_img_array = np.array(original_img.convert('RGB'))
                 passed = self.check_distortion_with_lpips(
-                    artifact, artifact_type, original_img_array, img_array, exp_id, logger
+                    artifact, artifact_type, original_img_array, artifact_img_array, exp_id, logger
                 )
                 logger.info(f"Distortion artifact with {kernel_type}: {'PASSED' if passed else 'FAILED'} (similarity test)")
 
@@ -321,15 +336,22 @@ class DataFilterPipeline:
                 self.kernel_stats[kernel_type]['total'] += 1
                 if passed:
                     self.kernel_stats[kernel_type]['passed'] += 1
-
+            
+            # Only keep artifacts that passed the test
+            if passed:
+                passing_artifacts.append(artifact)
                 
-        if passed:
+        # Update metadata with only passing artifacts
+        metadata['artifacts'] = passing_artifacts
+        
+        # Only add experiment to filtered results if there are passing artifacts
+        if passing_artifacts:
             self.filtered_results[exp_id] = {
                 'metadata': metadata,
                 'artifact_image': artifact_image
             }
         
-        return passed
+        return len(passing_artifacts) > 0
 
     def save_single_experiment(self, exp_id: str, results: Dict) -> None:
         """Save a single filtered experiment to output directory"""
@@ -353,8 +375,8 @@ class DataFilterPipeline:
         print(f"  Copied artifact image: {artifact_image}")
 
         # 2. Copy comparison image from passed images
-        comparison_image =  self.experiment_data[exp_id]['flux_dir'] / '04_comparison.png'
-        shutil.copy2(comparison_image, exp_output_dir / "04_comparison.png")
+        comparison_image =  self.experiment_data[exp_id]['flux_dir'] / 'comparison.png'
+        shutil.copy2(comparison_image, exp_output_dir / "comparison.png")
         print(f"  Copied comparison image: {comparison_image}")
 
 
@@ -366,7 +388,7 @@ class DataFilterPipeline:
                 "target_bbox": artifact['target_bbox'],
                 "artifact_type": artifact['artifact_type'],
                 "entity": artifact['entity'],
-                "subentity": artifact['subentity'],
+                "artifact_entity": artifact['fused_entity'] if artifact['artifact_type'] == 'fusion' else artifact['subentity'],
                 "distortion_kernel": artifact['distortion_kernel'] if artifact['artifact_type'] == 'distortion' else None
             })
         

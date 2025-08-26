@@ -20,14 +20,14 @@ logging.basicConfig(
 # -----------------------------
 def process_single_image_dir(image_dir, client):
     metadata_path = os.path.join(image_dir, "metadata.json")
-    original_image_path = os.path.join(image_dir, "original_image.png")
+    real_image_path = os.path.join(image_dir, "real_image.png")
     artifact_image_path = os.path.join(image_dir, "artifact_image.png")
     
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
 
     # Load images once for all artifacts in this directory
-    original_image = Image.open(original_image_path)
+    real_image = Image.open(real_image_path)
     artifact_image = Image.open(artifact_image_path)
     
     # Create one money manager for all artifacts in this directory
@@ -40,11 +40,13 @@ def process_single_image_dir(image_dir, client):
         try:
             target_bbox = artifact['target_bbox']
             artifact_type = artifact['artifact_type']
-            entity = artifact['entity']
-            subentity = artifact['subentity']
+            if artifact_type == 'fusion':
+                object_name = f'{artifact["entity"]} and {artifact["artifact_entity"]}'
+            else:
+                object_name = f'a {artifact["artifact_entity"]} of {artifact["entity"]}'
 
             # Create copies of images with bounding boxes for this artifact
-            original_with_bbox = original_image.copy()
+            original_with_bbox = real_image.copy()
             artifact_with_bbox = artifact_image.copy()
             
             draw = ImageDraw.Draw(original_with_bbox)
@@ -56,8 +58,7 @@ def process_single_image_dir(image_dir, client):
                 client=client,
                 real_image=original_with_bbox,
                 artifact_image=artifact_with_bbox,
-                entity=entity,
-                part=subentity,
+                object_name=object_name,
                 artifact_type=artifact_type,
                 money_manager=money_manager
             )
@@ -65,16 +66,16 @@ def process_single_image_dir(image_dir, client):
             if result['success']:
                 artifact['explanation'] = result['explanation']
                 artifacts_processed += 1
-                logging.info(f"  ✓ Generated explanation for {entity}/{subentity}: {result['explanation'][:100]}...")
+                logging.info(f"  ✓ Generated explanation for {object_name} {result['explanation'][:100]}...")
             else:
                 artifact['explanation'] = ""
                 artifacts_failed += 1
-                logging.warning(f"  ✗ Failed to generate explanation for {entity}/{subentity}: {result.get('error', 'Unknown error')}")
+                logging.warning(f"  ✗ Failed to generate explanation for {object_name}: {result.get('error', 'Unknown error')}")
                 
         except Exception as e:
             artifact['explanation'] = ""
             artifacts_failed += 1
-            logging.error(f"  ✗ Error processing artifact {entity}/{subentity}: {str(e)}")
+            logging.error(f"  ✗ Error processing artifact {object_name}: {str(e)}")
 
     # Save metadata once after processing all artifacts
     with open(metadata_path, 'w') as f:
@@ -87,7 +88,7 @@ def process_single_image_dir(image_dir, client):
 # -----------------------------
 def process_metadata_files():
     client = OpenAI()
-    base_dir = "../exps/filtering/testing_multi_caption"
+    base_dir = "/data3/jhpark/filtered_artifacts_100"
 
     image_dirs_all = []
 
