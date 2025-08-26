@@ -24,10 +24,11 @@ if [[ -n "$OPENAI_API_KEY" ]]; then
 fi
 
 # Default values
-SUPERCATEGORY=""
-ARTIFACT_TYPES="addition removal distortion"
+SUPERCATEGORIES=()  # Array to hold multiple supercategories
+# ARTIFACT_TYPES="addition removal distortion"
+ARTIFACT_TYPES="addition removal distortion fusion"
 DISTORTION_KERNEL="none"
-RANDOM_DISTORTION=false
+RANDOM_DISTORTION=true
 MAX_IMAGES=""
 MIN_AREA_RATIO="0.005"
 MAX_AREA_RATIO="0.5"
@@ -44,8 +45,8 @@ SEED=""
 # IMAGENET_SPLIT="train"
 
 DATASET="coco"
-DATASET_PATH="/home/jovyan/data/coco_2017_extracted/annotations"
-IMAGE_PATH="/home/jovyan/data/coco_2017_extracted/train2017"
+DATASET_PATH="/data3/jhpark/coco/annotations"
+IMAGE_PATH="/data3/jhpark/coco/train2017"
 IMAGENET_SPLIT="train"
 
 # GSAM-specific defaults
@@ -97,10 +98,10 @@ show_help() {
 GSAM (Grounded SAM) Segmentation Pipeline
 
 USAGE:
-    ./run_gsam.sh <supercategory> [OPTIONS]
+    ./run_gsam.sh <supercategory1> [supercategory2] ... [OPTIONS]
 
 ARGUMENTS:
-    supercategory           COCO supercategory to process (person, animal, vehicle, etc.)
+    supercategory...        One or more COCO supercategories to process (person, animal, vehicle, etc.)
 
 BASIC OPTIONS:
     --artifact-types LIST   Artifact types to generate (default: "distortion removal addition")
@@ -135,8 +136,11 @@ GSAM-SPECIFIC OPTIONS:
     --help                      Show this help message
 
 EXAMPLES:
-    # Basic usage (custom dataset)
+    # Basic usage (single supercategory)
     ./run_gsam.sh person
+
+    # Multiple supercategories
+    ./run_gsam.sh person animal vehicle
 
     # Process COCO dataset
     ./run_gsam.sh person --dataset coco --dataset-path /path/to/coco/annotations --image-path /path/to/coco/images
@@ -315,20 +319,16 @@ while [[ $# -gt 0 ]]; do
             exit 1
             ;;
         *)
-            if [[ -z "$SUPERCATEGORY" ]]; then
-                SUPERCATEGORY="$1"
-            else
-                print_error "Multiple supercategories specified: $SUPERCATEGORY and $1"
-                exit 1
-            fi
+            # Collect supercategories (all positional arguments that aren't options)
+            SUPERCATEGORIES+=("$1")
             shift
             ;;
     esac
 done
 
 # Validate required arguments
-if [[ -z "$SUPERCATEGORY" ]]; then
-    print_error "Supercategory is required"
+if [[ ${#SUPERCATEGORIES[@]} -eq 0 ]]; then
+    print_error "At least one supercategory is required"
     show_help
     exit 1
 fi
@@ -347,7 +347,9 @@ fi
 
 # Set output directory
 if [[ -z "$OUTPUT_DIR" ]]; then
-    OUTPUT_DIR="gsam_output_${DATASET}_${SUPERCATEGORY}"
+    # Join supercategories with underscores for directory name
+    SUPERCATEGORY_STRING=$(IFS=_; echo "${SUPERCATEGORIES[*]}")
+    OUTPUT_DIR="gsam_output_${DATASET}_${SUPERCATEGORY_STRING}"
 fi
 
 # Check dependencies
@@ -378,7 +380,7 @@ check_dependencies() {
 # Print configuration
 print_configuration() {
     print_header "GSAM SEGMENTATION CONFIGURATION"
-    echo "Supercategory:           $SUPERCATEGORY"
+    echo "Supercategories:         ${SUPERCATEGORIES[*]}"
     echo "Artifact types:          $ARTIFACT_TYPES"
     if [[ "$RANDOM_DISTORTION" == true ]]; then
         echo "Distortion kernel:       random sampling (jitter, swirl, voronoi, coarse, strip)"
@@ -418,90 +420,105 @@ print_configuration() {
 run_gsam_segmentation() {
     print_header "GSAM SEGMENTATION PROCESSING"
     
-    # Build GSAM command
-    gsam_cmd="python batch_gsam_segmentation.py $SUPERCATEGORY"
-    gsam_cmd="$gsam_cmd --artifact-types $ARTIFACT_TYPES"
-    gsam_cmd="$gsam_cmd --distortion-kernel $DISTORTION_KERNEL"
-    gsam_cmd="$gsam_cmd --device $DEVICE"
-    gsam_cmd="$gsam_cmd --min-area-ratio $MIN_AREA_RATIO"
-    gsam_cmd="$gsam_cmd --max-area-ratio $MAX_AREA_RATIO"
-    gsam_cmd="$gsam_cmd --output-dir $OUTPUT_DIR"
-    gsam_cmd="$gsam_cmd --dataset $DATASET"
-    gsam_cmd="$gsam_cmd --sam-version $SAM_VERSION"
-    gsam_cmd="$gsam_cmd --box-threshold $BOX_THRESHOLD"
-    gsam_cmd="$gsam_cmd --text-threshold $TEXT_THRESHOLD"
-    
-    if [[ -n "$MAX_IMAGES" ]]; then
-        gsam_cmd="$gsam_cmd --max-images $MAX_IMAGES"
-    fi
-    
-    if [[ "$RESUME" == true ]]; then
-        gsam_cmd="$gsam_cmd --resume"
-    fi
-    
-    if [[ "$RANDOM_DISTORTION" == true ]]; then
-        gsam_cmd="$gsam_cmd --random-distortion"
-    fi
-    
-    if [[ -n "$PREDEFINED_VOCAB" ]]; then
-        gsam_cmd="$gsam_cmd --predefined-vocab$PREDEFINED_VOCAB"
-    fi
-    
-    if [[ -n "$GROUNDING_CONFIG" ]]; then
-        gsam_cmd="$gsam_cmd --grounding-config $GROUNDING_CONFIG"
-    fi
-    
-    if [[ -n "$GROUNDING_CHECKPOINT" ]]; then
-        gsam_cmd="$gsam_cmd --grounding-checkpoint $GROUNDING_CHECKPOINT"
-    fi
-    
-    if [[ -n "$SAM_CHECKPOINT" ]]; then
-        gsam_cmd="$gsam_cmd --sam-checkpoint $SAM_CHECKPOINT"
-    fi
-    
-    if [[ -n "$SAM_HQ_CHECKPOINT" ]]; then
-        gsam_cmd="$gsam_cmd --sam-hq-checkpoint $SAM_HQ_CHECKPOINT"
-    fi
-    
-    if [[ "$USE_SAM_HQ" == true ]]; then
-        gsam_cmd="$gsam_cmd --use-sam-hq"
-    fi
-    
-    if [[ -n "$BERT_BASE_UNCASED_PATH" ]]; then
-        gsam_cmd="$gsam_cmd --bert-base-uncased-path $BERT_BASE_UNCASED_PATH"
-    fi
+    # Process each supercategory
+    for SUPERCATEGORY in "${SUPERCATEGORIES[@]}"; do
+        print_info "Processing supercategory: $SUPERCATEGORY"
+        echo ""
+        
+        # Build GSAM command for current supercategory
+        gsam_cmd="python batch_gsam_segmentation.py $SUPERCATEGORY"
+        gsam_cmd="$gsam_cmd --artifact-types $ARTIFACT_TYPES"
+        gsam_cmd="$gsam_cmd --distortion-kernel $DISTORTION_KERNEL"
+        gsam_cmd="$gsam_cmd --device $DEVICE"
+        gsam_cmd="$gsam_cmd --min-area-ratio $MIN_AREA_RATIO"
+        gsam_cmd="$gsam_cmd --max-area-ratio $MAX_AREA_RATIO"
+        
+        # Create supercategory-specific output directory if processing multiple categories
+        if [[ ${#SUPERCATEGORIES[@]} -gt 1 ]]; then
+            CURRENT_OUTPUT_DIR="${OUTPUT_DIR}_${SUPERCATEGORY}"
+        else
+            CURRENT_OUTPUT_DIR="$OUTPUT_DIR"
+        fi
+        gsam_cmd="$gsam_cmd --output-dir $CURRENT_OUTPUT_DIR"
+        gsam_cmd="$gsam_cmd --dataset $DATASET"
+        gsam_cmd="$gsam_cmd --sam-version $SAM_VERSION"
+        gsam_cmd="$gsam_cmd --box-threshold $BOX_THRESHOLD"
+        gsam_cmd="$gsam_cmd --text-threshold $TEXT_THRESHOLD"
+        
+        if [[ -n "$MAX_IMAGES" ]]; then
+            gsam_cmd="$gsam_cmd --max-images $MAX_IMAGES"
+        fi
+        
+        if [[ "$RESUME" == true ]]; then
+            gsam_cmd="$gsam_cmd --resume"
+        fi
+        
+        if [[ "$RANDOM_DISTORTION" == true ]]; then
+            gsam_cmd="$gsam_cmd --random-distortion"
+        fi
+        
+        if [[ -n "$PREDEFINED_VOCAB" ]]; then
+            gsam_cmd="$gsam_cmd --predefined-vocab$PREDEFINED_VOCAB"
+        fi
+        
+        if [[ -n "$GROUNDING_CONFIG" ]]; then
+            gsam_cmd="$gsam_cmd --grounding-config $GROUNDING_CONFIG"
+        fi
+        
+        if [[ -n "$GROUNDING_CHECKPOINT" ]]; then
+            gsam_cmd="$gsam_cmd --grounding-checkpoint $GROUNDING_CHECKPOINT"
+        fi
+        
+        if [[ -n "$SAM_CHECKPOINT" ]]; then
+            gsam_cmd="$gsam_cmd --sam-checkpoint $SAM_CHECKPOINT"
+        fi
+        
+        if [[ -n "$SAM_HQ_CHECKPOINT" ]]; then
+            gsam_cmd="$gsam_cmd --sam-hq-checkpoint $SAM_HQ_CHECKPOINT"
+        fi
+        
+        if [[ "$USE_SAM_HQ" == true ]]; then
+            gsam_cmd="$gsam_cmd --use-sam-hq"
+        fi
+        
+        if [[ -n "$BERT_BASE_UNCASED_PATH" ]]; then
+            gsam_cmd="$gsam_cmd --bert-base-uncased-path $BERT_BASE_UNCASED_PATH"
+        fi
 
-    if [[ -n "$SEED" ]]; then
-        gsam_cmd="$gsam_cmd --seed $SEED"
-    fi
-    
-    # Add dataset-specific arguments
-    if [[ -n "$DATASET_PATH" ]]; then
-        gsam_cmd="$gsam_cmd --dataset-path $DATASET_PATH"
-    fi
-    
-    if [[ -n "$IMAGE_PATH" ]]; then
-        gsam_cmd="$gsam_cmd --image-path $IMAGE_PATH"
-    fi
-    
-    if [[ "$DATASET" == "imagenet" ]]; then
-        gsam_cmd="$gsam_cmd --imagenet-split $IMAGENET_SPLIT"
-    fi
-    
-    print_info "Running GSAM segmentation..."
-    print_info "Command: $gsam_cmd"
-    echo ""
-    
-    # Run GSAM segmentation
-    start_time=$(date +%s)
-    if $gsam_cmd; then
-        end_time=$(date +%s)
-        elapsed=$((end_time - start_time))
-        print_success "GSAM segmentation completed in ${elapsed}s"
-    else
-        print_error "GSAM segmentation failed"
-        exit 1
-    fi
+        if [[ -n "$SEED" ]]; then
+            gsam_cmd="$gsam_cmd --seed $SEED"
+        fi
+        
+        # Add dataset-specific arguments
+        if [[ -n "$DATASET_PATH" ]]; then
+            gsam_cmd="$gsam_cmd --dataset-path $DATASET_PATH"
+        fi
+        
+        if [[ -n "$IMAGE_PATH" ]]; then
+            gsam_cmd="$gsam_cmd --image-path $IMAGE_PATH"
+        fi
+        
+        if [[ "$DATASET" == "imagenet" ]]; then
+            gsam_cmd="$gsam_cmd --imagenet-split $IMAGENET_SPLIT"
+        fi
+        
+        print_info "Running GSAM segmentation for $SUPERCATEGORY..."
+        print_info "Command: $gsam_cmd"
+        echo ""
+        
+        # Run GSAM segmentation
+        start_time=$(date +%s)
+        if $gsam_cmd; then
+            end_time=$(date +%s)
+            elapsed=$((end_time - start_time))
+            print_success "GSAM segmentation for $SUPERCATEGORY completed in ${elapsed}s"
+        else
+            print_error "GSAM segmentation for $SUPERCATEGORY failed"
+            exit 1
+        fi
+        
+        echo ""
+    done
     
 }
 
@@ -509,23 +526,39 @@ run_gsam_segmentation() {
 print_summary() {
     print_header "GSAM SEGMENTATION SUMMARY"
     
-    if [[ -d "$OUTPUT_DIR" ]]; then
-        intermediate_count=$(find "$OUTPUT_DIR/processed_data" -name "image_*.pkl" 2>/dev/null | wc -l)
-        annotations_count=$(find "$OUTPUT_DIR/annotations" -name "image_*_annotations.json" 2>/dev/null | wc -l)
-        mask_count=$(find "$OUTPUT_DIR/masks" -name "*.png" 2>/dev/null | wc -l)
-        echo "GSAM Results:"
-        echo "  Output directory:     $OUTPUT_DIR"
-        echo "  Intermediate files:   $intermediate_count"
-        echo "  Annotation files:     $annotations_count"
-        echo "  Mask files:           $mask_count"
-        echo ""
-    fi
+    echo "GSAM Results:"
+    for SUPERCATEGORY in "${SUPERCATEGORIES[@]}"; do
+        if [[ ${#SUPERCATEGORIES[@]} -gt 1 ]]; then
+            CURRENT_OUTPUT_DIR="${OUTPUT_DIR}_${SUPERCATEGORY}"
+        else
+            CURRENT_OUTPUT_DIR="$OUTPUT_DIR"
+        fi
+        
+        if [[ -d "$CURRENT_OUTPUT_DIR" ]]; then
+            intermediate_count=$(find "$CURRENT_OUTPUT_DIR/processed_data" -name "image_*.pkl" 2>/dev/null | wc -l)
+            annotations_count=$(find "$CURRENT_OUTPUT_DIR/annotations" -name "image_*_annotations.json" 2>/dev/null | wc -l)
+            mask_count=$(find "$CURRENT_OUTPUT_DIR/masks" -name "*.png" 2>/dev/null | wc -l)
+            echo "  $SUPERCATEGORY:"
+            echo "    Output directory:     $CURRENT_OUTPUT_DIR"
+            echo "    Intermediate files:   $intermediate_count"
+            echo "    Annotation files:     $annotations_count"
+            echo "    Mask files:           $mask_count"
+            echo ""
+        fi
+    done
     
     # Log files
     echo "Log Files:"
-    if [[ -d "$OUTPUT_DIR/logs" ]]; then
-        echo "  GSAM logs:            $OUTPUT_DIR/logs/"
-    fi
+    for SUPERCATEGORY in "${SUPERCATEGORIES[@]}"; do
+        if [[ ${#SUPERCATEGORIES[@]} -gt 1 ]]; then
+            CURRENT_OUTPUT_DIR="${OUTPUT_DIR}_${SUPERCATEGORY}"
+        else
+            CURRENT_OUTPUT_DIR="$OUTPUT_DIR"
+        fi
+        if [[ -d "$CURRENT_OUTPUT_DIR/logs" ]]; then
+            echo "  $SUPERCATEGORY logs:  $CURRENT_OUTPUT_DIR/logs/"
+        fi
+    done
     echo ""
     
     print_success "GSAM segmentation completed successfully!"
@@ -534,7 +567,15 @@ print_summary() {
     echo "  - Review the generated masks and intermediate data"
     echo "  - Check the log files for detailed processing information"
     echo "  - Use the results with run_flux.sh for artifact generation"
-    echo "  - Command: ./run_flux.sh $OUTPUT_DIR --artifact-types \"$ARTIFACT_TYPES\""
+    if [[ ${#SUPERCATEGORIES[@]} -gt 1 ]]; then
+        echo "  - Process each supercategory separately with run_flux.sh:"
+        for SUPERCATEGORY in "${SUPERCATEGORIES[@]}"; do
+            CURRENT_OUTPUT_DIR="${OUTPUT_DIR}_${SUPERCATEGORY}"
+            echo "    ./run_flux.sh $CURRENT_OUTPUT_DIR --artifact-types \"$ARTIFACT_TYPES\""
+        done
+    else
+        echo "  - Command: ./run_flux.sh $OUTPUT_DIR --artifact-types \"$ARTIFACT_TYPES\""
+    fi
     if [[ "$RANDOM_DISTORTION" == true ]]; then
         echo "  - Note: Used random distortion kernels (shuffle, jitter, swirl, voronoi, coarse, strip) for distortion artifacts"
     elif [[ "$DISTORTION_KERNEL" != "none" ]]; then
@@ -569,7 +610,7 @@ trap cleanup SIGINT SIGTERM
 # Main execution
 main() {
     print_header "GSAM SEGMENTATION PIPELINE"
-    echo "Starting GSAM processing for supercategory: $SUPERCATEGORY"
+    echo "Starting GSAM processing for supercategories: ${SUPERCATEGORIES[*]}"
     echo "Timestamp: $(date)"
     echo ""
     
