@@ -4,19 +4,8 @@ import base64
 import io
 import numpy as np
 import re
-import os
-import cv2
 from openai.types.chat import ChatCompletion
-from typing import Union, Dict, List, Optional
-
-# Try to import matplotlib
-try:
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
-    MATPLOTLIB_AVAILABLE = True
-except ImportError:
-    MATPLOTLIB_AVAILABLE = False
-
+from typing import Union, List, Optional
 from pydantic import BaseModel
 
 def encode_image_to_base64(image):
@@ -90,140 +79,6 @@ IN_CONTEXT_EXAMPLES = {
     }
 }
 
-class MoneyManager:
-    def __init__(self, model: str = "gpt-3.5-turbo-0613"):
-        self.total_cost = 0.0
-        self.model = model
-        if self.model == "gpt-3.5-turbo-16k-0613":
-            self.input_cost = 0.003
-            self.output_cost = 0.004
-        elif self.model == "gpt-3.5-turbo-1106":
-            self.input_cost = 0.001
-            self.output_cost = 0.002
-        elif self.model == "gpt-3.5-turbo":
-            self.input_cost = 0.001
-            self.output_cost = 0.002
-        elif self.model == "gpt-4-turbo-preview":
-            self.input_cost = 0.01
-            self.output_cost = 0.03
-        elif self.model == "gpt-4-turbo":
-            self.input_cost = 0.01
-            self.output_cost = 0.03
-        elif self.model == "gpt-4-1106-preview":
-            self.input_cost = 0.01
-            self.output_cost = 0.03
-        elif self.model == "gpt-4":
-            self.input_cost = 0.03
-            self.output_cost = 0.06
-        elif self.model == "text-embedding-ada-002":
-            self.input_cost = 0.0001
-            self.output_cost = 0.0
-        elif self.model == "claude-3-opus-20240229":
-            self.input_cost = 0.015
-            self.output_cost = 0.075
-        elif self.model == "claude-opus-4-20250514":
-            self.input_cost = 15 / 1000
-            self.output_cost = 75 / 1000
-        elif self.model == "claude-sonnet-4-20250514":
-            self.input_cost = 3 / 1000
-            self.output_cost = 15 / 1000
-        elif self.model == "gpt-4o":
-            self.input_cost = 2.5 / 1000
-            self.output_cost = 10 / 1000
-        elif self.model == "gpt-4o-mini":
-            self.input_cost = 0.15 / 1000
-            self.output_cost = 0.6 / 1000
-        elif self.model == "gpt-4o-2024-08-06":
-            self.input_cost = 2.5 / 1000
-            self.output_cost = 10 / 1000
-        elif self.model == "gpt-4o-2024-05-13":
-            self.input_cost = 5 / 1000
-            self.output_cost = 15 / 1000
-        elif self.model == "o1-preview":
-            self.input_cost = 15 / 1000
-            self.output_cost = 60 / 1000
-        elif self.model == "o1-preview-2024-09-12":
-            self.input_cost = 15 / 1000
-            self.output_cost = 60 / 1000
-        elif self.model == "o1-2024-12-17":
-            self.input_cost = 15 / 1000
-            self.output_cost = 60 / 1000
-        elif self.model == "o1-mini":
-            self.input_cost = 1.1 / 1000
-            self.output_cost = 4.4 / 1000
-        elif self.model == "o1-mini-2024-09-12":
-            self.input_cost = 1.1 / 1000
-            self.output_cost = 4.4 / 1000
-        elif self.model == "o3-mini":
-            self.input_cost = 1.1 / 1000
-            self.output_cost = 4.4 / 1000
-        elif self.model == "o3":
-            self.input_cost = 2 / 1000
-            self.output_cost = 8 / 1000
-        elif self.model == "o3-mini-2025-01-31":
-            self.input_cost = 1.1 / 1000
-            self.output_cost = 4.4 / 1000
-        elif self.model == "gpt-4.1":
-            self.input_cost = 2 / 1000
-            self.output_cost = 8 / 1000
-        elif self.model == "gpt-4.1-mini":
-            self.input_cost = 0.4 / 1000
-            self.output_cost = 1.6 / 1000
-        elif self.model == "gpt-4.1-2025-04-14":
-            self.input_cost = 2 / 1000
-            self.output_cost = 8 / 1000
-        elif self.model == "o4-mini":
-            self.input_cost = 1.1 / 1000
-            self.output_cost = 4.4 / 1000
-        elif self.model == "o4-mini-2025-04-16":
-            self.input_cost = 1.1 / 1000
-            self.output_cost = 4.4 / 1000
-        elif self.model == "gemini-2.5-flash":
-            self.input_cost = 0.3 / 1000
-            self.output_cost = 2.5 / 1000
-        elif self.model == "gemini-2.5-pro":
-            # TODO: cost changes when # tokens > 200k
-            self.input_cost = 1.25 / 1000
-            self.output_cost = 10 / 1000
-        else:
-            print(
-                f"MoneyManager: Model {self.model} not found. If you are using a new model, please add the cost to the MoneyManager class."
-            )
-            self.input_cost = 0.0
-            self.output_cost = 0.0
-
-    def __call__(self, response: Union[ChatCompletion, None] = None) -> None:
-        if hasattr(response, "usage") and response.usage is None:
-            print("No usage in response")
-            print(response)
-            return
-
-        if self.model == "gemini-2.5-flash" or self.model == "gemini-2.5-pro":
-            input_tokens = response.usage_metadata.prompt_token_count
-            output_tokens = (
-                response.usage_metadata.candidates_token_count
-                + response.usage_metadata.thoughts_token_count
-            )
-
-        else:  # OpenAI and Claude
-            input_tokens = response.usage.input_tokens
-            output_tokens = response.usage.output_tokens 
-
-            if "o1" in self.model or "o3" in self.model or "o4" in self.model:
-                output_tokens += (
-                    response.usage.output_token_details.accepted_prediction_tokens
-                    + response.usage.output_token_details.reasoning_tokens
-                    + response.usage.output_token_details.rejected_prediction_tokens
-                )
-
-            input_cost = input_tokens / 1000 * self.input_cost
-            output_cost = output_tokens / 1000 * self.output_cost
-
-            self.total_cost += input_cost + output_cost
-
-    def refresh(self) -> None:
-        self.total_cost = 0.0
-
 class EntitySubentityResponse(BaseModel):
     entity: str
     subentities: List[str]
@@ -231,6 +86,13 @@ class EntitySubentityResponse(BaseModel):
 class VocabResponse(BaseModel):
     peripheral: Optional[List[EntitySubentityResponse]] = None
     intermediate: Optional[List[EntitySubentityResponse]] = None
+
+class ArtifactSuccessResponse(BaseModel):
+    reasoning: str
+    success: bool   
+
+class ArtifactExplanationResponse(BaseModel):
+    explanation: str
     
 def get_entity_subentities(client, image, money_manager=None):
     base64_image = encode_image_to_base64(image)
@@ -346,138 +208,6 @@ def get_entity_subentities(client, image, money_manager=None):
     except Exception as e:
         print(f"Error analyzing sampled instance: {e}")
         return None
-
-def get_all_entity_subparts(client, image, money_manager=None):
-    base64_image = encode_image_to_base64(image)
-
-    system_prompt = """
-    You are an image artifact agent. Image artifacts refer to unintended, implausible, or visibly corrupted regions within images generated by diffusion models. These artifacts often break the natural semantics or visual coherence of an image, such as a person with extra fingers, a car with warped wheels, or missing parts of animals, and can significantly degrade image quality or realism.
-    
-    Your task is to analyze the image and output **visible entities and their suitable subparts** for three types of artifact injection: **addition**, **removal**, and **distortion**.
-    ---
-
-    ### 1. Addition: Involves duplicating an existing part of the image and placing it somewhere else, creating implausible duplication (e.g., extra thumb, leg, or ear). The added part is placed adjacent to the original, in one of four directions. 
-        - Common on peripheral or terminal parts of objects/entities:
-            - Human/Animal: fingers, hands, toes, legs, etc.
-            - Vehicles: mirrors, wheels, wipers.
-        - Constraint: Do **not** include parts that are tightly overlapping or fused with the entity's torso or core body. For example, if a bird's wings are folded closely against its torso, they should not be selected. In such cases, the addition artifact may appear as if it's modifying the torso itself, which is not appropriate.
-    ---
-
-    ### 2. Removal: A specific object or part is deleted, and the area is inpainted using background textures, resulting in missing limbs, features, or objects, sometimes with visible traces.
-        - Common on terminal or protruding elements:
-            - Human/Animal: fingers, toes, legs, ears, horns, etc.
-            - Vehicles: antennas, side mirrors, etc.
-        - Constraint: Do **not** include parts that are tightly overlapping or fused with the entity's torso or core body. For example, if a bird’s wings are folded closely against its body, removing them would resemble torso removal, which is not a valid removal artifact.
-
-    ---
-
-    ### 3. Distortion: The object or part remains in place but the structure is altered (e.g., twisted, warped, scrambled), making the object unrecognizable or visually broken, like a warped face or twisted wheel.
-        - Can occur anywhere, especially in central or continuous regions:
-            - Human/Animal: face, torso, entire leg, etc.
-            - Vehicles: car doors, etc.
-
-    ---
-
-    Important constraint:
-    - You must **only recommend parts that are clearly visible in the image**. Do **not** include parts that are occluded, cropped out, or ambiguous. Artifact injection should only be applied to parts that are identifiable and visually distinguishable.
-
-    Return the results in **JSON** format. I will provide you with some examples:
-
-    ```json
-    {
-    "addition": {
-        "entity": "giraffe",
-        "subparts": ['ear', 'leg']
-    },
-    "removal": {
-        "entity": "giraffe",
-        "subparts": ['ear', 'horn', 'leg']
-    },
-    "distortion": {
-        "entity": "dog",
-        "subparts": ['face', 'torso', 'legs']
-    }
-    }
-    ```
-
-    ```json
-    {
-    "addition": {
-        "entity": "hand",
-        "subparts": ['finger', 'thumb']
-    },
-    "removal": {
-        "entity": "hand",
-        "subparts": ['finger', 'thumb']
-    },
-    "distortion": {
-        "entity": "hand",
-        "subparts": ['fingers', 'palm']
-    }
-    }
-    ```
-
-    ### Output:
-    """
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": system_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }
-            ],
-            max_tokens=1000,
-            temperature=0.2
-        )
-
-        if money_manager:
-            money_manager(response)
-
-        raw_text = response.choices[0].message.content.strip()
-
-        try:
-            raw_text = response.choices[0].message.content.strip()
-
-            # Handle markdown-style code block like ```json ... ```
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[len("```json"):].strip()
-            elif raw_text.startswith("```"):
-                raw_text = raw_text[len("```"):].strip()
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3].strip()
-
-            return json.loads(raw_text)
-
-        except json.JSONDecodeError:
-            json_match = re.search(r'\{[\s\S]*?\}', raw_text)
-            if json_match:
-                try:
-                    return json.loads(json_match.group())
-                except json.JSONDecodeError:
-                    pass
-
-            print(f"Could not parse JSON from response: {raw_text}")
-            return {
-                "error": "json_parse_failed",
-                "raw_response": raw_text
-            }
-
-    except Exception as e:
-        print(f"Error analyzing sampled instance: {e}")
-        return None
-
-class ArtifactSuccessResponse(BaseModel):
-    reasoning: str
-    success: bool
-
-class ArtifactExplanationResponse(BaseModel):
-    explanation: str
 
 def artifact_success(client, masked_original_image, target_original_image, target_artifact_image, object_name, artifact_type, money_manager=None):
     """
@@ -725,7 +455,139 @@ Respond naturally and precisely, describing only what is visibly incorrect in th
             "error": f"API error: {str(e)}"
         }
         
+class MoneyManager:
+    def __init__(self, model: str = "gpt-3.5-turbo-0613"):
+        self.total_cost = 0.0
+        self.model = model
+        if self.model == "gpt-3.5-turbo-16k-0613":
+            self.input_cost = 0.003
+            self.output_cost = 0.004
+        elif self.model == "gpt-3.5-turbo-1106":
+            self.input_cost = 0.001
+            self.output_cost = 0.002
+        elif self.model == "gpt-3.5-turbo":
+            self.input_cost = 0.001
+            self.output_cost = 0.002
+        elif self.model == "gpt-4-turbo-preview":
+            self.input_cost = 0.01
+            self.output_cost = 0.03
+        elif self.model == "gpt-4-turbo":
+            self.input_cost = 0.01
+            self.output_cost = 0.03
+        elif self.model == "gpt-4-1106-preview":
+            self.input_cost = 0.01
+            self.output_cost = 0.03
+        elif self.model == "gpt-4":
+            self.input_cost = 0.03
+            self.output_cost = 0.06
+        elif self.model == "text-embedding-ada-002":
+            self.input_cost = 0.0001
+            self.output_cost = 0.0
+        elif self.model == "claude-3-opus-20240229":
+            self.input_cost = 0.015
+            self.output_cost = 0.075
+        elif self.model == "claude-opus-4-20250514":
+            self.input_cost = 15 / 1000
+            self.output_cost = 75 / 1000
+        elif self.model == "claude-sonnet-4-20250514":
+            self.input_cost = 3 / 1000
+            self.output_cost = 15 / 1000
+        elif self.model == "gpt-4o":
+            self.input_cost = 2.5 / 1000
+            self.output_cost = 10 / 1000
+        elif self.model == "gpt-4o-mini":
+            self.input_cost = 0.15 / 1000
+            self.output_cost = 0.6 / 1000
+        elif self.model == "gpt-4o-2024-08-06":
+            self.input_cost = 2.5 / 1000
+            self.output_cost = 10 / 1000
+        elif self.model == "gpt-4o-2024-05-13":
+            self.input_cost = 5 / 1000
+            self.output_cost = 15 / 1000
+        elif self.model == "o1-preview":
+            self.input_cost = 15 / 1000
+            self.output_cost = 60 / 1000
+        elif self.model == "o1-preview-2024-09-12":
+            self.input_cost = 15 / 1000
+            self.output_cost = 60 / 1000
+        elif self.model == "o1-2024-12-17":
+            self.input_cost = 15 / 1000
+            self.output_cost = 60 / 1000
+        elif self.model == "o1-mini":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "o1-mini-2024-09-12":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "o3-mini":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "o3":
+            self.input_cost = 2 / 1000
+            self.output_cost = 8 / 1000
+        elif self.model == "o3-mini-2025-01-31":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "gpt-4.1":
+            self.input_cost = 2 / 1000
+            self.output_cost = 8 / 1000
+        elif self.model == "gpt-4.1-mini":
+            self.input_cost = 0.4 / 1000
+            self.output_cost = 1.6 / 1000
+        elif self.model == "gpt-4.1-2025-04-14":
+            self.input_cost = 2 / 1000
+            self.output_cost = 8 / 1000
+        elif self.model == "o4-mini":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "o4-mini-2025-04-16":
+            self.input_cost = 1.1 / 1000
+            self.output_cost = 4.4 / 1000
+        elif self.model == "gemini-2.5-flash":
+            self.input_cost = 0.3 / 1000
+            self.output_cost = 2.5 / 1000
+        elif self.model == "gemini-2.5-pro":
+            # TODO: cost changes when # tokens > 200k
+            self.input_cost = 1.25 / 1000
+            self.output_cost = 10 / 1000
+        else:
+            print(
+                f"MoneyManager: Model {self.model} not found. If you are using a new model, please add the cost to the MoneyManager class."
+            )
+            self.input_cost = 0.0
+            self.output_cost = 0.0
 
+    def __call__(self, response: Union[ChatCompletion, None] = None) -> None:
+        if hasattr(response, "usage") and response.usage is None:
+            print("No usage in response")
+            print(response)
+            return
+
+        if self.model == "gemini-2.5-flash" or self.model == "gemini-2.5-pro":
+            input_tokens = response.usage_metadata.prompt_token_count
+            output_tokens = (
+                response.usage_metadata.candidates_token_count
+                + response.usage_metadata.thoughts_token_count
+            )
+
+        else:  # OpenAI and Claude
+            input_tokens = response.usage.input_tokens
+            output_tokens = response.usage.output_tokens 
+
+            if "o1" in self.model or "o3" in self.model or "o4" in self.model:
+                output_tokens += (
+                    response.usage.output_token_details.accepted_prediction_tokens
+                    + response.usage.output_token_details.reasoning_tokens
+                    + response.usage.output_token_details.rejected_prediction_tokens
+                )
+
+            input_cost = input_tokens / 1000 * self.input_cost
+            output_cost = output_tokens / 1000 * self.output_cost
+
+            self.total_cost += input_cost + output_cost
+
+    def refresh(self) -> None:
+        self.total_cost = 0.0
 ########## deprecated ##########
 '''
 def get_entity_subparts_by_type(client, image, artifact_type, money_manager=None):
@@ -958,5 +820,131 @@ def get_entity_subentities(client, image, money_manager=None):
             "error": "json_parse_failed",
             "raw_response": response
         }
+
+def get_all_entity_subparts(client, image, money_manager=None):
+    base64_image = encode_image_to_base64(image)
+
+    system_prompt = """
+    You are an image artifact agent. Image artifacts refer to unintended, implausible, or visibly corrupted regions within images generated by diffusion models. These artifacts often break the natural semantics or visual coherence of an image, such as a person with extra fingers, a car with warped wheels, or missing parts of animals, and can significantly degrade image quality or realism.
+    
+    Your task is to analyze the image and output **visible entities and their suitable subparts** for three types of artifact injection: **addition**, **removal**, and **distortion**.
+    ---
+
+    ### 1. Addition: Involves duplicating an existing part of the image and placing it somewhere else, creating implausible duplication (e.g., extra thumb, leg, or ear). The added part is placed adjacent to the original, in one of four directions. 
+        - Common on peripheral or terminal parts of objects/entities:
+            - Human/Animal: fingers, hands, toes, legs, etc.
+            - Vehicles: mirrors, wheels, wipers.
+        - Constraint: Do **not** include parts that are tightly overlapping or fused with the entity's torso or core body. For example, if a bird's wings are folded closely against its torso, they should not be selected. In such cases, the addition artifact may appear as if it's modifying the torso itself, which is not appropriate.
+    ---
+
+    ### 2. Removal: A specific object or part is deleted, and the area is inpainted using background textures, resulting in missing limbs, features, or objects, sometimes with visible traces.
+        - Common on terminal or protruding elements:
+            - Human/Animal: fingers, toes, legs, ears, horns, etc.
+            - Vehicles: antennas, side mirrors, etc.
+        - Constraint: Do **not** include parts that are tightly overlapping or fused with the entity's torso or core body. For example, if a bird’s wings are folded closely against its body, removing them would resemble torso removal, which is not a valid removal artifact.
+
+    ---
+
+    ### 3. Distortion: The object or part remains in place but the structure is altered (e.g., twisted, warped, scrambled), making the object unrecognizable or visually broken, like a warped face or twisted wheel.
+        - Can occur anywhere, especially in central or continuous regions:
+            - Human/Animal: face, torso, entire leg, etc.
+            - Vehicles: car doors, etc.
+
+    ---
+
+    Important constraint:
+    - You must **only recommend parts that are clearly visible in the image**. Do **not** include parts that are occluded, cropped out, or ambiguous. Artifact injection should only be applied to parts that are identifiable and visually distinguishable.
+
+    Return the results in **JSON** format. I will provide you with some examples:
+
+    ```json
+    {
+    "addition": {
+        "entity": "giraffe",
+        "subparts": ['ear', 'leg']
+    },
+    "removal": {
+        "entity": "giraffe",
+        "subparts": ['ear', 'horn', 'leg']
+    },
+    "distortion": {
+        "entity": "dog",
+        "subparts": ['face', 'torso', 'legs']
+    }
+    }
+    ```
+
+    ```json
+    {
+    "addition": {
+        "entity": "hand",
+        "subparts": ['finger', 'thumb']
+    },
+    "removal": {
+        "entity": "hand",
+        "subparts": ['finger', 'thumb']
+    },
+    "distortion": {
+        "entity": "hand",
+        "subparts": ['fingers', 'palm']
+    }
+    }
+    ```
+
+    ### Output:
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": system_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]
+                }
+            ],
+            max_tokens=1000,
+            temperature=0.2
+        )
+
+        if money_manager:
+            money_manager(response)
+
+        raw_text = response.choices[0].message.content.strip()
+
+        try:
+            raw_text = response.choices[0].message.content.strip()
+
+            # Handle markdown-style code block like ```json ... ```
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[len("```json"):].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[len("```"):].strip()
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3].strip()
+
+            return json.loads(raw_text)
+
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{[\s\S]*?\}', raw_text)
+            if json_match:
+                try:
+                    return json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+
+            print(f"Could not parse JSON from response: {raw_text}")
+            return {
+                "error": "json_parse_failed",
+                "raw_response": raw_text
+            }
+
+    except Exception as e:
+        print(f"Error analyzing sampled instance: {e}")
+        return None
 '''
+
 ########## deprecated ##########
