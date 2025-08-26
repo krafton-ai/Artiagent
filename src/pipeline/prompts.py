@@ -7,7 +7,7 @@ import re
 import os
 import cv2
 from openai.types.chat import ChatCompletion
-from typing import Union
+from typing import Union, Dict, List, Optional
 
 # Try to import matplotlib
 try:
@@ -16,6 +16,79 @@ try:
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
+
+from pydantic import BaseModel
+
+def encode_image_to_base64(image):
+    """Convert PIL Image or numpy array to base64 string"""
+    if isinstance(image, np.ndarray):
+        # Convert numpy array to PIL Image
+        pil_image = Image.fromarray(image)
+    else:
+        pil_image = image
+    
+    # Convert to RGB if necessary
+    if pil_image.mode != 'RGB':
+        pil_image = pil_image.convert('RGB')
+    
+    # Save to bytes buffer
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format='JPEG')
+    buffer.seek(0)
+    
+    # Encode to base64
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+IN_CONTEXT_EXAMPLES = {
+    "addition": {
+        "positive": {
+            "reasoning": "The third image in the target region shows a clear presence of an elephant's ear. The pattern and texture are consistent with an elephant's ear and are positioned in a manner that is anatomically plausible for an elephant",
+            "object_name": "an ear of an elephant",
+            "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/original_masked.png')),
+            "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/original_target.png')),
+            "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/artifact_target.png'))
+        },
+        "negative": {
+            "reasoning": "The third image in the target region does not show a clear presence of a zebra's tail. Although the target region is altered, the pattern and texture are not consistent with a zebra's tail and are not positioned in a manner that is anatomically plausible for a zebra",
+            "object_name": "a tail of a zebra",
+            "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/negative/original_masked.png')),
+            "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/negative/original_target.png')),
+            "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/negative/artifact_target.png'))
+        }
+    },
+    "removal": {
+        "positive": {
+            "reasoning": "The third image shows the region where the zebra's leg is expected. In this image, the leg is absent, and the area is filled with background textures that blend with the ground and surroundings.",
+            "object_name": "a leg of a zebra",
+            "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/positive/original_masked.png')),
+            "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/positive/original_target.png')),
+            "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/positive/artifact_target.png'))
+        },
+        "negative": {
+            "reasoning": "The third image in the target region shows where an ear of a cat originally was. In this image, although the ear looks shrinked, compared to the second image, which is the target region of the original image, the object was not removed properly.",
+            "object_name": "an ear of a cat",
+            "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/negative/original_masked.png')),
+            "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/negative/original_target.png')),
+            "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/negative/artifact_target.png'))
+        }
+    },
+    "fusion": {
+        "positive": {
+            "reasoning": "The second image shows two heads of sheeps. In the third image, the heads are fused together, and the two sheeps are merged into one.",
+            "object_name": "a sheep and a sheep",
+            "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/positive/original_masked.png')),
+            "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/positive/original_target.png')),
+            "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/positive/artifact_target.png'))
+        },
+        "negative": {
+            "reasoning": "The second image shows two elephants overlapping in the image. In the third image, although the target region looks blurred, the two elephants have a clear boundary.",
+            "object_name": "an elephant and a baby elephant",
+            "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/negative/original_masked.png')),
+            "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/negative/original_target.png')),
+            "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/negative/artifact_target.png'))
+        }
+    }
+}
 
 class MoneyManager:
     def __init__(self, model: str = "gpt-3.5-turbo-0613"):
@@ -133,122 +206,51 @@ class MoneyManager:
             )
 
         else:  # OpenAI and Claude
-            input_tokens = response.usage.prompt_tokens
-            output_tokens = response.usage.completion_tokens 
+            input_tokens = response.usage.input_tokens
+            output_tokens = response.usage.output_tokens 
 
             if "o1" in self.model or "o3" in self.model or "o4" in self.model:
                 output_tokens += (
-                    response.usage.completion_tokens_details.accepted_prediction_tokens
-                    + response.usage.completion_tokens_details.reasoning_tokens
-                    + response.usage.completion_tokens_details.rejected_prediction_tokens
+                    response.usage.output_token_details.accepted_prediction_tokens
+                    + response.usage.output_token_details.reasoning_tokens
+                    + response.usage.output_token_details.rejected_prediction_tokens
                 )
 
-        input_cost = input_tokens / 1000 * self.input_cost
-        output_cost = output_tokens / 1000 * self.output_cost
+            input_cost = input_tokens / 1000 * self.input_cost
+            output_cost = output_tokens / 1000 * self.output_cost
 
-        self.total_cost += input_cost + output_cost
+            self.total_cost += input_cost + output_cost
 
     def refresh(self) -> None:
         self.total_cost = 0.0
 
-def get_entity_subentities(client, image, money_manager=None):
-    base64_image = encode_image_to_base64(image)
-    system_prompt = """
-    You are given an image. Identify the visible **entities** and their **subentities**.
+class EntitySubentityResponse(BaseModel):
+    entity: str
+    subentities: List[str]
 
-    **Return ONLY JSON (no prose, no code fences).** Output must be a single JSON object that maps entities to their subentities, using this schema:
-
-    {"<entity>": ["<sub1>", "<sub2>", "..."], "<entity2>": ["<sub1>", "<sub2>", "..."], ...}
-
-    Hard rules:
-    1) Each returned entity MUST have **at least one** subentity. **Never** return an empty list for any entity.
-    2) If you cannot name at least one clearly visible subentity for an entity, **omit that entity entirely** (do not list it at all).
-    3) Subentities must be **clearly visible** and **reasonably segmentable** in the image.
-    4) **Exclude** parts that are tightly bound to or visually fused with the torso/core body (e.g., arms pressed to sides, folded wings against body). Only include subentities with clear visual separation.
-    5) Do **not** invent parts that are occluded, cropped out, or ambiguous.
-    6) Use concise, lowercase **nouns**; de-duplicate terms. Prefer 1–6 subentities per entity.
-    7) **Return exactly one JSON object** (not an array, not multiple separate objects).
-    8) **Granularity rule (coarsity):** Choose the **most specific visible entity**. If only a part is clearly visible (e.g., a leg without enough evidence of the full person), output that part as the entity (e.g., "leg") rather than its parent (e.g., "person"). Do **not** infer parent entities that are not clearly visible.
-
-    Clarifications:
-    - Examples of valid subentities:
-    • person → head, arm, hand, leg, foot, ear
-    • hand → finger, nail, palm
-    • dog → ear, snout, leg, tail, paw
-    • car → wheel, door, window, mirror
-    - Avoid generic torso-like regions. If no fine-grained parts are clearly separable for a candidate entity, **omit the entity** rather than returning an empty list.
-    - Granularity examples:
-    • If only a single **leg** is clearly visible: {"leg": ["knee", "ankle", "foot"]}  # Good
-    • Not acceptable for the same case: {"person": ["leg"]}  # Bad (parent entity not sufficiently visible)
-
-    Bad examples (NOT allowed):
-    {"dog": []}  # empty subentities list
-    {"suitcase": ["handle"]}, {"chair": ["leg"]}  # multiple separate JSON objects
-
-    Good examples:
-    {"dog": ["ear", "leg", "head"]}
-
-    {
-    "person": ["head", "arm", "hand", "leg", "foot"],
-    "hand": ["finger", "nail", "palm"]
-    }
-    """
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": system_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            }
-        ],
-        max_tokens=1000,
-        temperature=0.2
-    )
-
-    # Track costs with money manager
-    if money_manager:
-        money_manager(response)
-
-    response = response.choices[0].message.content.strip()
-        # Try to extract JSON from the response
-    try:
-        # First, try to parse the entire response as JSON
-        result = json.loads(response)
-        return result
-    except json.JSONDecodeError:
-        # If that fails, try to find JSON within the response
-        import re
-        json_match = re.search(r'\{[^{}]*\}', response)
-        if json_match:
-            try:
-                result = json.loads(json_match.group())
-                return result
-            except json.JSONDecodeError:
-                pass
-        
-        # If JSON parsing fails, return the raw text for debugging
-        print(f"Could not parse JSON from response: {response}")
-        return {
-            "error": "json_parse_failed",
-            "raw_response": response
-        }
+class VocabResponse(BaseModel):
+    peripheral: Optional[List[EntitySubentityResponse]] = None
+    intermediate: Optional[List[EntitySubentityResponse]] = None
     
-def get_entity_subentities_new(client, image, money_manager=None):
+def get_entity_subentities(client, image, money_manager=None):
     base64_image = encode_image_to_base64(image)
     system_prompt = """
     You are given an image. Identify the visible **entities** and their **subentities**, split into two layers:
     - **Peripheral (outermost) subentities** first (e.g., hands, fingers, eyes, ears, paws, tails, wheels, mirrors).
     - **Intermediate/Core subentities** second (e.g., arms, legs, face, head, door, window).
 
-    **Return ONLY JSON (no prose, no code fences).** Output must be a single JSON **array of length 2**:
-    [
-    {"<entity>": ["<peripheral_sub1>", "<peripheral_sub2>", "..."], ...},
-    {"<entity>": ["<intermediate_sub1>", "<intermediate_sub2>", "..."], ...}
-    ]
+    Output must return two dictionaries for each peripheral and intermediate types:
+
+    peripheral: {
+        "<peripheral_entity1>": ["<peripheral_sub1>", "<peripheral_sub2>", "..."],
+        "<peripheral_entity2>": ["<peripheral_sub1>", "<peripheral_sub2>", "..."],
+        ...
+    },
+    intermediate: {
+        "<intermediate_entity1>": ["<intermediate_sub1>", "<intermediate_sub2>", "..."],
+        "<intermediate_entity2>": ["<intermediate_sub1>", "<intermediate_sub2>", "..."],
+        ...
+    }
 
     Hard rules:
     1) Each returned entity MUST have **at least one** subentity in its dictionary. **Never** return an empty list for any entity.
@@ -257,14 +259,16 @@ def get_entity_subentities_new(client, image, money_manager=None):
     4) **Exclude** parts that are tightly bound to or visually fused with the torso/core body (e.g., arms pressed to sides, folded wings against body). Only include subentities with clear visual separation.
     5) Do **not** invent parts that are occluded, cropped out, or ambiguous.
     6) Use concise, lowercase **nouns**; de-duplicate terms. Prefer 1–6 subentities per entity per dictionary.
-    7) **Return exactly one JSON array of length 2** (not multiple arrays, not objects).
+    7) **Return exactly one JSON object** with exactly two top-level keys: **"peripheral"** and **"intermediate"** (not an array, not multiple objects).
     8) **Granularity rule (coarsity):** Choose the **most specific visible entity**. If only a part is clearly visible (e.g., a leg without enough evidence of the full person), output that part as the entity (e.g., "leg") rather than its parent (e.g., "person"). Do **not** infer parent entities that are not clearly visible.
+    9) **Peripheral variable-cardinality ban:** In the **peripheral** dictionary, **do not** include variable-cardinality micro-parts (0..n multiplicity) such as leaves, hairs, feathers, scales, spikes, thorns, grains, pebbles, raindrops, confetti, crowd members, etc. Prefer distal parts with fixed or small bounded counts (e.g., hand, finger, ear, eye, wheel, mirror). If only variable-cardinality micro-parts are visible for an entity, **omit that entity** from the peripheral dictionary.
 
     Layering guidance:
     - **Peripheral dictionary (index 0):** Include outermost parts with clear boundaries (e.g., arm, leg, wing, fin, hand, finger, nail, ear, eye, paw, tail, wheel, mirror, antenna).
+    - For the **peripheral** dictionary, exclude variable-cardinality micro-parts (e.g., leaves, hairs, feathers, scales, spots/pattern dots, raindrops); select fixed-cardinality or bounded-count distal parts instead.
     - **Intermediate/Core dictionary (index 1):** Include mid-level structural parts (e.g., arm, leg, face, door, window).
     - If a subentity fits both notions, prefer **peripheral** only if it is clearly distal and separable (e.g., "hand" → peripheral; "arm" → intermediate).
-    - If a candidate layer has no valid entities with visible subentities, return an empty object `{}` in that position to preserve array length = 2.
+    - If a candidate layer has no valid entities with visible subentities, set that key to an empty object `[]` (e.g., `"peripheral": []` or `"intermediate": []`).
 
     Clarifications:
     - Examples of valid subentities:
@@ -274,92 +278,70 @@ def get_entity_subentities_new(client, image, money_manager=None):
     • car → wheel, door, window, mirror
     - Avoid generic torso-like regions. If no fine-grained parts are clearly separable for a candidate entity, **omit the entity** rather than returning an empty list.
     - Granularity examples:
-    • If only a single **leg** is clearly visible: [{"leg": ["knee", "ankle", "foot"]}, {}]  # leg as entity in peripheral vs intermediate depends on visible parts; see examples below.
+    • If only a single **leg** is clearly visible:
+    {
+        "peripheral": {"leg": ["knee", "ankle", "foot"]},
+        "intermediate": []
+    }
+    - Variable-cardinality micro-parts are **not allowed** in the peripheral dictionary. Examples to avoid: leaf/leaves (tree), hair/hairs (person/animal), feather/feathers (bird), scale/scales (fish/reptile), spot/spots (dalmatian), petal/petals (flower), book/books (bookshelf), crowd/persons (crowd scene).
 
     Bad examples (NOT allowed):
-    - Returning a single object instead of an array
-    - Returning more or fewer than 2 dictionaries
+    - Returning a single array or more than one top-level JSON object
     - {"dog": []}  # empty subentities list
     - Multiple separate top-level JSON objects
+    - "peripheral": [{"entity": "tree", "subentities": ["leaf", "fruit"]}]  # variable-cardinality micro-parts in peripheral
 
     Good format examples (illustrative only):
-    [
-    { "person": ["hand", "finger", "leg", "arm"], "car": ["wheel", "mirror"], "dog": ["ear", "paw", "leg", "tail"] },
-    { "person": ["face", "palm"], "car": ["door", "window"], "dog": ["leg", "face"] }
-    ]
+    {
+        "peripheral": [{"entity": "person", "subentities": ["hand", "finger", "leg", "arm"]}, {"entity": "car", "subentities": ["wheel", "mirror"]}, {"entity": "dog", "subentities": ["ear", "paw", "leg", "tail"]}],
+        "intermediate": [{"entity": "person", "subentities": ["face", "palm"]}, {"entity": "car", "subentities": ["door", "window"]}, {"entity": "dog", "subentities": ["leg", "face"]}]
+    }
 
-    [
-    { "cat": ["ear", "paw", "leg", "tail"], "bicycle": ["wheel", "pedal"] },
-    { "cat": ["face"], "bicycle": ["frame", "seat"] }
-    ]
+    {
+        "peripheral": [{"entity": "cat", "subentities": ["ear", "paw", "leg", "tail"]}, {"entity": "bicycle", "subentities": ["wheel", "pedal"]}],
+        "intermediate": [{"entity": "cat", "subentities": ["face"]}, {"entity": "bicycle", "subentities": ["frame", "seat"]}]
+    }
 
     Edge-case examples:
     - Only distal parts visible:
-    [
-    { "hand": ["finger", "nail"] },
-    {}
-    ]
+    {
+        "peripheral": [{"entity": "hand", "subentities": ["finger", "nail"]}],
+        "intermediate": []
+    }
 
     - Only intermediate parts visible:
-    [
-    {},
-    { "person": ["face", "palm"] }
-    ]
+    {
+        "peripheral": [],
+        "intermediate": [{"entity": "person", "subentities": ["face", "palm"]}]
+    }
 
     - Multiple distal entities visible, no intermediate:
-    [
-    { "hand": ["finger", "nail"], "dog": ["ear", "paw", "tail", "leg"] },
-    {}
-    ]
+    {
+        "peripheral": [{"entity": "hand", "subentities": ["finger", "nail"]}, {"entity": "dog", "subentities": ["ear", "paw", "tail", "leg"]}],
+        "intermediate": []
+    }
     """
 
     try:
-        response = client.chat.completions.create(
+        response = client.responses.parse(
             model="gpt-4o",
-            messages=[
+            input=[
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": system_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64_image}"}
                     ]
                 }
             ],
-            max_tokens=1000,
-            temperature=0.2
+            temperature=0.2,
+            text_format=VocabResponse
         )
 
         if money_manager:
             money_manager(response)
 
-        raw_text = response.choices[0].message.content.strip()
-
-        try:
-            raw_text = response.choices[0].message.content.strip()
-
-            # Handle markdown-style code block like ```json ... ```
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[len("```json"):].strip()
-            elif raw_text.startswith("```"):
-                raw_text = raw_text[len("```"):].strip()
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3].strip()
-
-            return json.loads(raw_text)
-
-        except json.JSONDecodeError:
-            json_match = re.search(r'\{[\s\S]*?\}', raw_text)
-            if json_match:
-                try:
-                    return json.loads(json_match.group())
-                except json.JSONDecodeError:
-                    pass
-
-            print(f"Could not parse JSON from response: {raw_text}")
-            return {
-                "error": "json_parse_failed",
-                "raw_response": raw_text
-            }
+        return response.output_parsed
 
     except Exception as e:
         print(f"Error analyzing sampled instance: {e}")
@@ -490,238 +472,171 @@ def get_all_entity_subparts(client, image, money_manager=None):
         print(f"Error analyzing sampled instance: {e}")
         return None
 
-def query_addition_artifact_success(client, img_array, mask_image, part_entity_name, money_manager=None):
+class ArtifactSuccessResponse(BaseModel):
+    reasoning: str
+    success: bool
+
+class ArtifactExplanationResponse(BaseModel):
+    explanation: str
+
+def artifact_success(client, masked_original_image, target_original_image, target_artifact_image, object_name, artifact_type, money_manager=None):
     """
-    Query GPT-4 Vision to check if addition artifact injection was successful.
-    
+    Unified query to check if an artifact injection (addition, removal, or fusion) was successful.
+
     Args:
         client: OpenAI client
-        img_array: Original image as numpy array
-        mask_image: PIL Image of the target mask region
-        part_entity_name: Description of the part entity (e.g., "a hand of a person")
+        original_image: Original image as numpy array
+        artifact_image: Modified image with artifact as numpy array
+        object_name: Description of the object (e.g., "a hand of a person")
+        artifact_type: Either "addition", "removal", or "fusion"
         money_manager: MoneyManager instance for cost tracking (optional)
-        
+
     Returns:
-        dict: Contains 'success' boolean and 'reasoning' string
+        dict: Contains 'success' boolean, and 'reasoning' string. On parse errors, includes 'raw_response'.
     """
     # Encode images to base64
-    base64_image = encode_image_to_base64(img_array)
-    base64_mask = encode_image_to_base64(mask_image)
-    
+    original_masked = encode_image_to_base64(masked_original_image) # mask out the target region
+    original_target = encode_image_to_base64(target_original_image) # show only the target region
+    artifact_target = encode_image_to_base64(target_artifact_image) # show only the target region
+
+    instruction  = {
+        "addition": (
+            "You are an expert at detecting addition-type artifacts in AI-generated images.\n\n"
+            "Addition artifacts occur when a part of an object is duplicated and placed adjacent to the original, "
+            "creating anatomically or structurally implausible duplications (e.g., extra fingers, duplicate ears, duplicate wheels). "
+            "Your role is to determine if the artifact was successfully injected into the original image on the target region.\n\n"
+            "You will be shown:\n"
+            "\t1. An original image without the target region\n"
+            "\t2. An original image with only the target region\n"
+            "\t3. An artifact image with only the target region\n"
+            "\t4. The object name that will be added\n"
+            f'Your task is to determine if there is the object present in the third image, in the target region.\n\n'
+            "Addition artifact success is determined as follows:\n"
+            "\t• **Case A — Object present in target (Image 2)**: If the second image (target region of the original) already contains the specified object, then the third image must show a **plausible duplication** or **additional instance** of the object in the target region. The new instance should be **distinct** from the original and not just a local warping or minor change. Duplication should be anatomically/structurally plausible for the object.\n"
+            "\t• **Case B — No object in target (Image 2)**: If the second image does **not** contain the object in the target region, focus on the **third image** only. Success requires that the third image shows a **clearly new instance** of the specified object **within the target region**, with a **distinct boundary/contour** (not a texture smear or brightness change) and appearance consistent with that object. Do **not** require proximity or adjacency to any other instance in the scene.\n"
+            "\n"
+            "Checklist for addition artifact success (all must pass):\n"
+            "\t1) The third image (artifact region) contains the specified object in the target region.\n"
+            "\t2) The object's appearance is consistent with the class/type (e.g., an ear looks like an ear).\n"
+            "\t3) If Image 2 lacked the object in target, Image 3 shows a **clearly new** instance inside the target region with a **distinct boundary** (not just local warping/smearing).\n"
+            "\n"
+            "Reject if:\n"
+            "\t• There is only a subtle texture change, brightness shift, or local warping rather than a new instance.\n"
+            "\t• The added object is not visually separable or lacks clear boundaries.\n"
+        ),
+        "removal": (
+            "You are an expert at detecting removal-type artifacts in AI-generated images.\n\n"
+            "Removal artifacts occur when a part of an object is deleted and the area is inpainted with background, "
+            "resulting in missing features or gaps where something should be present (e.g., missing fingers, absent ears). "
+            "Your role is to determine if the artifact was successfully injected into the original image on the target region, "
+            "AND to reject cases where the scene remains anatomically/plausibly correct due to occlusion or viewpoint.\n\n"
+            "You will be shown:\n"
+            "\t1. An original image without the target region\n"
+            "\t2. An original image with only the target region\n"
+            "\t3. An artifact image with only the target region\n"
+            "\t4. The object name that will be removed\n"
+            f"Your task is to determine if the object is truly absent in the third image, in the target region, and that its absence is *not* plausibly explained by occlusion, pose, or viewpoint.\n\n"
+            "Evaluate using the following rules (be strict):\n"
+            "\t• **Definitive removal evidence** (at least one should be visible): stump/termination cues, disrupted silhouette, hollow/negative space where the part should be, texture continuation/inpainting traces across the expected attachment point, mismatched shadows/reflections, or symmetry break that cannot be explained by pose.\n"
+            "\t• **Ambiguity/occlusion rule (hard filter)**: If the missing part could plausibly be merely *hidden* (e.g., a cat's tail could be behind the torso, a mug handle could be removed, but can still be seen as a mug), set success = false.\n"
+            "\t• **Anatomical plausibility check**: If the scene still reads as anatomically correct (no clear gap, no silhouette disruption, no attachment artifact) *and* a typical pose could hide the part, set success = false.\n"
+            "\t• **Context consistency**: If shadows, reflections, or contact points imply the part should be visible but isn't, that supports success = true.\n\n"
+            "Quick checklist (all must pass for success = true):\n"
+            "\t1) Clear visual absence in the target area (not just low contrast).\n"
+            "\t2) At least one removal cue (stump/gap/inpainting/silhouette break/shadow mismatch).\n"
+            "\t3) No plausible occlusion or viewpoint explanation.\n\n"
+        ),
+        "fusion": (
+            "You are an expert at detecting fusion-type artifacts in AI-generated images.\n\n"
+            "Fusion artifacts occur when a part or two distinct entities are unnaturally merged together, "
+            "creating blurred boundaries, overlapped textures, or structural entanglement that makes the separation implausible "
+            "(e.g., two animals merged into one, a limb merged into the torso, overlapping facial features). "
+            "Your role is to determine if the artifact was successfully injected into the original image on the target region.\n\n"
+            "You will be shown:\n"
+            "\t1. An original image without the target region\n"
+            "\t2. An original image with only the target region\n"
+            "\t3. An artifact image with only the target region\n"
+            "\t4. The two object names that will be fused\n"
+            f"Your task is to determine if there is an unnatural fusion involving the two objects present in the third image, in the target region.\n\n"
+            "Evaluate using the following rules (be strict):\n"
+            "\t• **Boundary visibility comparison — HARD FILTER**: Compare Image 2 (original target) and Image 3 (artifact target). If a clear, continuous boundary/contour between the two objects remains visible in Image 3 (similar to Image 2), set success = false. Visible separation implies no fusion.\n"
+            "\t• **Fusion cues (need at least one)**: boundary loss or severe softening across the seam; cross-object texture/color blending; geometry interpenetration or topological entanglement; inconsistent occlusion ordering (parts that should be in front/behind become ambiguous).\n"
+            "\t• **Not fusion**: mere blur, minor warping, or lighting change that preserves a recognizable boundary line between objects.\n\n"
+            "Quick checklist (all must pass for success = true):\n"
+            "\t1) Boundary between the two objects in Image 3 is degraded or missing relative to Image 2 (no clean contour separation).\n"
+            "\t2) At least one strong fusion cue is present (texture bleed, geometry merge, occlusion inconsistency).\n"
+            "\t3) The region reads as a single merged structure rather than two distinct adjacent objects.\n\n"
+            "Output target: Decide success strictly. Favor false if uncertain.\n"
+        ),
+    }
+
     prompt = f"""
-    You are an expert at detecting addition-type artifacts in AI-generated images.
-
-    Addition artifacts occur when a part of an object is duplicated and placed adjacent to the original, 
-    creating anatomically or structurally implausible duplications (e.g., extra fingers, duplicate ears, etc.).
-
-    You will be shown:
-    1. An original image
-    2. A mask highlighting a specific region of interest
-    
-    Your task is to determine if there is "{part_entity_name}" present in the masked region of the image.
-    
-    Look carefully at the masked region and determine:
-    - Is there a clear presence of "{part_entity_name}" within the highlighted area?
-    - Does it appear to be a plausible duplication/addition of the specified part?
-    
-    Consider that addition artifacts should:
-    - Show the specified part type in the masked region
-    - Appear anatomically/structurally similar to other instances of the same part
-    - Be positioned adjacent to where such parts would naturally occur
-    
-    Return your analysis in this exact JSON format:
-    {{
-        "success": true/false,
-        "reasoning": "Brief explanation of what you observe in the masked region"
-    }}
-    
-    Set "success" to true if you can clearly identify "{part_entity_name}" in the masked region.
+    {instruction[artifact_type]}
+    Return your analysis in the following format:
+    "reasoning": "Brief explanation of what you observe in the masked region from the third image"
+    "success": true/false,
     """
-    
+
     try:
-        response = client.chat.completions.create(
+        response = client.responses.parse(
             model="gpt-4o",
-            messages=[
+            input=[
+                {"role": "system", "content": prompt},
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        },
-                        {
-                            "type": "image_url", 
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_mask}"
-                            }
-                        }
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['original_masked']}"},
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['original_target']}"},
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['artifact_target']}"},
+                                {"type": "input_text", "text": f"{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['object_name']}"}
+                            ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": f'{{"reasoning": "{IN_CONTEXT_EXAMPLES[artifact_type]["positive"]["reasoning"]}", "success": true}}'}
                     ]
-                }
-            ],
-            max_tokens=500,
-            temperature=0.2
-        )
-        
-        # Track costs with money manager
-        if money_manager:
-            money_manager(response)
-        
-        response_text = response.choices[0].message.content.strip()
-        
-        # Try to extract JSON from the response
-        try:
-            import re
-            json_match = re.search(r'\{[^{}]*\}', response_text)
-            if json_match:
-                result = json.loads(json_match.group())
-                return result
-            else:
-                # Fallback parsing
-                return {
-                    "success": False,
-                    "confidence": 0.0,
-                    "reasoning": "Could not parse response",
-                    "raw_response": response_text
-                }
-        except json.JSONDecodeError:
-            return {
-                "success": False,
-                "confidence": 0.0, 
-                "reasoning": "JSON parsing failed",
-                "raw_response": response_text
-            }
-            
-    except Exception as e:
-        print(f"Error in addition artifact query: {e}")
-        return {
-            "success": False,
-            "confidence": 0.0,
-            "reasoning": f"API error: {str(e)}"
-        }
-
-
-def query_removal_artifact_success(client, img_array, mask_image, part_entity_name, money_manager=None):
-    """
-    Query GPT-4 Vision to check if removal artifact injection was successful.
-    
-    Args:
-        client: OpenAI client
-        img_array: Original image as numpy array
-        mask_image: PIL Image of the target mask region
-        part_entity_name: Description of the part entity (e.g., "a hand of a person")
-        money_manager: MoneyManager instance for cost tracking (optional)
-        
-    Returns:
-        dict: Contains 'success' boolean and 'reasoning' string
-    """
-    # Encode images to base64
-    base64_image = encode_image_to_base64(img_array)
-    base64_mask = encode_image_to_base64(mask_image)
-    
-    prompt = f"""
-    You are an expert at detecting removal-type artifacts in AI-generated images.
-
-    Removal artifacts occur when a part of an object is deleted and the area is inpainted with background, 
-    resulting in missing parts that should be present (e.g., missing fingers, absent ears, etc.).
-
-    You will be shown:
-    1. An original image  
-    2. A mask highlighting a specific region of interest
-    
-    Your task is to determine if there is NO "{part_entity_name}" present in the masked region of the image.
-    
-    Look carefully at the masked region and determine:
-    - Is the specified part clearly absent from the highlighted area?
-    - Does the region show signs of inpainting or background fill instead of the expected part?
-    
-    Consider that successful removal artifacts should:
-    - Show absence of the specified part in the masked region
-    - Display background textures or inpainting in place of the missing part
-    - Leave the surrounding anatomy/structure intact but incomplete
-    
-    Return your analysis in this exact JSON format:
-    {{
-        "success": true/false,
-        "reasoning": "Brief explanation of what you observe in the masked region"
-    }}
-    
-    Set "success" to true if you can confirm that "{part_entity_name}" is clearly absent from the masked region.
-    """
-    
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
+                },
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_mask}"
-                            }
-                        }
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['negative']['original_masked']}"},
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['negative']['original_target']}"},
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['negative']['artifact_target']}"},
+                                {"type": "input_text", "text": f"{IN_CONTEXT_EXAMPLES[artifact_type]['negative']['object_name']}"}
+                            ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": f'{{"reasoning": "{IN_CONTEXT_EXAMPLES[artifact_type]["negative"]["reasoning"]}", "success": false}}'}
                     ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{original_masked}"},
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{original_target}"},
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{artifact_target}"},
+                                {"type": "input_text", "text": f"{object_name}"}
+                            ]
                 }
             ],
-            max_tokens=500,
-            temperature=0.2
+            temperature=0.2,
+            text_format=ArtifactSuccessResponse
         )
-        
+
         # Track costs with money manager
         if money_manager:
             money_manager(response)
-        
-        response_text = response.choices[0].message.content.strip()
-        
-        # Try to extract JSON from the response
-        try:
-            import re
-            json_match = re.search(r'\{[^{}]*\}', response_text)
-            if json_match:
-                result = json.loads(json_match.group())
-                return result
-            else:
-                # Fallback parsing
-                return {
-                    "success": False,
-                    "confidence": 0.0,
-                    "reasoning": "Could not parse response",
-                    "raw_response": response_text
-                }
-        except json.JSONDecodeError:
-            return {
-                "success": False,
-                "confidence": 0.0,
-                "reasoning": "JSON parsing failed", 
-                "raw_response": response_text
-            }
-            
-    except Exception as e:
-        print(f"Error in removal artifact query: {e}")
-        return {
-            "success": False,
-            "confidence": 0.0,
-            "reasoning": f"API error: {str(e)}"
-        }
 
-def artifact_explanation(client, real_image, artifact_image, entity, part, artifact_type, money_manager=None):
+        return response.output_parsed
+
+    except Exception as e:
+        print(f"Error in artifact query ({artifact_type}): {e}")
+        return None
+
+def artifact_explanation(client, real_image, artifact_image, object_name, artifact_type, money_manager=None):
     """
     Generate natural language explanation of visual artifacts using OpenAI Vision API
     
@@ -729,11 +644,8 @@ def artifact_explanation(client, real_image, artifact_image, entity, part, artif
         client: OpenAI client
         real_image: Original image as numpy array with region visualized where artifact will be injected
         artifact_image: Modified image with artifact as numpy array with region visualized where artifact was injected
-        metadata: Dictionary containing:
-            - 'entity': e.g., 'person'
-            - 'part': e.g., 'left leg'
-            - 'artifact_type': e.g., 'distortion' (for reasoning only)
-            - 'target_bbox': bounding box coordinates [x1, y1, x2, y2]
+        object_name: Name of the object where artifact is applied
+        artifact_type: Type of artifact ('addition', 'removal', 'distortion', 'fusion')
         money_manager: MoneyManager instance for cost tracking (optional)
         
     Returns:
@@ -744,12 +656,14 @@ def artifact_explanation(client, real_image, artifact_image, entity, part, artif
     base64_artifact_image = encode_image_to_base64(artifact_image)
     
     # Create artifact-type-specific guidance (without explicitly mentioning the type)
-    if artifact_type == 'distortion':
-        focus_guidance = "Pay attention to warped shapes, unnatural geometry, irregular textures, or visual blending errors that make the structure appear broken or malformed."
+    if artifact_type == 'addition':
+        focus_guidance = "Pay attention to any duplicated parts, unnatural growths, or extra elements that conflict with normal anatomy or structure."
     elif artifact_type == 'removal':
-        focus_guidance = "Look for missing structure, unnatural gaps, smoothed-over areas, or anatomical discontinuity where something appears to be absent."
-    elif artifact_type == 'addition':
-        focus_guidance = "Notice any duplicated or misplaced parts, unnatural growths, or extra elements that conflict with normal anatomy or structure."
+        focus_guidance = "Pay attention to missing structure, unnatural gaps, smoothed-over areas, or anatomical discontinuity where something appears to be absent."
+    elif artifact_type == 'distortion':
+        focus_guidance = "Pay attention to warped shapes, unnatural geometry, irregular textures, or visual blending errors that make the structure appear broken or malformed."
+    elif artifact_type == 'fusion':
+        focus_guidance = "Pay attention to regions where two distinct parts or entities appear unnaturally merged together, with blurred boundaries, overlapped textures, or structural entanglement that makes separation implausible."
     else:
         focus_guidance = "Identify any visual abnormalities, unnatural features, or elements that appear incorrect or implausible."
     
@@ -760,12 +674,11 @@ You are given two images:
 - **Image B**: A modified version of the same scene, with a region visualized as green bounding box where the artifact is injected.
 
 Here is the structured context:
-- **Entity**: {entity}
-- **Part**: {part}
+- **Object Name**: {object_name}
 
 Your task is to:
 1. Examine the highlighted region in the **given image** (Image B).
-2. Use your understanding of how the specified part of the entity should normally appear to identify abnormalities.
+2. Use your understanding of how the specified object should normally appear to identify abnormalities.
 3. Write a natural language explanation describing what appears visually wrong or unnatural in the highlighted region.
 
 **Do not mention or refer to the original image, the artifact type, or the image source explicitly.**
@@ -776,74 +689,33 @@ Focus your reasoning based on the artifact type (without stating it):
 {focus_guidance}
 
 Respond naturally and precisely, describing only what is visibly incorrect in the given image within the highlighted region.
-
-Return your response in this exact JSON format:
-{{
-    "explanation": "Your detailed explanation of what appears visually wrong in the highlighted region"
-}}
 """
 
     try:
-        response = client.chat.completions.create(
+        response = client.responses.parse(
             model="gpt-4o",
-            messages=[
+            input=[
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_real_image}"
-                            }
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_artifact_image}"
-                            }
-                        }
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64_real_image}"},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64_artifact_image}"}
                     ]
                 }
             ],
-            max_tokens=500,
-            temperature=0.2
+            temperature=0.2,
+            text_format=ArtifactExplanationResponse
         )
         
         # Track costs with money manager
         if money_manager:
             money_manager(response)
         
-        response_text = response.choices[0].message.content.strip()
-        
-        # Try to extract JSON from the response
-        try:
-            import re
-            json_match = re.search(r'\{[^{}]*\}', response_text)
-            if json_match:
-                result = json.loads(json_match.group())
-                return {
-                    "success": True,
-                    "explanation": result.get("explanation", ""),
-                    "raw_response": response_text
-                }
-            else:
-                # Fallback: use the entire response as explanation
-                return {
-                    "success": True,
-                    "explanation": response_text,
-                    "raw_response": response_text
-                }
-        except json.JSONDecodeError:
-            # Fallback: use the entire response as explanation
-            return {
-                "success": True,
-                "explanation": response_text,
-                "raw_response": response_text
-            }
+        return {
+            "success": True,
+            "explanation": response.output_parsed.explanation
+        }
             
     except Exception as e:
         print(f"Error in artifact explanation: {e}")
@@ -851,27 +723,7 @@ Return your response in this exact JSON format:
             "success": False,
             "explanation": "",
             "error": f"API error: {str(e)}"
-        } 
-    
-def encode_image_to_base64(image):
-    """Convert PIL Image or numpy array to base64 string"""
-    if isinstance(image, np.ndarray):
-        # Convert numpy array to PIL Image
-        pil_image = Image.fromarray(image)
-    else:
-        pil_image = image
-    
-    # Convert to RGB if necessary
-    if pil_image.mode != 'RGB':
-        pil_image = pil_image.convert('RGB')
-    
-    # Save to bytes buffer
-    buffer = io.BytesIO()
-    pil_image.save(buffer, format='JPEG')
-    buffer.seek(0)
-    
-    # Encode to base64
-    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+        }
         
 
 ########## deprecated ##########
@@ -1021,5 +873,90 @@ def get_entity_subparts_by_type(client, image, artifact_type, money_manager=None
         print(f"Error analyzing sampled instance: {e}")
         return None
 
+def get_entity_subentities(client, image, money_manager=None):
+    base64_image = encode_image_to_base64(image)
+    system_prompt = """
+    You are given an image. Identify the visible **entities** and their **subentities**.
+
+    **Return ONLY JSON (no prose, no code fences).** Output must be a single JSON object that maps entities to their subentities, using this schema:
+
+    {"<entity>": ["<sub1>", "<sub2>", "..."], "<entity2>": ["<sub1>", "<sub2>", "..."], ...}
+
+    Hard rules:
+    1) Each returned entity MUST have **at least one** subentity. **Never** return an empty list for any entity.
+    2) If you cannot name at least one clearly visible subentity for an entity, **omit that entity entirely** (do not list it at all).
+    3) Subentities must be **clearly visible** and **reasonably segmentable** in the image.
+    4) **Exclude** parts that are tightly bound to or visually fused with the torso/core body (e.g., arms pressed to sides, folded wings against body). Only include subentities with clear visual separation.
+    5) Do **not** invent parts that are occluded, cropped out, or ambiguous.
+    6) Use concise, lowercase **nouns**; de-duplicate terms. Prefer 1–6 subentities per entity.
+    7) **Return exactly one JSON object** (not an array, not multiple separate objects).
+    8) **Granularity rule (coarsity):** Choose the **most specific visible entity**. If only a part is clearly visible (e.g., a leg without enough evidence of the full person), output that part as the entity (e.g., "leg") rather than its parent (e.g., "person"). Do **not** infer parent entities that are not clearly visible.
+
+    Clarifications:
+    - Examples of valid subentities:
+    • person → head, arm, hand, leg, foot, ear
+    • hand → finger, nail, palm
+    • dog → ear, snout, leg, tail, paw
+    • car → wheel, door, window, mirror
+    - Avoid generic torso-like regions. If no fine-grained parts are clearly separable for a candidate entity, **omit the entity** rather than returning an empty list.
+    - Granularity examples:
+    • If only a single **leg** is clearly visible: {"leg": ["knee", "ankle", "foot"]}  # Good
+    • Not acceptable for the same case: {"person": ["leg"]}  # Bad (parent entity not sufficiently visible)
+
+    Bad examples (NOT allowed):
+    {"dog": []}  # empty subentities list
+    {"suitcase": ["handle"]}, {"chair": ["leg"]}  # multiple separate JSON objects
+
+    Good examples:
+    {"dog": ["ear", "leg", "head"]}
+
+    {
+    "person": ["head", "arm", "hand", "leg", "foot"],
+    "hand": ["finger", "nail", "palm"]
+    }
+    """
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": system_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                ]
+            }
+        ],
+        max_tokens=1000,
+        temperature=0.2
+    )
+
+    # Track costs with money manager
+    if money_manager:
+        money_manager(response)
+
+    response = response.choices[0].message.content.strip()
+        # Try to extract JSON from the response
+    try:
+        # First, try to parse the entire response as JSON
+        result = json.loads(response)
+        return result
+    except json.JSONDecodeError:
+        # If that fails, try to find JSON within the response
+        import re
+        json_match = re.search(r'\{[^{}]*\}', response)
+        if json_match:
+            try:
+                result = json.loads(json_match.group())
+                return result
+            except json.JSONDecodeError:
+                pass
+        
+        # If JSON parsing fails, return the raw text for debugging
+        print(f"Could not parse JSON from response: {response}")
+        return {
+            "error": "json_parse_failed",
+            "raw_response": response
+        }
 '''
 ########## deprecated ##########
