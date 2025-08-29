@@ -36,7 +36,7 @@ from pipeline import (
     GSAMDetector, InstanceProcessor, ImageVisualizer,
 )
 from pipeline.data_loader import _initialize_data_loader, _get_image_list
-from pipeline.prompts import get_all_entity_subparts, MoneyManager
+from pipeline.prompts import get_entity_subentities, MoneyManager
 from PIL import Image
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
@@ -79,8 +79,9 @@ def _try_process_all_artifact_types(
     image_output_dir: str,
     img_filename: str,
     money_manager: MoneyManager,
-    logger: logging.Logger
-) -> Tuple[Dict[str, List[Dict]], Optional[np.ndarray], Optional[Any]]:
+    logger: logging.Logger,
+    artifact_distribution: Dict[str, int]
+) -> List[Dict[str, Any]]:
     """
     Process all artifact types for an image in a single detection call.
     
@@ -91,67 +92,116 @@ def _try_process_all_artifact_types(
         openai_client: OpenAI client
         image_output_dir: Output directory
         img_filename: Image filename
+        money_manager: Money manager instance
         logger: Logger instance
+        artifact_distribution: Current distribution of artifact types
         
     Returns:
-        Tuple of (artifacts_by_type, visualized_output, combined_vocab)
+        Tuple of (artifacts_by_type, visualized_output)
     """
     logger.info(f"Getting entity subparts for all artifact types...")
 
     
     # Step 1: Get all entity subparts from API
-    all_subparts_response = get_all_entity_subparts(openai_client, img_array, money_manager)
-    if not all_subparts_response or 'error' in all_subparts_response:
+    entity_subentity_response = get_entity_subentities(openai_client, img_array, money_manager)
+    if not entity_subentity_response or 'error' in entity_subentity_response:
         raise RuntimeError("Failed to get entity subparts")
+    if not entity_subentity_response.peripheral and not entity_subentity_response.intermediate:
+        raise ValueError("Both peripheral and intermediate entity subentity lists are empty")
         
     # Transform the response into a nested dictionary structure
-    # First level: entity, Second level: subpart, Value: list of artifact types
-    entities = set()
-    subentities = set()
-    entity_subpart_artifacts = defaultdict(lambda: defaultdict(list))
-    for artifact_type, vocab_data in all_subparts_response.items():
-        entity = vocab_data['entity']
-        subparts = vocab_data['subparts']
-        entities.add(entity)
-        for subentity in subparts:
-            subentities.add(subentity)
-            entity_subpart_artifacts[entity][subentity].append(artifact_type)
+    # First level: entity, Second level: subentity, Value: list of artifact types
+    peripheral_entities = set()
+    peripheral_subentities = set()
+    peripheral_entity_subentity_mapping = defaultdict(list)
+    intermediate_entities = set()
+    intermediate_subentities = set()
+    intermediate_entity_subentity_mapping = defaultdict(list)
+    all_entity_subentity_mapping = defaultdict(list)
+
+    for vocab in entity_subentity_response.peripheral:
+        peripheral_entities.add(vocab.entity)
+        peripheral_subentities.update(vocab.subentities)
+        for subentity in vocab.subentities:
+            peripheral_entity_subentity_mapping[subentity].append(vocab.entity)
+            all_entity_subentity_mapping[subentity].append(vocab.entity)
+    for vocab in entity_subentity_response.intermediate:
+        intermediate_entities.add(vocab.entity)
+        intermediate_subentities.update(vocab.subentities)
+        for subentity in vocab.subentities:
+            intermediate_entity_subentity_mapping[subentity].append(vocab.entity)
+            all_entity_subentity_mapping[subentity].append(vocab.entity)
+    all_entities = peripheral_entities | intermediate_entities
+    all_subentities = peripheral_subentities | intermediate_subentities
 
     # Step 3: Single detection call with combined vocabulary
     logger.info(f"Detecting parts using Grounded SAM...")
-    predictions, entity_predictions, visualized_output = gsam_detector.detect_parts(img_array, list(entities), list(subentities), min_area_ratio=0.005, max_area_ratio=0.5)
+    predictions, entity_predictions, visualized_output = gsam_detector.detect_parts(img_array, list(all_entities), list(all_subentities), all_entity_subentity_mapping, min_area_ratio=0.005, max_area_ratio=0.5)
     # Step 4: Sample target parts with entity-aware logic
     logger.info(f"Sampling target parts across all entities...")
 
-    artifacts = []
+    ## for all predictions, retrieve the nearby subentities that are able for fusion type of artifacts
+
+    artifacts = defaultdict(list)
+    for entity_prediction in entity_predictions:
+        entity = entity_prediction['entity']
+        try:
+            annotation = create_fusion_artifact_annotations(
+                entity_prediction,
+                entity_predictions,
+                predictions,
+                entity,
+                img_array,
+                image_output_dir,
+                img_filename,
+            )
+            artifacts['fusion'].append(annotation)
+                # + get nearby subentities that are able for fusion type of artifacts
+                # if there are any subentities nearby, add fusion to the entity_mapping
+        except Exception as e:
+            logger.error(f"Can not create fusion artifact for {entity}: {str(e)}")
+            continue
+
     for prediction in predictions:
         entity = prediction['entity']
         subentity = prediction['subentity']
-        
-        artifact_type = random.choice(entity_subpart_artifacts[entity][subentity])
-        logger.info(f"Creating {artifact_type} artifact for {entity} of {subentity}")
-        try:
-            annotation = create_artifact_annotations(
-                artifact_type, prediction,
-                predictions, entity_predictions, entity, subentity, img_array, config,
-                image_output_dir, img_filename, logger, openai_client
-            )
-        except Exception as e:
-            logger.error(f"Error creating {artifact_type} artifact for {entity} of {subentity}: {str(e)}")
-            continue
-        
-        artifacts.append(annotation)
+        # + get nearby subentities that are able for fusion type of artifacts
+        # if there are any subentities nearby, add fusion to the entity_mapping
     
-    if not artifacts:
-        logger.error(f"No artifacts were created successfully")
-        raise RuntimeError("No artifacts were created successfully")
+        for artifact_type in ['addition', 'removal', 'distortion']:
+            if artifact_type in ['addition', 'removal']:
+                if subentity not in peripheral_subentities:
+                    continue
+                if entity not in peripheral_entity_subentity_mapping[subentity]:
+                    continue
+            elif artifact_type == 'distortion':
+                if subentity not in intermediate_subentities:
+                    continue
+                if entity not in intermediate_entity_subentity_mapping[subentity]:
+                    continue
+            try:
+                annotation = create_artifact_annotations(
+                    artifact_type, prediction,
+                    predictions, entity_predictions, entity, subentity, img_array, config,
+                    image_output_dir, img_filename, logger, openai_client
+                )
+                artifacts[artifact_type].append(annotation)
+            except Exception as e:
+                logger.error(f"Can not create {artifact_type} artifact for {subentity} of {entity}: {str(e)}")
+                continue
+        
+                
+    if len(artifacts) == 0:
+        logger.info(f"No artifacts were created successfully. Generating image with no artifacts")
+        return []
     
     # Sample final artifacts with completely non-overlapping patches
     max_artifacts = config['max_artifacts_per_image']
 
     selected_artifacts = sample_multiple_target_artifacts(
         artifacts,
-        max_artifacts=max_artifacts
+        max_artifacts=max_artifacts,
+        artifact_distribution=artifact_distribution
     )
 
     if not selected_artifacts:
@@ -162,27 +212,61 @@ def _try_process_all_artifact_types(
     total_artifacts = len(selected_artifacts)
     logger.info(f"✅ Created {total_artifacts} artifacts")
     
-    return selected_artifacts, visualized_output
+    return selected_artifacts
 
 def sample_multiple_target_artifacts(
-    annotations: List[Dict[str, Any]], 
-    max_artifacts: int
+    annotations: Dict[str, List[Dict[str, Any]]], 
+    max_artifacts: int,
+    artifact_distribution: Dict[str, int] = None
 ) -> List[Dict[str, Any]]:
     """
     Sample multiple target artifacts from annotations with completely non-overlapping patches.
+    Uses distribution information to bias sampling towards under-represented artifact types.
     
     Args:
-        annotations: List of artifact annotations
+        annotations: Dictionary of artifact annotations by type
         max_artifacts: Maximum number of artifacts to select
+        artifact_distribution: Current distribution of artifact types across all processed images
         
     Returns:
         List of selected artifacts with no overlapping patches
     """
     
-    # Sort by confidence score (descending order - highest confidence first)
+    # Flatten annotations from dict to list
+    all_annotations = []
+    for artifact_type, artifact_list in annotations.items():
+        all_annotations.extend(artifact_list)
+    
+    # Calculate artifact type bias scores if distribution is provided
+    bias_scores = {}
+    total_artifacts = sum(artifact_distribution.values())
+    if total_artifacts > 0:
+        # Calculate the expected proportion for each type (assuming equal distribution)
+        num_types = len(artifact_distribution)
+        expected_proportion = 1.0 / num_types
+        
+        # Calculate bias scores: higher bias for under-represented types
+        for artifact_type, count in artifact_distribution.items():
+            current_proportion = count / total_artifacts
+            # Bias score is inversely proportional to current representation
+            # Under-represented types get higher bias scores
+            if current_proportion == 0:
+                bias_scores[artifact_type] = 10.0  # Maximum bias for unseen types
+            else:
+                bias_scores[artifact_type] = expected_proportion / current_proportion
+    else:
+        # No artifacts yet, give equal bias to all types
+        for artifact_type in artifact_distribution.keys():
+            bias_scores[artifact_type] = 1.0
+
+    total_artifacts = sum(artifact_distribution.values())
+    print(f"  📊 Current artifact distribution: {artifact_distribution} (total: {total_artifacts})")
+    print(f"  ⚖️  Bias scores: {bias_scores}")
+    
+    # Sort by biased score (confidence * bias) in descending order
     sorted_annotations = sorted(
-        annotations,
-        key=lambda x: x.get('sampled_instance_info', {}).get('score', 0),
+        all_annotations,
+        key=lambda x: bias_scores[x['artifact_type']],
         reverse=True
     )
     
@@ -234,15 +318,15 @@ def create_artifact_annotations(
     openai_client
 ) -> Dict[str, Any]:
     """
-    Create artifact annotations for a detected entity-subpart combination.
+    Create artifact annotations for a detected entity-subentity combination.
     
     Args:
-        artifact_type: Type of artifact ('addition', 'removal', 'distortion')
+        artifact_type: Type of artifact ('addition', 'removal', 'distortion', 'fusion')
         prediction: Prediction data containing mask and bbox information
         predictions: All detection predictions from the model
         entity_predictions: Entity-level detection predictions
         entity: Entity name (e.g., 'person')
-        subpart: Subpart name (e.g., 'hand')
+        subentity: Subentity name (e.g., 'hand')
         img_array: Image array data
         config: Configuration dictionary with artifact parameters
         image_output_dir: Output directory for this image
@@ -254,15 +338,17 @@ def create_artifact_annotations(
     """
     # Handle random distortion kernel sampling
     if artifact_type == 'distortion':
-        if config['random_distortion'] and artifact_type == 'distortion':
-            available_kernels = ['none', 'jitter', 'swirl', 'voronoi', 'coarse', 'strip']
+        if config['random_distortion']:
+            available_kernels = ['none', 'shuffle','jitter', 'swirl', 'voronoi', 'coarse', 'strip']
             distortion_kernel = random.choice(available_kernels)
             logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
+        else:
+            distortion_kernel = config['distortion_kernel']
     
     # Create artifact patches
     target_patches, reference_patches = InstanceProcessor.create_artifact_patches(
         artifact_type, 
-        prediction, 
+        prediction,
         predictions, 
         entity_predictions,
         img_array, 
@@ -292,8 +378,8 @@ def create_artifact_annotations(
     logger.info(f"    Target patches: {len(target_patches)} patches -> {len(target_patch_indices)} patch indices")
     logger.info(f"    Reference patches: {len(reference_patches)} patches -> {len(reference_patch_indices)} patch indices")
 
-    # Return structured annotations with artifact index
-    return {
+    # Prepare return dict with base metadata
+    result_dict = {
         'artifact_type': artifact_type,
         'entity': entity,
         'subentity': subentity,
@@ -305,6 +391,63 @@ def create_artifact_annotations(
         'reference_mask': reference_mask,
         'distortion_kernel': distortion_kernel if artifact_type == 'distortion' else None
     }
+    
+    # Add fusion metadata if available
+    # if artifact_metadata is not None:
+    #     result_dict['fusion_metadata'] = artifact_metadata
+    
+    return result_dict
+
+def create_fusion_artifact_annotations(
+    entity_prediction: Dict,
+    entity_predictions: Any,
+    predictions: Any,
+    entity: str,
+    img_array: np.ndarray,
+    image_output_dir: str,
+    img_filename: str,
+
+) -> Dict[str, Any]:
+    target_patches, reference_patches, fused_entity = InstanceProcessor.create_fusion_artifact_patches(
+        entity_prediction,
+        entity_predictions,
+        predictions,
+        img_array,
+        patch_size=16,
+        output_dir=image_output_dir,
+        img_filename=img_filename
+    )
+
+    target_bbox = InstanceProcessor.patch_coords_to_bbox(target_patches, patch_size=16)
+    reference_bbox = InstanceProcessor.patch_coords_to_bbox(reference_patches, patch_size=16)
+
+    target_mask = InstanceProcessor.patches_to_masks(target_patches, img_array.shape, patch_size=16)
+    reference_mask = InstanceProcessor.patches_to_masks(reference_patches, img_array.shape, patch_size=16)
+
+    target_patch_indices, reference_patch_indices = InstanceProcessor.map_coords_to_patch_indices(
+        artifact_type='fusion',
+        target_patches=target_patches,
+        reference_patches=reference_patches,
+        img_shape=img_array.shape,
+        patch_size=16
+    )
+    print(len(target_patch_indices), len(reference_patch_indices))
+
+    result_dict = {
+        'artifact_type': 'fusion',
+        'entity': entity,
+        'fused_entity': fused_entity,
+        'target_bbox': target_bbox,
+        'reference_bbox': reference_bbox,
+        'target_patch_indices': target_patch_indices,
+        'reference_patch_indices': reference_patch_indices,
+        'target_mask': target_mask,
+        'reference_mask': reference_mask,
+        'distortion_kernel': None,
+    }
+
+    return result_dict
+    
 
 
 def process_single_image(
@@ -318,7 +461,8 @@ def process_single_image(
     config: Dict[str, Any], 
     openai_client: openai.OpenAI,
     money_manager: MoneyManager,
-    logger: logging.Logger
+    logger: logging.Logger,
+    artifact_distribution: Dict[str, int]
 ) -> Dict[str, Any]:
     """
     Process a single image with GSAM segmentation.
@@ -326,12 +470,16 @@ def process_single_image(
     Args:
         img_info: Image information dictionary
         gsam_detector: GSAM detector instance
+        blip_model: BLIP model for caption generation
+        blip_processor: BLIP processor
         data_loader: Data loader instance
         visualizer: Image visualizer instance
         output_dir: Output directory
         config: Configuration dictionary
         openai_client: OpenAI client instance
+        money_manager: Money manager instance
         logger: Logger instance
+        artifact_distribution: Current distribution of artifact types
         
     Returns:
         Processing results dictionary
@@ -362,21 +510,15 @@ def process_single_image(
         out = blip_model.generate(**inputs)
         caption = blip_processor.decode(out[0], skip_special_tokens=True).strip()
 
-        try:
-            unique_id = str(uuid.uuid4())
-            image_output_dir = os.path.join(output_dir, f'{unique_id}')
-            os.makedirs(image_output_dir, exist_ok=True)
-            (artifacts, visualized_output) = _try_process_all_artifact_types(
-                img_array, gsam_detector, config,
-                openai_client, image_output_dir, img_filename, money_manager, logger
-            )
-        except Exception as e:
-            logger.error(f"Error processing image {img_id}: {str(e)}")
-            shutil.rmtree(image_output_dir)
-            logger.error(traceback.format_exc())
-            raise e
+        unique_id = str(uuid.uuid4())
+        image_output_dir = os.path.join(output_dir, f'{unique_id}')
+        os.makedirs(image_output_dir, exist_ok=True)
+        artifacts = _try_process_all_artifact_types(
+            img_array, gsam_detector, config,
+            openai_client, image_output_dir, img_filename, money_manager, logger, artifact_distribution
+        )
 
-        if not artifacts:
+        if len(artifacts) == 0:
             results['error'] = "No valid target parts found for any artifact type after filtering"
             return results
 
@@ -391,7 +533,7 @@ def process_single_image(
         output_file = os.path.join(image_output_dir, 'metadata.pkl')
         with open(output_file, 'wb') as f:
             pickle.dump(unified_data, f)
-        
+
         results['success'] = True
         results['artifacts_created'] = len(artifacts) if artifacts else 0
         
@@ -405,8 +547,13 @@ def process_single_image(
             artifact_type = artifact['artifact_type']
             if artifact_type not in artifact_details:
                 artifact_details[artifact_type] = []
-            artifact_details[artifact_type].append({
-                'subentity': artifact['subentity'], 
+            if artifact_type == 'fusion':
+                artifact_details[artifact_type].append({
+                    'fused_entity': artifact['fused_entity'], 
+                })
+            else:
+                artifact_details[artifact_type].append({
+                    'subentity': artifact['subentity'], 
             })
         results['artifact_details'] = artifact_details
         logger.info(f"✅ Processed image {img_id} with {results['artifacts_created']} artifacts")
@@ -578,7 +725,7 @@ def _print_processing_summary(
             logger.info("CLASS DISTRIBUTION:")
             logger.info("-" * 30)
             sorted_classes = sorted(detailed_stats['class_distribution'].items(), 
-                                  key=lambda x: x[1], reverse=True)
+                                    key=lambda x: x[1], reverse=True)
             for class_name, count in sorted_classes[:10]:  # Show top 10
                 percentaged = (count / total_artifacts) * 100 if total_artifacts > 0 else 0
                 logger.info(f"  {class_name}: {count} ({percentage:.1f}%)")
@@ -587,7 +734,7 @@ def _print_processing_summary(
                 logger.info(f"  ... and {len(sorted_classes) - 10} more classes")
     
     elapsed_time = (datetime.now() - 
-                   datetime.fromisoformat(stats['start_time'])).total_seconds()
+                    datetime.fromisoformat(stats['start_time'])).total_seconds()
     logger.info("")
     logger.info(f"Total time: {elapsed_time/3600:.1f} hours")
     logger.info(f"Results saved in: {output_dir}")
@@ -621,6 +768,7 @@ def run_gsam_processing(
     os.makedirs(output_dir, exist_ok=True)
     
     # Setup logging
+    print(categories)
     category_str = "-".join(categories)
     logger = setup_logging(output_dir, f"{dataset_type}_{category_str}")
     logger.info(f"Starting GSAM processing for {dataset_type} dataset")
@@ -684,16 +832,40 @@ def run_gsam_processing(
         logger.info("No images to process!")
         return
     
+    # Initialize artifact distribution tracking
+    artifact_distribution = {
+        'addition': 0,
+        'removal': 0,
+        'distortion': 0,
+        'fusion': 0
+    }
+    
+    # If resuming, initialize distribution from existing stats
+    if resume and 'artifact_counts' in stats:
+        for artifact_type in artifact_distribution.keys():
+            if artifact_type in stats['artifact_counts']:
+                artifact_distribution[artifact_type] = stats['artifact_counts'][artifact_type]
+    
     # Process images with progress tracking
     with tqdm(total=len(image_list), desc=f"Processing {dataset_type} images") as pbar:
         for img_info in image_list:
             result = process_single_image(
                 img_info, gsam_detector, blip_model, blip_processor, data_loader, visualizer,
-                output_dir, config, openai_client, money_manager, logger
+                output_dir, config, openai_client, money_manager, logger, artifact_distribution
             )
             
             # Update statistics and progress
             _update_progress_stats(stats, result, progress_file)
+            
+            # Update artifact distribution tracking
+            if result['success'] and 'artifact_types_processed' in result:
+                for artifact_type in result['artifact_types_processed']:
+                    if artifact_type in artifact_distribution:
+                        # Count how many artifacts of this type were created
+                        if 'artifact_details' in result and artifact_type in result['artifact_details']:
+                            artifact_distribution[artifact_type] += len(result['artifact_details'][artifact_type])
+                        else:
+                            artifact_distribution[artifact_type] += 1
             
             # Update progress bar
             status = "✅" if result['success'] else "❌"
@@ -833,7 +1005,7 @@ def _setup_argument_parser() -> Any:
     parser.add_argument(
         'categories', nargs='+', 
         help='Categories to process. For COCO: supercategories (person, animal, vehicle, etc.). '
-             'For ImageNet: class names (dog, cat, car, etc.)'
+                'For ImageNet: class names (dog, cat, car, etc.)'
     )
     
     # Dataset configuration
@@ -844,7 +1016,7 @@ def _setup_argument_parser() -> Any:
     parser.add_argument(
         '--dataset-path', type=str, default='/home/jhpark/image-artifacts/data/eval_coco_animals',
         help='Path to dataset. For COCO: annotations directory. For ImageNet: root directory '
-             'containing train/val folders. For custom: root directory with class subdirectories'
+                'containing train/val folders. For custom: root directory with class subdirectories'
     )
     parser.add_argument(
         '--image-path', type=str, default=None,
@@ -914,7 +1086,7 @@ def _setup_argument_parser() -> Any:
     parser.add_argument(
         '--predefined-vocab', nargs='+', default=None,
         help='Pre-defined vocabulary list (e.g., --predefined-vocab "person head" "person arm" '
-             '"person leg"). If provided, skips OpenAI API calls for vocabulary generation.'
+                '"person leg"). If provided, skips OpenAI API calls for vocabulary generation.'
     )
     
     # GSAM model configuration

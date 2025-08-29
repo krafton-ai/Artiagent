@@ -25,7 +25,7 @@ class FluxConfig:
     guidance: float = 5.0
     num_steps: int = 25
     inject_step: int = 15
-    pe_step: Union[float, Dict[str, float]] = 0.2  # Can be float or dict with artifact type keys
+    pe_step: Union[int, Dict[str, int]] = 25  # Can be int or dict with artifact type keys
     attn_mask_step: int = 0
     seed: int = 42
     masks: list = None
@@ -41,18 +41,18 @@ class FluxConfig:
         
         # Validate pe_step configuration
         if isinstance(self.pe_step, dict):
-            required_keys = {'addition', 'removal', 'distortion'}
+            required_keys = {'addition', 'removal', 'distortion', 'fusion'}
             provided_keys = set(self.pe_step.keys())
             if not required_keys.issubset(provided_keys):
                 missing_keys = required_keys - provided_keys
                 raise ValueError(f"pe_step dict missing required artifact types: {missing_keys}")
             
-            # Validate all values are numeric
+            # Validate all values are integers
             for artifact_type, value in self.pe_step.items():
-                if not isinstance(value, (int, float)):
-                    raise ValueError(f"pe_step value for '{artifact_type}' must be numeric, got {type(value)}")
+                if not isinstance(value, int):
+                    raise ValueError(f"pe_step value for '{artifact_type}' must be an integer, got {type(value)}")
     
-    def get_pe_step(self, artifact_type: str) -> float:
+    def get_pe_step(self, artifact_type: str) -> int:
         """
         Get pe_step value for specific artifact type
         
@@ -131,6 +131,7 @@ class FluxGenerator:
         flux_args.pe_step_addition = self.config.pe_step['addition']
         flux_args.pe_step_removal = self.config.pe_step['removal']
         flux_args.pe_step_distortion = self.config.pe_step['distortion']
+        flux_args.pe_step_fusion = self.config.pe_step['fusion']
         flux_args.seed = self.config.seed
         flux_args.masks = self.config.masks.copy()
         flux_args.alpha = self.config.alpha
@@ -223,6 +224,7 @@ class FluxGenerator:
         info['pe_step_distortion'] = flux_args.pe_step_distortion
         info['pe_step_removal'] = flux_args.pe_step_removal
         info['pe_step_addition'] = flux_args.pe_step_addition
+        info['pe_step_fusion'] = flux_args.pe_step_fusion
         info['artifact_data'] = flux_args.artifact_data
         info['guidance'] = flux_args.guidance
         if not os.path.exists(flux_args.feature_path):

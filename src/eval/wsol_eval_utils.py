@@ -57,6 +57,11 @@ Use lowercase "true" or "false" (boolean values). Do not include any explanation
   {"bbox_2d": [x_min, y_min, x_max, y_max]},
   ...
 ]
+```
+
+If no artifacts are found, return:
+```json
+[]
 ```"""
         # prompt = "Please provide a list of artifact regions in this photo, considering the different artifacts: **Physics artifacts** (e.g., optical display issues, violations of physical laws, and spatial/perspective errors), **Structure artifacts** (e.g., deformed objects, asymmetry, or distorted text), and **Distortion artifacts** (e.g., color/texture distortion, noise/blur, artistic style errors, and material misrepresentation). Output with interleaved bboxes strictly following the exact JSON structured format (no other text): ```json[{\"bbox_2d\": [x_min, y_min, x_max, y_max]}, ...]``` Do not include any explanations, reasoning, or other text outside the JSON block."
         prompt = artifact_def + """Identify and localize artifact regions in this image.
@@ -279,189 +284,628 @@ class Evaluation:
         return [x1, y1, x2, y2]
     
     @staticmethod
-    def _segmentation_to_tightest_bbox(segmentation: List[float], image_width: int, image_height: int) -> List[float]:
-        """
-        Convert segmentation polygon to tightest bounding box.
-        
-        Args:
-            segmentation: Polygon coordinates as flat list [x1, y1, x2, y2, ..., xn, yn]
-            image_width: Image width 
-            image_height: Image height
-            
-        Returns:
-            Bounding box in format [x1, y1, x2, y2]
-        """
-        if len(segmentation) < 6:  # At least 3 points needed
-            return []
-            
-        # Extract x and y coordinates
-        x_coords = [segmentation[i] for i in range(0, len(segmentation), 2)]
-        y_coords = [segmentation[i] for i in range(1, len(segmentation), 2)]
-        
-        # Get bounding box
-        x1 = max(0, min(x_coords))
-        y1 = max(0, min(y_coords))
-        x2 = min(image_width, max(x_coords))
-        y2 = min(image_height, max(y_coords))
-        
-        return [x1, y1, x2, y2]
-    
-    @staticmethod
-    def _compute_threshold_independent_bbox_metrics(
+    def _compute_threshold_independent_iou(
         pred_data: Any,
-        gt_data: Any,
+        gt_data: Any, 
         pred_type: str,
         gt_type: str,
         image_width: int,
         image_height: int,
         num_thresholds: int = 100
-    ) -> Dict[str, float]:
+    ) -> float:
         """
-        Compute threshold-independent IoU and F1 metrics by converting everything to bboxes.
+        Compute threshold-independent IoU following the reference paper rules.
         
         Args:
-            pred_data: Prediction data (heatmap, bbox, or segmentation)
-            gt_data: Ground truth data (heatmap, bbox, or segmentation)
-            pred_type: Type of prediction ('heatmap', 'bbox', 'segmentation') 
-            gt_type: Type of ground truth ('heatmap', 'bbox', 'segmentation')
+            pred_data: Prediction data (heatmap, bbox list, or segmentation)
+            gt_data: Ground truth data (heatmap, bbox list, or segmentation)  
+            pred_type: Type of prediction ('heatmap', 'bbox', 'bbox_list', 'segmentation')
+            gt_type: Type of ground truth ('heatmap', 'bbox', 'bbox_list', 'segmentation')
             image_width: Image width
             image_height: Image height
             num_thresholds: Number of thresholds to sweep
             
         Returns:
-            Dictionary with best IoU and F1 metrics across all thresholds
+            Maximum IoU across all thresholds
         """
         thresholds = np.linspace(0.0, 1.0, num_thresholds)
-        best_metrics = {
-            'iou': 0.0,
-            'loc_tp': 0,
-            'loc_fp': 0,
-            'loc_fn': 0,
-            'loc_precision': 0.0,
-            'loc_recall': 0.0,
-            'loc_f1': 0.0
-        }
+        max_iou = 0.0
         
-        # Convert ground truth to bbox
-        gt_bboxes = []
-        if gt_type == 'bbox':
-            if isinstance(gt_data, list) and len(gt_data) > 0:
-                if isinstance(gt_data[0], list):
-                    gt_bboxes = gt_data  # Multiple bboxes
-                else:
-                    gt_bboxes = [gt_data]  # Single bbox
-        elif gt_type == 'segmentation':
-            if isinstance(gt_data, list) and len(gt_data) > 0:
-                if isinstance(gt_data[0], list):
-                    # Multiple segmentations
-                    for seg in gt_data:
-                        bbox = Evaluation._segmentation_to_tightest_bbox(seg, image_width, image_height)
-                        if bbox:
-                            gt_bboxes.append(bbox)
-                else:
-                    # Single segmentation
-                    bbox = Evaluation._segmentation_to_tightest_bbox(gt_data, image_width, image_height)
-                    if bbox:
-                        gt_bboxes.append(bbox)
-        elif gt_type == 'heatmap':
-            # For GT heatmap, use a single threshold to extract bbox
+        # Handle different combinations according to the rules
+        if pred_type == 'heatmap' and gt_type == 'heatmap':
+            # Heatmap vs. Heatmap: pixelwise mIoU
+            pred_norm = Evaluation._normalize_heatmap(pred_data)
             gt_norm = Evaluation._normalize_heatmap(gt_data)
-            gt_bbox = Evaluation._heatmap_to_tightest_bbox(gt_norm, 0.3, image_width, image_height)
-            if gt_bbox:
-                gt_bboxes = [gt_bbox]
-        
-        if not gt_bboxes:
-            return best_metrics
-        
-        # Convert predictions to bboxes and sweep thresholds
-        if pred_type == 'bbox':
-            pred_bboxes = []
-            if isinstance(pred_data, list) and len(pred_data) > 0:
-                if isinstance(pred_data[0], list):
-                    pred_bboxes = pred_data  # Multiple bboxes
-                else:
-                    pred_bboxes = [pred_data]  # Single bbox
             
-            # For bbox predictions, no threshold sweep needed
-            if pred_bboxes:
-                # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
-                # Compute F1
-                f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
+            for tau in thresholds:
+                pred_binary = (pred_norm > tau).astype(np.uint8)
+                gt_binary = (gt_norm > tau).astype(np.uint8)
                 
-                if iou > best_metrics['iou']:
-                    best_metrics.update({
-                        'iou': iou,
-                        'loc_tp': f1_metrics['tp'],
-                        'loc_fp': f1_metrics['fp'],
-                        'loc_fn': f1_metrics['fn'],
-                        'loc_precision': f1_metrics['precision'],
-                        'loc_recall': f1_metrics['recall'],
-                        'loc_f1': f1_metrics['f1']
-                    })
-                    
-        elif pred_type == 'segmentation':
-            pred_bboxes = []
-            if isinstance(pred_data, list) and len(pred_data) > 0:
-                if isinstance(pred_data[0], list):
-                    # Multiple segmentations
-                    for seg in pred_data:
-                        bbox = Evaluation._segmentation_to_tightest_bbox(seg, image_width, image_height)
-                        if bbox:
-                            pred_bboxes.append(bbox)
-                else:
-                    # Single segmentation
-                    bbox = Evaluation._segmentation_to_tightest_bbox(pred_data, image_width, image_height)
-                    if bbox:
-                        pred_bboxes.append(bbox)
-            
-            # For segmentation predictions, no threshold sweep needed
-            if pred_bboxes:
-                # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
-                # Compute F1
-                f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
+                intersection = np.sum((pred_binary == 1) & (gt_binary == 1))
+                union = np.sum((pred_binary == 1) | (gt_binary == 1))
                 
-                if iou > best_metrics['iou']:
-                    best_metrics.update({
-                        'iou': iou,
-                        'loc_tp': f1_metrics['tp'],
-                        'loc_fp': f1_metrics['fp'],
-                        'loc_fn': f1_metrics['fn'],
-                        'loc_precision': f1_metrics['precision'],
-                        'loc_recall': f1_metrics['recall'],
-                        'loc_f1': f1_metrics['f1']
-                    })
+                if union > 0:
+                    iou = intersection / union
+                    max_iou = max(max_iou, iou)
                     
-        elif pred_type == 'heatmap':
-            # For heatmap predictions, sweep thresholds
+        elif pred_type == 'heatmap' and gt_type == 'bbox':
+            # Heatmap vs. Bbox: approximate heatmap into tightest bbox with thresholding
             pred_norm = Evaluation._normalize_heatmap(pred_data)
             
             for tau in thresholds:
                 pred_bbox = Evaluation._heatmap_to_tightest_bbox(pred_norm, tau, image_width, image_height)
-                if not pred_bbox:
-                    continue
+                if pred_bbox:
+                    iou = Evaluation._compute_iou(pred_bbox, gt_data)
+                    max_iou = max(max_iou, iou)
                     
-                pred_bboxes = [pred_bbox]
+        elif pred_type == 'bbox' and gt_type == 'heatmap':
+            # Bbox vs. Heatmap: approximate heatmap into tightest bbox with thresholding
+            gt_norm = Evaluation._normalize_heatmap(gt_data)
+            
+            for tau in thresholds:
+                gt_bbox = Evaluation._heatmap_to_tightest_bbox(gt_norm, tau, image_width, image_height)
+                if gt_bbox:
+                    iou = Evaluation._compute_iou(pred_data, gt_bbox)
+                    max_iou = max(max_iou, iou)
+                    
+        elif pred_type == 'heatmap' and gt_type == 'segmentation':
+            # Heatmap vs. Segmentation map: segmentation map into binary map
+            pred_norm = Evaluation._normalize_heatmap(pred_data)
+            
+            # Convert segmentation to binary mask
+            gt_binary = np.zeros((image_height, image_width), dtype=np.uint8)
+            if len(gt_data) >= 6:  # At least 3 points for polygon
+                points = [(int(gt_data[i]), int(gt_data[i+1])) for i in range(0, len(gt_data), 2)]
+                img = Image.new('L', (image_width, image_height), 0)
+                draw = ImageDraw.Draw(img)
+                draw.polygon(points, outline=1, fill=1)
+                gt_binary = np.array(img)
+            
+            for tau in thresholds:
+                # Resize pred_norm to match image dimensions if needed
+                if pred_norm.shape != (image_height, image_width):
+                    pred_img = Image.fromarray((pred_norm * 255).astype(np.uint8))
+                    pred_img = pred_img.resize((image_width, image_height), Image.LANCZOS)
+                    pred_resized = np.array(pred_img).astype(np.float32) / 255.0
+                else:
+                    pred_resized = pred_norm
+                    
+                pred_binary = (pred_resized > tau).astype(np.uint8)
                 
-                # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
-                # Compute F1
-                f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
+                intersection = np.sum((pred_binary == 1) & (gt_binary == 1))
+                union = np.sum((pred_binary == 1) | (gt_binary == 1))
                 
-                # Keep the best metrics across all thresholds
-                if iou > best_metrics['iou']:
-                    best_metrics.update({
-                        'iou': iou,
-                        'loc_tp': f1_metrics['tp'],
-                        'loc_fp': f1_metrics['fp'],
-                        'loc_fn': f1_metrics['fn'],
-                        'loc_precision': f1_metrics['precision'],
-                        'loc_recall': f1_metrics['recall'],
-                        'loc_f1': f1_metrics['f1']
-                    })
+                if union > 0:
+                    iou = intersection / union
+                    max_iou = max(max_iou, iou)
+                    
+        elif pred_type == 'bbox' and gt_type == 'bbox':
+            # Bbox vs. Bbox: IoU
+            max_iou = Evaluation._compute_iou(pred_data, gt_data)
+            
+        elif pred_type == 'segmentation' and gt_type == 'bbox':
+            # Segmentation map vs. Bbox: segmentation map into tightest bbox
+            max_iou = Evaluation._compute_iou_polygon(pred_data, gt_data)
+            
+        elif pred_type == 'segmentation' and gt_type == 'segmentation':
+            # Segmentation map vs. Segmentation map: simple IoU
+            max_iou = Evaluation._compute_iou_polygon(pred_data, gt_data)
+            
+        # Handle multiple bbox cases
+        elif pred_type == 'bbox_list' or gt_type == 'bbox_list':
+            max_iou = Evaluation._compute_multi_bbox_iou(pred_data, gt_data, pred_type, gt_type)
+            
+        return max_iou
+
+    @staticmethod
+    def _compute_multi_bbox_iou(
+        pred_data: Any,
+        gt_data: Any,
+        pred_type: str,
+        gt_type: str
+    ) -> float:
+        """
+        Compute IoU for cases involving multiple bounding boxes.
         
-        return best_metrics
+        Args:
+            pred_data: Prediction data (bbox list or single bbox/heatmap/segmentation)
+            gt_data: Ground truth data (bbox list or single bbox/heatmap/segmentation)
+            pred_type: Type of prediction ('bbox_list', 'bbox', 'heatmap', 'segmentation')
+            gt_type: Type of ground truth ('bbox_list', 'bbox', 'heatmap', 'segmentation')
+            
+        Returns:
+            Maximum IoU computed using optimal matching between regions
+        """
+        if pred_type == 'bbox_list' and gt_type == 'bbox_list':
+            # Multiple bboxes vs. Multiple bboxes: use optimal matching
+            if not pred_data or not gt_data:
+                return 0.0
+            
+            # Filter out invalid bboxes
+            valid_pred_bboxes = [bbox for bbox in pred_data if bbox and len(bbox) >= 4]
+            valid_gt_bboxes = [bbox for bbox in gt_data if bbox and len(bbox) >= 4]
+            
+            if not valid_pred_bboxes or not valid_gt_bboxes:
+                return 0.0
+            
+            # Use multi-region IoU computation for optimal matching
+            return Evaluation._compute_multi_region_iou(valid_pred_bboxes, valid_gt_bboxes, use_polygons=False)
+            
+        elif pred_type == 'bbox_list' and gt_type == 'bbox':
+            # Multiple predicted bboxes vs. Single GT bbox: best match
+            if not pred_data:
+                return 0.0
+            
+            max_iou = 0.0
+            for pred_bbox in pred_data:
+                if not pred_bbox or len(pred_bbox) < 4:
+                    continue
+                iou = Evaluation._compute_iou(pred_bbox, gt_data)
+                max_iou = max(max_iou, iou)
+            return max_iou
+            
+        elif pred_type == 'bbox' and gt_type == 'bbox_list':
+            # Single predicted bbox vs. Multiple GT bboxes: best match
+            if not gt_data:
+                return 0.0
+                
+            max_iou = 0.0
+            for gt_bbox in gt_data:
+                if not gt_bbox or len(gt_bbox) < 4:
+                    continue
+                iou = Evaluation._compute_iou(pred_data, gt_bbox)
+                max_iou = max(max_iou, iou)
+            return max_iou
+            
+        elif pred_type == 'bbox_list' and gt_type == 'segmentation':
+            # Multiple predicted bboxes vs. Segmentation: best match
+            if not pred_data:
+                return 0.0
+                
+            max_iou = 0.0
+            for pred_bbox in pred_data:
+                if not pred_bbox or len(pred_bbox) < 4:
+                    continue
+                iou = Evaluation._compute_iou_polygon(gt_data, pred_bbox)
+                max_iou = max(max_iou, iou)
+            return max_iou
+            
+        elif pred_type == 'segmentation' and gt_type == 'bbox_list':
+            # Segmentation vs. Multiple GT bboxes: best match
+            if not gt_data:
+                return 0.0
+                
+            max_iou = 0.0
+            for gt_bbox in gt_data:
+                if not gt_bbox or len(gt_bbox) < 4:
+                    continue
+                iou = Evaluation._compute_iou_polygon(pred_data, gt_bbox)
+                max_iou = max(max_iou, iou)
+            return max_iou
+            
+        elif pred_type == 'heatmap' and gt_type == 'bbox_list':
+            # Heatmap vs. Multiple GT bboxes: extract best bbox from heatmap and match
+            if not gt_data:
+                return 0.0
+                
+            pred_norm = Evaluation._normalize_heatmap(pred_data)
+            max_iou = 0.0
+            
+            # Use different thresholds to extract bbox from heatmap
+            thresholds = np.linspace(0.0, 1.0, 100)
+            for tau in thresholds:
+                pred_bbox = Evaluation._heatmap_to_tightest_bbox(pred_norm, tau, 512, 512)  # Default image size
+                if pred_bbox:
+                    for gt_bbox in gt_data:
+                        if not gt_bbox or len(gt_bbox) < 4:
+                            continue
+                        iou = Evaluation._compute_iou(pred_bbox, gt_bbox)
+                        max_iou = max(max_iou, iou)
+            return max_iou
+            
+        elif pred_type == 'bbox_list' and gt_type == 'heatmap':
+            # Multiple predicted bboxes vs. Heatmap: extract best bbox from heatmap and match
+            if not pred_data:
+                return 0.0
+                
+            gt_norm = Evaluation._normalize_heatmap(gt_data)
+            max_iou = 0.0
+            
+            # Use different thresholds to extract bbox from heatmap
+            thresholds = np.linspace(0.0, 1.0, 100)
+            for tau in thresholds:
+                gt_bbox = Evaluation._heatmap_to_tightest_bbox(gt_norm, tau, 512, 512)  # Default image size
+                if gt_bbox:
+                    for pred_bbox in pred_data:
+                        if not pred_bbox or len(pred_bbox) < 4:
+                            continue
+                        iou = Evaluation._compute_iou(pred_bbox, gt_bbox)
+                        max_iou = max(max_iou, iou)
+            return max_iou
+            
+        else:
+            # Fallback for unsupported combinations
+            return 0.0
+
+    @staticmethod
+    def _compute_multi_region_f1(
+        pred_regions: List[List[float]],
+        gt_regions: List[List[float]], 
+        iou_threshold: float = 0.5,
+        use_polygons: bool = False
+    ) -> Dict[str, float]:
+        """
+        Compute F1 metrics for multiple predicted regions vs multiple ground truth regions.
+        
+        Uses optimal assignment to match predictions to ground truth regions, then computes
+        precision, recall, and F1 based on the matches.
+        
+        Args:
+            pred_regions: List of predicted bounding boxes or polygons
+            gt_regions: List of ground truth bounding boxes or polygons
+            iou_threshold: IoU threshold for considering a match
+            use_polygons: Whether to use polygon-based IoU computation
+            
+        Returns:
+            Dictionary with TP, FP, FN counts and precision, recall, F1 scores
+        """
+        if not gt_regions and not pred_regions:
+            return {'tp': 0, 'fp': 0, 'fn': 0, 'precision': 1.0, 'recall': 1.0, 'f1': 1.0}
+        if not gt_regions:
+            return {'tp': 0, 'fp': len(pred_regions), 'fn': 0, 'precision': 0.0, 'recall': 1.0, 'f1': 0.0}
+        if not pred_regions:
+            return {'tp': 0, 'fp': 0, 'fn': len(gt_regions), 'precision': 1.0, 'recall': 0.0, 'f1': 0.0}
+
+        # Compute IoU matrix between all GT and predictions
+        iou_matrix = np.zeros((len(gt_regions), len(pred_regions)))
+        for gt_idx, gt_region in enumerate(gt_regions):
+            for pred_idx, pred_region in enumerate(pred_regions):
+                if use_polygons:
+                    iou = Evaluation._compute_iou_polygon(gt_region, pred_region)
+                else:
+                    iou = Evaluation._compute_iou(gt_region, pred_region)
+                iou_matrix[gt_idx, pred_idx] = iou
+
+        # Greedy matching: for each GT, find best prediction with IoU > threshold
+        matched_predictions = set()
+        tp = 0
+        
+        # Match each ground truth to best available prediction
+        for gt_idx in range(len(gt_regions)):
+            best_iou = 0.0
+            best_pred_idx = -1
+            
+            for pred_idx in range(len(pred_regions)):
+                if pred_idx in matched_predictions:
+                    continue  # Already matched
+                    
+                iou = iou_matrix[gt_idx, pred_idx]
+                if iou >= iou_threshold and iou > best_iou:
+                    best_iou = iou
+                    best_pred_idx = pred_idx
+            
+            if best_pred_idx != -1:
+                matched_predictions.add(best_pred_idx)
+                tp += 1
+        
+        # Count FP: predictions that weren't matched to any GT
+        fp = len(pred_regions) - len(matched_predictions)
+        
+        # Count FN: ground truths that weren't matched to any prediction
+        fn = len(gt_regions) - tp
+        
+        # Compute metrics
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+        
+        return {
+            'tp': tp,
+            'fp': fp, 
+            'fn': fn,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1
+        }
+
+    @staticmethod
+    def _compute_multi_region_iou(
+        pred_regions: List[List[float]],
+        gt_regions: List[List[float]], 
+        use_polygons: bool = False
+    ) -> float:
+        """
+        Compute mean IoU for multiple predicted regions vs multiple ground truth regions.
+        
+        Uses optimal assignment to match predictions to ground truth regions.
+        
+        Args:
+            pred_regions: List of predicted bounding boxes or polygons
+            gt_regions: List of ground truth bounding boxes or polygons
+            use_polygons: Whether to use polygon-based IoU computation
+            
+        Returns:
+            Mean IoU across matched pairs
+        """
+        if not pred_regions or not gt_regions:
+            return 0.0
+
+        # Use greedy assignment to find optimal matching
+        matched_predictions = set()
+        matched_ious = []
+        
+        # For each GT region, find the best matching predicted region
+        for gt_region in gt_regions:
+            best_iou = 0.0
+            best_pred_idx = -1
+            
+            for pred_idx, pred_region in enumerate(pred_regions):
+                if pred_idx in matched_predictions:
+                    continue  # Skip already matched predictions
+                    
+                if use_polygons:
+                    iou = Evaluation._compute_iou_polygon(gt_region, pred_region)
+                else:
+                    iou = Evaluation._compute_iou(gt_region, pred_region)
+                    
+                if iou > best_iou:
+                    best_iou = iou
+                    best_pred_idx = pred_idx
+            
+            if best_pred_idx != -1 and best_iou > 0:
+                matched_predictions.add(best_pred_idx)
+                matched_ious.append(best_iou)
+        
+        # Return mean IoU of matched pairs, normalized by number of GT regions
+        return float(np.sum(matched_ious) / len(gt_regions)) if gt_regions else 0.0
+
+    @staticmethod
+    def _binarize_heatmap(artifact_map: Optional[np.ndarray], threshold: float = 0.3) -> Optional[np.ndarray]:
+        """Binarize a heatmap with a threshold. Ensures 2D array output."""
+        if artifact_map is None:
+            return None
+        try:
+            arr_map = artifact_map
+            if isinstance(arr_map, list):
+                arr_map = np.array(arr_map)
+            # Handle tensor-like objects with detach method
+            if hasattr(arr_map, 'detach'):
+                arr_map = arr_map.detach().cpu().numpy()  # type: ignore
+            
+            # Ensure we have a numpy array at this point
+            if not isinstance(arr_map, np.ndarray):
+                return None
+                
+            if len(arr_map.shape) == 4:
+                # e.g., (1,1,512,512)
+                arr_map = arr_map[0, 0]
+            elif len(arr_map.shape) == 3:
+                arr_map = arr_map[:, :, 0]
+            # Normalize if the values look like logits
+            arr = arr_map.astype(np.float32)
+            # Thresholding
+            binary = (arr > threshold).astype(np.uint8)
+            return binary
+        except Exception:
+            return None
+
+    @staticmethod
+    def _connected_components(binary_mask: np.ndarray) -> List[np.ndarray]:
+        """
+        Simple 8-connected component extraction returning a list of masks.
+        Avoids external dependencies.
+        """
+        if binary_mask is None:
+            return []
+        h, w = binary_mask.shape
+        visited = np.zeros_like(binary_mask, dtype=np.uint8)
+        components: List[np.ndarray] = []
+
+        def neighbors(y: int, x: int):
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w:
+                        yield ny, nx
+
+        for y in range(h):
+            for x in range(w):
+                if binary_mask[y, x] and not visited[y, x]:
+                    # BFS/DFS
+                    stack = [(y, x)]
+                    visited[y, x] = 1
+                    comp_coords = []
+                    while stack:
+                        cy, cx = stack.pop()
+                        comp_coords.append((cy, cx))
+                        for ny, nx in neighbors(cy, cx):
+                            if binary_mask[ny, nx] and not visited[ny, nx]:
+                                visited[ny, nx] = 1
+                                stack.append((ny, nx))
+                    comp_mask = np.zeros_like(binary_mask, dtype=np.uint8)
+                    for cy, cx in comp_coords:
+                        comp_mask[cy, cx] = 1
+                    components.append(comp_mask)
+        return components
+
+    @staticmethod
+    def _bbox_mask_on_heatmap_grid(
+        bbox: List[float], heatmap_w: int, heatmap_h: int, image_w: int, image_h: int
+    ) -> np.ndarray:
+        """Rasterize a bbox to heatmap grid as binary mask."""
+        x1, y1, x2, y2 = bbox
+        hx1 = int(max(0, min(heatmap_w - 1, (x1 / image_w) * heatmap_w)))
+        hy1 = int(max(0, min(heatmap_h - 1, (y1 / image_h) * heatmap_h)))
+        hx2 = int(max(0, min(heatmap_w - 1, (x2 / image_w) * heatmap_w)))
+        hy2 = int(max(0, min(heatmap_h - 1, (y2 / image_h) * heatmap_h)))
+        mask = np.zeros((heatmap_h, heatmap_w), dtype=np.uint8)
+        if hx2 >= hx1 and hy2 >= hy1:
+            mask[hy1 : hy2 + 1, hx1 : hx2 + 1] = 1
+        return mask
+
+    @staticmethod
+    def _polygon_mask_on_heatmap_grid(
+        seg: List[float], heatmap_w: int, heatmap_h: int, image_w: int, image_h: int
+    ) -> np.ndarray:
+        """Rasterize polygon to heatmap grid using PIL drawing."""
+        # Scale points
+        pts = []
+        for i in range(0, len(seg), 2):
+            x = int((seg[i] / image_w) * heatmap_w)
+            y = int((seg[i + 1] / image_h) * heatmap_h)
+            x = max(0, min(heatmap_w - 1, x))
+            y = max(0, min(heatmap_h - 1, y))
+            pts.append((x, y))
+        img = Image.new('L', (heatmap_w, heatmap_h), 0)
+        draw = ImageDraw.Draw(img)
+        if len(pts) >= 3:
+            draw.polygon(pts, outline=1, fill=1)
+        return (np.array(img) > 0).astype(np.uint8)
+
+    @staticmethod
+    def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+        inter = np.sum((a > 0) & (b > 0))
+        if inter == 0:
+            return 0.0
+        union = np.sum((a > 0) | (b > 0))
+        return float(inter / union) if union > 0 else 0.0
+
+    @staticmethod
+    def _compute_iou_heatmap_regionwise(
+        artifact_map: np.ndarray,
+        bbox: List[float],
+        image_width: int,
+        image_height: int,
+        threshold: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
+        """
+        Region-wise IoU between a bbox and the best-matching connected region of the heatmap.
+        """
+        try:
+            if artifact_map is None:
+                return 0.0
+            if len(artifact_map.shape) == 4:
+                artifact_map = artifact_map[0, 0]
+            elif len(artifact_map.shape) == 3:
+                artifact_map = artifact_map[:, :, 0]
+            h, w = artifact_map.shape
+            bin_map = (artifact_map > threshold).astype(np.uint8)
+            regions = Evaluation._connected_components(bin_map)
+            if not regions:
+                return 0.0
+            # Remove tiny regions
+            regions = [r for r in regions if int(np.sum(r)) >= min_region_area]
+            if not regions:
+                return 0.0
+            bbox_mask = Evaluation._bbox_mask_on_heatmap_grid(bbox, w, h, image_width, image_height)
+            best = 0.0
+            for region in regions:
+                iou = Evaluation._mask_iou(region, bbox_mask)
+                if iou > best:
+                    best = iou
+            return best
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _compute_polygon_vs_heatmap_regionwise(
+        artifact_map: np.ndarray,
+        polygon_seg: List[float],
+        image_width: int,
+        image_height: int,
+        threshold: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
+        """
+        Region-wise IoU between a polygon (GT) and the best-matching connected region of the heatmap.
+        """
+        try:
+            if artifact_map is None:
+                return 0.0
+            if len(artifact_map.shape) == 4:
+                artifact_map = artifact_map[0, 0]
+            elif len(artifact_map.shape) == 3:
+                artifact_map = artifact_map[:, :, 0]
+            h, w = artifact_map.shape
+            bin_map = (artifact_map > threshold).astype(np.uint8)
+            regions = Evaluation._connected_components(bin_map)
+            if not regions:
+                return 0.0
+            regions = [r for r in regions if int(np.sum(r)) >= min_region_area]
+            if not regions:
+                return 0.0
+            poly_mask = Evaluation._polygon_mask_on_heatmap_grid(polygon_seg, w, h, image_width, image_height)
+            best = 0.0
+            for region in regions:
+                iou = Evaluation._mask_iou(region, poly_mask)
+                if iou > best:
+                    best = iou
+            return best
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _compute_heatmap_to_heatmap_iou_regionwise(
+        pred_heatmap: np.ndarray,
+        gt_heatmap: np.ndarray,
+        threshold_pred: float = 0.3,
+        threshold_gt: float = 0.3,
+        min_region_area: int = 10,
+    ) -> float:
+        """
+        Compute mean IoU between connected regions of pred and GT heatmaps via greedy best-match.
+        """
+        try:
+            # Normalize shapes to 2D
+            if len(pred_heatmap.shape) == 4:
+                pred_heatmap = pred_heatmap[0, 0]
+            elif len(pred_heatmap.shape) == 3:
+                pred_heatmap = pred_heatmap[:, :, 0]
+            if len(gt_heatmap.shape) == 4:
+                gt_heatmap = gt_heatmap[0, 0]
+            elif len(gt_heatmap.shape) == 3:
+                gt_heatmap = gt_heatmap[:, :, 0]
+
+            pred_bin = (pred_heatmap > threshold_pred).astype(np.uint8)
+            gt_bin = (gt_heatmap > threshold_gt).astype(np.uint8)
+
+            pred_regions = [r for r in Evaluation._connected_components(pred_bin) if np.sum(r) >= min_region_area]
+            gt_regions = [r for r in Evaluation._connected_components(gt_bin) if np.sum(r) >= min_region_area]
+
+            if not pred_regions or not gt_regions:
+                return 0.0
+
+            # Compute IoU matrix
+            iou_matrix = np.zeros((len(gt_regions), len(pred_regions)), dtype=np.float32)
+            for i, g in enumerate(gt_regions):
+                for j, p in enumerate(pred_regions):
+                    iou_matrix[i, j] = Evaluation._mask_iou(g, p)
+
+            # Greedy matching: for each GT pick best pred and don't reuse preds
+            used_pred = set()
+            ious = []
+            for i in range(len(gt_regions)):
+                # pick best available pred
+                best_j = -1
+                best_iou = 0.0
+                for j in range(len(pred_regions)):
+                    if j in used_pred:
+                        continue
+                    val = float(iou_matrix[i, j])
+                    if val > best_iou:
+                        best_iou = val
+                        best_j = j
+                if best_j >= 0:
+                    used_pred.add(best_j)
+                    if best_iou > 0:
+                        ious.append(best_iou)
+
+            return float(np.mean(ious)) if ious else 0.0
+        except Exception:
+            return 0.0
 
     @staticmethod
     def _match_and_mean_iou(
@@ -989,7 +1433,7 @@ class Evaluation:
     
     def _handle_localization_evaluation(self, dataset_type: str, json_data: Dict, result: Dict, 
                                         stats: Dict, img_w: int, img_h: int) -> Dict[str, Any]:
-        """Handle localization evaluation using threshold-independent IoU and F1 metrics."""
+        """Handle localization evaluation using threshold-independent IoU."""
         pred_heatmap = None
         if isinstance(result, Dict):
             pred_heatmap = result.get('heatmap', None)
@@ -999,50 +1443,48 @@ class Evaluation:
         if len(result) > 0:
             result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
 
-        # Determine prediction type and data
+        # Determine prediction and ground truth types
         pred_type = None
-        pred_data = None
         if pred_heatmap is not None:
             pred_type = 'heatmap'
             pred_data = pred_heatmap
         elif result_bbox_list:
-            pred_type = 'bbox'
-            pred_data = result_bbox_list
+            # Use bbox_list type if we have multiple bboxes, otherwise single bbox
+            if len(result_bbox_list) > 1:
+                pred_type = 'bbox_list'
+                pred_data = result_bbox_list
+            else:
+                pred_type = 'bbox'
+                pred_data = result_bbox_list[0] if result_bbox_list else []
         else:
-            # No predictions, return zeros
-            stats.update({
-                'iou': 0.0,
-                'loc_tp': 0,
-                'loc_fp': 0,
-                'loc_fn': 0,
-                'loc_precision': 0.0,
-                'loc_recall': 0.0,
-                'loc_f1': 0.0
-            })
+            # No predictions, set IoU to 0
+            stats['iou'] = 0.0
             return stats
 
-        # Compute threshold-independent metrics based on dataset type
+        # Compute threshold-independent IoU based on dataset type
         if dataset_type == 'synthscars':
             ground_seg_list = [d['segmentation'][0] for d in json_data['refs'] if 'segmentation' in d]
-            gt_type = 'segmentation'
             
             if ground_seg_list:
-                # Use threshold-independent evaluation
-                metrics = self._compute_threshold_independent_bbox_metrics(
-                    pred_data, ground_seg_list, pred_type, gt_type, img_w, img_h
-                )
-                stats.update(metrics)
+                if len(ground_seg_list) > 1:
+                    # Multiple segmentations - compute best match IoU
+                    gt_type = 'segmentation'
+                    max_iou = 0.0
+                    for gt_seg in ground_seg_list:
+                        iou = self._compute_threshold_independent_iou(
+                            pred_data, gt_seg, pred_type, gt_type, img_w, img_h
+                        )
+                        max_iou = max(max_iou, iou)
+                    stats['iou'] = max_iou
+                else:
+                    # Single segmentation
+                    gt_type = 'segmentation'
+                    iou = self._compute_threshold_independent_iou(
+                        pred_data, ground_seg_list[0], pred_type, gt_type, img_w, img_h
+                    )
+                    stats['iou'] = iou
             else:
-                # No ground truth
-                stats.update({
-                    'iou': 0.0,
-                    'loc_tp': 0,
-                    'loc_fp': 0,
-                    'loc_fn': 0,
-                    'loc_precision': 0.0,
-                    'loc_recall': 0.0,
-                    'loc_f1': 0.0
-                })
+                stats['iou'] = 0.0
                 
         elif dataset_type == 'synartifact':
             has_gt_artifacts = json_data.get('Artifacts annotation', [])
@@ -1056,34 +1498,26 @@ class Evaluation:
                         ground_bbox_list.append(bbox)
                 
                 if ground_bbox_list:
-                    gt_type = 'bbox'
-                    # Use threshold-independent evaluation
-                    metrics = self._compute_threshold_independent_bbox_metrics(
-                        pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
-                    )
-                    stats.update(metrics)
+                    if len(ground_bbox_list) > 1:
+                        # Multiple GT bboxes - use bbox_list for optimal matching
+                        gt_type = 'bbox_list'
+                        iou = self._compute_threshold_independent_iou(
+                            pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
+                        )
+                        stats['iou'] = iou
+                    else:
+                        # Single GT bbox
+                        gt_type = 'bbox'
+                        iou = self._compute_threshold_independent_iou(
+                            pred_data, ground_bbox_list[0], pred_type, gt_type, img_w, img_h
+                        )
+                        stats['iou'] = iou
                 else:
-                    stats.update({
-                        'iou': 0.0,
-                        'loc_tp': 0,
-                        'loc_fp': 0,
-                        'loc_fn': 0,
-                        'loc_precision': 0.0,
-                        'loc_recall': 0.0,
-                        'loc_f1': 0.0
-                    })
+                    stats['iou'] = 0.0
             else:
                 # Skip negative samples (samples without artifacts) for localization evaluation
-                # Mark these metrics as None so they can be filtered out during aggregation
-                stats.update({
-                    'iou': None,
-                    'loc_tp': None,
-                    'loc_fp': None,
-                    'loc_fn': None,
-                    'loc_precision': None,
-                    'loc_recall': None,
-                    'loc_f1': None
-                })
+                # Mark IoU as None so it can be filtered out during aggregation
+                stats['iou'] = None
                     
         elif dataset_type == 'loki':
             regional_problems = json_data['problems']['regional']
@@ -1096,22 +1530,22 @@ class Evaluation:
                     ground_bbox_list.append(bbox)
             
             if ground_bbox_list:
-                gt_type = 'bbox'
-                # Use threshold-independent evaluation
-                metrics = self._compute_threshold_independent_bbox_metrics(
-                    pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
-                )
-                stats.update(metrics)
+                if len(ground_bbox_list) > 1:
+                    # Multiple GT bboxes - use bbox_list for optimal matching
+                    gt_type = 'bbox_list'
+                    iou = self._compute_threshold_independent_iou(
+                        pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
+                    )
+                    stats['iou'] = iou
+                else:
+                    # Single GT bbox
+                    gt_type = 'bbox'
+                    iou = self._compute_threshold_independent_iou(
+                        pred_data, ground_bbox_list[0], pred_type, gt_type, img_w, img_h
+                    )
+                    stats['iou'] = iou
             else:
-                stats.update({
-                    'iou': 0.0,
-                    'loc_tp': 0,
-                    'loc_fp': 0,
-                    'loc_fn': 0,
-                    'loc_precision': 0.0,
-                    'loc_recall': 0.0,
-                    'loc_f1': 0.0
-                })
+                stats['iou'] = 0.0
                 
         elif dataset_type == 'richhf':
             artifact_map_path = "/home/jovyan/image-artifacts/data/richhf-18k/" + json_data['artifact_map_path']
@@ -1119,21 +1553,11 @@ class Evaluation:
             gt_type = 'heatmap'
             
             try:
-                # Use threshold-independent evaluation
-                metrics = self._compute_threshold_independent_bbox_metrics(
+                stats['iou'] = self._compute_threshold_independent_iou(
                     pred_data, artifact_map, pred_type, gt_type, img_w, img_h
                 )
-                stats.update(metrics)
             except Exception:
-                stats.update({
-                    'iou': 0.0,
-                    'loc_tp': 0,
-                    'loc_fp': 0,
-                    'loc_fn': 0,
-                    'loc_precision': 0.0,
-                    'loc_recall': 0.0,
-                    'loc_f1': 0.0
-                })
+                stats['iou'] = 0.0
         
         return stats
     

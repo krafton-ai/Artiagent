@@ -15,7 +15,9 @@ import re
 import io
 import base64
 import numpy as np
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoModel, AutoTokenizer
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoModel, AutoConfig, AutoTokenizer, SegformerImageProcessor, SegformerForSemanticSegmentation
+from torchvision import transforms
+from torchvision.transforms.functional import InterpolationMode
 from qwen_vl_utils import process_vision_info
 import openai
 from openai.types.chat import ChatCompletion
@@ -23,15 +25,6 @@ from google.oauth2 import service_account
 from google import genai
 from google.genai import types
 
-def create_prompt(option):
-    if option == 'default':
-        prompt = "Analyze the image and describe any visual anomalies. Provide whether there is an artifact, and if so, provide bboxes and descriptions for all anomalies. Respond with a JSON array of these objects in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
-    elif option == 'legion':
-        prompt = "You are a helpful assistant. Analyze the given images based on the following three criteria and return the visible artifacts in the image. You need to return the bbox and explanations for all visible artifacts, and if none, assign 0 to the number of artifacts.  Evaluation Criteria: (a) The image should be well-lit, sharp, and visually clear without blurriness, noise, or distortion. (b) The image must not show obvious signs of artificial manipulation, such as pixelated edges or unnatural distortions. (c) The image should look realistic and have a photo-like appearance. Localization Task : Return all the visible artifacts in the structured JSON format:  ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n``` Please strictly follow the instructions to label the input image."
-    elif option == 'synartifact':
-        prompt = "Step 1: You are my assistant to analyze whether artifacts exist in this image. If there are any artifacts, go to step 2. If not, go to step 5. Step 2: You are my assistant to locate artifacts in this image. Please provide the coordinates for artifacts that you choose using the format of [x1,y1,x2,y2]. Step 3: You are my assistant to explain anomalies in this image. Please provide detailed explanations of the artifact in the bbox you have selected in step 2. Step 4: You are my assistant to analyze other artifacts in this image. If there are any other artifacts except the above in this image, go back to step 2 and repeat. If not, go to step 5. Step 5: Gather all the information above and return the JSON output in the structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
-
-    return prompt
 
 class MoneyManager:
     def __init__(self, model: str = "gpt-3.5-turbo-0613"):
@@ -207,18 +200,23 @@ class QwenEval:
     def _load_model(self):
         """Load the Qwen2.5-VL model and processor."""
         if self.use_finetuned:
-            model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts"
+            model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/sft_artifacts_gpt"
+            # config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            self.tokenizer.padding_side = "left"
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map=self.device)
         else:
             model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/Qwen/Qwen2.5-VL-7B-Instruct"
             
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-            device_map=self.device
-        )
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16,
+                device_map=self.device
+            )
         self.processor = AutoProcessor.from_pretrained(model_name)
+        self.processor.tokenizer.padding_side = "left"
     
-    def inference(self, image: Image.Image) -> Dict[str, Any]:
+    def inference(self, image: Image.Image, prompt: str) -> str:
         """
         Run inference on a single image to detect artifacts.
         
@@ -228,7 +226,6 @@ class QwenEval:
         Returns:
             Dictionary containing artifact detection results
         """
-        prompt = create_prompt('legion')
         
         # Prepare the conversation
         messages = [
@@ -269,23 +266,13 @@ class QwenEval:
         output_text = self.processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
-        print(output_text)
         
-        # Parse the JSON response
-        try:
-            result = self._parse_response(output_text)
-        except Exception as e:
-            # Fallback if JSON parsing fails
-            result = {
-                "number_of_artifacts": 0,
-                "artifacts": [],
-                "raw_response": output_text,
-                "error": str(e)
-            }
-            
-        return result
+        # print(f"Generated output: {output_text}")
+        # result = self._parse_response(output_text)
 
-    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        return output_text
+
+    def inference_batch(self, images: List[Image.Image], prompt: str) -> List[str]:
         """
         Run inference on a batch of images to detect artifacts.
 
@@ -297,8 +284,6 @@ class QwenEval:
         """
         if not images:
             return []
-
-        prompt = create_prompt('default')
 
         # Build batched messages
         messages_list = []
@@ -334,9 +319,10 @@ class QwenEval:
         inputs = inputs.to(self.device)
 
         # Generate batched outputs
-        generated_ids = self.model.generate(
-            **inputs, max_new_tokens=512
-        )
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs, max_new_tokens=512
+            )
 
         generated_ids_trimmed = [
             out_ids[len(in_ids) :]
@@ -347,49 +333,164 @@ class QwenEval:
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
 
-        results: List[Dict[str, Any]] = []
         for output_text in output_texts:
+            print(output_text)
+
+        return output_texts
+
+class InternEval:
+    """
+    Wrapper class for Qwen2.5-VL model evaluation.
+    
+    This class provides a unified interface for running inference
+    on images to detect and describe artifacts.
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the Qwen model for evaluation.
+        
+        Args:
+            config: Configuration dictionary containing model settings
+        """
+        self.config = config
+        self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.use_finetuned = config.get('use_finetuned', False)
+        
+        # Load model and processor
+        self._load_model()
+        
+    def _load_model(self):
+        """Load the InternVL2 / InternVL3 model and processor."""
+        # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/OpenGVLab/InternVL2-8B"
+        model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/OpenGVLab/InternVL3-8B"
+        
+        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, use_flash_attn=True).eval().cuda()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, use_fast=False)
+    
+    def inference(self, image: Image.Image, prompt: str) -> str:
+        """
+        Run inference on a single image to detect artifacts.
+        
+        Args:
+            image: PIL Image to analyze
+            
+        Returns:
+            Dictionary containing artifact detection results
+        """
+        
+        transform = self._build_transform(input_size=448)
+        images = self._dynamic_preprocess(image, image_size=448, use_thumbnail=True, max_num=12)
+        pixel_values = [transform(image) for image in images]
+        pixel_values = torch.stack(pixel_values)
+        pixel_values = pixel_values.to(torch.bfloat16).cuda()
+        
+        # Use the model's built-in chat method for simplicity and robustness
+        generation_config = dict(max_new_tokens=512, do_sample=False)
+        
+        # Call the model's chat method directly
+        with torch.no_grad():
+            response = self.model.chat(
+                self.tokenizer, 
+                pixel_values, 
+                prompt, 
+                generation_config
+            )
+        
+        return response
+        
+    def inference_batch(self, images: List[Image.Image], prompt: str) -> List[str]:
+        """
+        Run inference on a batch of images to detect artifacts.
+
+        Args:
+            images: List of PIL Images to analyze
+
+        Returns:
+            List of dictionaries containing artifact detection results, one per image
+        """
+        if not images:
+            return []
+
+        if prompt is None:
+            prompt = create_prompt('legion')
+
+        results = []
+        # Process images individually for now (batch processing can be complex with InternVL)
+        for image in images:
             try:
-                results.append(self._parse_response(output_text))
+                result = self.inference(image, prompt)
+                results.append(result)
             except Exception as e:
-                results.append(
-                    {
-                        "number_of_artifacts": 0,
-                        "artifacts": [],
-                        "raw_response": output_text,
-                        "error": str(e),
-                    }
-                )
+                results.append({
+                    "raw_response": "",
+                    "error": str(e)
+                })
 
         return results
     
-    def _parse_response(self, response: str) -> Dict[str, Any]:
-        """
-        Parse the model's response to extract artifact information.
-        
-        Args:
-            response: Raw text response from the model
-            
-        Returns:
-            Parsed dictionary with artifact information
-        """
-        # Try to extract JSON from the response
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
-            json_str = json_match.group()
-            try:
-                result = json.loads(json_str)
-                return result
-            except json.JSONDecodeError:
-                pass
-        
-        # If no JSON found, return empty result
-        return {
-            "number_of_artifacts": 0,
-            "artifacts": [],
-            "raw_response": response
-        }
+    def _build_transform(self, input_size):
+        MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+        transform = transforms.Compose([
+            transforms.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
+            transforms.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=MEAN, std=STD)
+        ])
+        return transform
 
+    def _find_closest_aspect_ratio(self, aspect_ratio, target_ratios, width, height, image_size):
+        best_ratio_diff = float('inf')
+        best_ratio = (1, 1)
+        area = width * height
+        for ratio in target_ratios:
+            target_aspect_ratio = ratio[0] / ratio[1]
+            ratio_diff = abs(aspect_ratio - target_aspect_ratio)
+            if ratio_diff < best_ratio_diff:
+                best_ratio_diff = ratio_diff
+                best_ratio = ratio
+            elif ratio_diff == best_ratio_diff:
+                if area > 0.5 * image_size * image_size * ratio[0] * ratio[1]:
+                    best_ratio = ratio
+        return best_ratio
+
+    def _dynamic_preprocess(self, image, min_num=1, max_num=12, image_size=448, use_thumbnail=False):
+        orig_width, orig_height = image.size
+        aspect_ratio = orig_width / orig_height
+
+        # calculate the existing image aspect ratio
+        target_ratios = set(
+            (i, j) for n in range(min_num, max_num + 1) for i in range(1, n + 1) for j in range(1, n + 1) if
+            i * j <= max_num and i * j >= min_num)
+        target_ratios = sorted(target_ratios, key=lambda x: x[0] * x[1])
+
+        # find the closest aspect ratio to the target
+        target_aspect_ratio = self._find_closest_aspect_ratio(
+            aspect_ratio, target_ratios, orig_width, orig_height, image_size)
+
+        # calculate the target width and height
+        target_width = image_size * target_aspect_ratio[0]
+        target_height = image_size * target_aspect_ratio[1]
+        blocks = target_aspect_ratio[0] * target_aspect_ratio[1]
+
+        # resize the image
+        resized_img = image.resize((target_width, target_height))
+        processed_images = []
+        for i in range(blocks):
+            box = (
+                (i % (target_width // image_size)) * image_size,
+                (i // (target_width // image_size)) * image_size,
+                ((i % (target_width // image_size)) + 1) * image_size,
+                ((i // (target_width // image_size)) + 1) * image_size
+            )
+            # split the image
+            split_img = resized_img.crop(box)
+            processed_images.append(split_img)
+        assert len(processed_images) == blocks
+        if use_thumbnail and len(processed_images) != 1:
+            thumbnail_img = image.resize((image_size, image_size))
+            processed_images.append(thumbnail_img)
+        return processed_images
 
 class GPTEval:
     """
@@ -440,8 +541,7 @@ class GPTEval:
         # Encode to base64
         return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-    def inference(self, image: Image.Image) -> Dict[str, Any]:
-        prompt = create_prompt('synartifact')
+    def inference(self, image: Image.Image, prompt: str) -> str:
         base64_image = self._encode_image_to_base64(image)
 
         try:
@@ -464,48 +564,20 @@ class GPTEval:
                 self.money_manager(response)
 
             raw_text = response.choices[0].message.content.strip()
-
-            try:
-                raw_text = response.choices[0].message.content.strip()
-
-                # Handle markdown-style code block like ```json ... ```
-                if raw_text.startswith("```json"):
-                    raw_text = raw_text[len("```json"):].strip()
-                elif raw_text.startswith("```"):
-                    raw_text = raw_text[len("```"):].strip()
-                if raw_text.endswith("```"):
-                    raw_text = raw_text[:-3].strip()
-
-                return json.loads(raw_text)[0]
-
-            except json.JSONDecodeError:
-                json_match = re.search(r'\{[\s\S]*?\}', raw_text)
-                if json_match:
-                    try:
-                        return json.loads(json_match.group())[0]
-                    except json.JSONDecodeError:
-                        pass
-
-                print(f"Could not parse JSON from response: {raw_text}")
-                return {
-                    "error": "json_parse_failed",
-                    "raw_response": raw_text
-                }
+            return raw_text
 
         except Exception as e:
             print(f"Error analyzing sampled instance: {e}")
             return None
 
-    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+    def inference_batch(self, images: List[Image.Image], prompt: str) -> List[str]:
         """Batch inference by looping per image (API-friendly)."""
         results: List[Dict[str, Any]] = []
         for img in images:
             try:
-                res = self.inference(img)
+                res = self.inference(img, prompt)
             except Exception as e:
                 res = {
-                    "number_of_artifacts": 0,
-                    "artifacts": [],
                     "error": str(e),
                 }
             if res is None:
@@ -528,8 +600,6 @@ class GeminiEval:
             print(f"Exception occurred while setting up Gemini client: {e}")
             self.client = None
 
-
-                
         self.money_manager = MoneyManager(model="gemini-2.5-pro")
 
     def _init_client(self, service_account_path: str = "key/gemini_gcp.json",
@@ -660,22 +730,20 @@ class GeminiEval:
         return response
 
 
-    def inference(self, image: Image.Image) -> Dict[str, Any]:
+    def inference(self, image: Image.Image, prompt: str) -> str:
         if self.client is None:
-            return {"number_of_artifacts": 0, "artifacts": [], "error": "gemini_client_not_initialized"}
-        prompt = create_prompt('legion')
+            return {"error": "gemini_client_not_initialized"}
         try:
             # Upload image bytes
             buf = io.BytesIO()
-            image.convert("PNG").save(buf, format="PNG")
+            image.save(buf, format="PNG")
             buf.seek(0)
             img_part = types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png")
             response = self.client.models.generate_content(
                 model="gemini-2.5-pro",
                 contents=[img_part, "\n\n", prompt],
-                config=types.GenerateContentConfig(max_output_tokens=1024, temperature=0.2, top_p=0.8),
+                config=types.GenerateContentConfig(max_output_tokens=65535, temperature=0.2, top_p=0.8),
             )
-
             if self.money_manager:
                 self.money_manager(response)
 
@@ -687,37 +755,16 @@ class GeminiEval:
                         for part in cand.content.parts:
                             if hasattr(part, "text") and part.text:
                                 raw_text += part.text
+                                
             raw_text = raw_text.strip()
-
-            try:
-                if raw_text.startswith("```json"):
-                    raw_text = raw_text[len("```json"):].strip()
-                elif raw_text.startswith("```"):
-                    raw_text = raw_text[len("```"):].strip()
-                if raw_text.endswith("```"):
-                    raw_text = raw_text[:-3].strip()
-                parsed = json.loads(raw_text)
-                if isinstance(parsed, list) and parsed:
-                    parsed = parsed[0]
-                return parsed
-            except json.JSONDecodeError:
-                json_match = re.search(r"\{[\s\S]*?\}", raw_text)
-                if json_match:
-                    try:
-                        parsed = json.loads(json_match.group())
-                        if isinstance(parsed, list) and parsed:
-                            parsed = parsed[0]
-                        return parsed
-                    except json.JSONDecodeError:
-                        pass
-                return {"number_of_artifacts": 0, "artifacts": [], "raw_response": raw_text, "error": "json_parse_failed"}
+            return raw_text
         except Exception as e:
-            return {"number_of_artifacts": 0, "artifacts": [], "error": str(e)}
+            return {"error": str(e)}
     
-    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+    def inference_batch(self, images: List[Image.Image], prompt: str) -> List[str]:
         results: List[Dict[str, Any]] = []
         for img in images:
-            results.append(self.inference(img))
+            results.append(self.inference(img, prompt))
         return results
 
 
@@ -728,16 +775,73 @@ class PalEval:
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        
-        self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
+
+        # Multi-GPU configuration
+        self.use_multi_gpu = config.get('use_multi_gpu', False)
+        self.gpu_devices = self._setup_devices(config)
+        self.device = self.gpu_devices[0] if self.gpu_devices else 'cpu'
+    
         # Load model and processor
         self._load_model()
         
+    def _setup_devices(self, config: Dict[str, Any]) -> List[str]:
+        """
+        Setup available GPU devices for multi-GPU inference.
+        """
+        if not torch.cuda.is_available():
+            print("CUDA not available, falling back to CPU")
+            return ['cpu']
+            
+        # Check if multi-GPU is requested
+        if not config.get('use_multi_gpu', False):
+            device = config.get('device', 'cuda:0')
+            return [device]
+            
+        # Get available GPU devices
+        num_gpus = torch.cuda.device_count()
+        if num_gpus < 2:
+            print(f"Only {num_gpus} GPU available, falling back to single GPU")
+            return [config.get('device', 'cuda:0')]
+            
+        # Use specified devices or all available
+        specified_devices = config.get('gpu_devices', None)
+        if specified_devices:
+            # Validate specified devices
+            valid_devices = []
+            for device in specified_devices:
+                if isinstance(device, int):
+                    device = f'cuda:{device}'
+                if device.startswith('cuda:'):
+                    gpu_id = int(device.split(':')[1])
+                    if gpu_id < num_gpus:
+                        valid_devices.append(device)
+                    else:
+                        print(f"GPU {gpu_id} not available, skipping")
+            return valid_devices if valid_devices else ['cuda:0']
+        else:
+            # Use first two GPUs by default
+            devices = [f'cuda:{i}' for i in range(min(2, num_gpus))]
+            print(f"Using GPUs: {devices}")
+            return devices
+
     def _load_model(self):
         """Load the PAL4VST torchscript."""
         torchscript_file = "/home/jovyan/image-artifacts/baselines/PAL4VST/deployment/pal4vst/swin-large_upernet_unified_512x512/end2end.pt"
             
-        self.model = torch.jit.load(torchscript_file).to(self.device)
+        if self.use_multi_gpu and len(self.gpu_devices) > 1:
+            # Load model replicas on each GPU
+            self.models = {}
+            for device in self.gpu_devices:
+                print(f"Loading PAL model on {device}")
+                self.models[device] = torch.jit.load(torchscript_file).to(device)
+            
+            # Keep primary model reference for single inference
+            self.model = self.models[self.device]
+            print(f"Multi-GPU setup complete with {len(self.gpu_devices)} GPUs: {self.gpu_devices}")
+        else:
+            # Single GPU setup
+            self.model = torch.jit.load(torchscript_file).to(self.device)
+            self.models = {self.device: self.model}
     
     def inference(self, image: Image.Image) -> Dict[str, Any]:
         """
@@ -755,13 +859,128 @@ class PalEval:
         return {"heatmap": result}
 
     def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
-        outputs: List[Dict[str, Any]] = []
-        for img in images:
+        if not images:
+            return []
+
+        if self.use_multi_gpu and len(self.gpu_devices) > 1 and len(images) > 1:
+            return self._inference_batch_multi_gpu(images)
+        else:
+            outputs: List[Dict[str, Any]] = []
+            for img in images:
+                try:
+                    outputs.append(self.inference(img))
+                except Exception as e:
+                    outputs.append({"heatmap": None, "error": str(e)})
+            return outputs
+    
+    def _inference_batch_multi_gpu(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        """
+        Multi-GPU batch inference with load balancing.
+        
+        Args:
+            images: List of PIL Images to analyze
+            
+        Returns:
+            List of dictionaries containing heatmap results
+        """
+        import threading
+        import queue
+        
+        num_gpus = len(self.gpu_devices)
+        results = [None] * len(images)
+        
+        # Create task queue and result queue
+        task_queue = queue.Queue()
+        error_queue = queue.Queue()
+        
+        # Add tasks to queue with image index
+        for i, image in enumerate(images):
+            task_queue.put((i, image))
+        
+        def worker(device: str):
+            """Worker function for each GPU."""
+            model = self.models[device]
+            
+            while True:
+                try:
+                    # Get task from queue with timeout
+                    img_idx, image = task_queue.get(timeout=1)
+                except queue.Empty:
+                    break
+                
+                try:
+                    # Process image on this GPU
+                    img_tensor = self._prepare_input(np.array(image.resize((512, 512))), device)
+                    img_tensor = img_tensor.to(device)
+                    
+                    with torch.no_grad():
+                        heatmap = model(img_tensor).cpu().data.numpy()[0][0]
+                    
+                    results[img_idx] = {"heatmap": heatmap}
+                    
+                except Exception as e:
+                    results[img_idx] = {"heatmap": None, "error": str(e)}
+                    error_queue.put(f"Error on {device} for image {img_idx}: {e}")
+                
+                finally:
+                    task_queue.task_done()
+        
+        # Start worker threads for each GPU
+        threads = []
+        for device in self.gpu_devices:
+            thread = threading.Thread(target=worker, args=(device,))
+            thread.start()
+            threads.append(thread)
+        
+        # Wait for all tasks to complete
+        task_queue.join()
+        
+        # Wait for all threads to finish
+        for thread in threads:
+            thread.join(timeout=5)  # 5 second timeout per thread
+        
+        # Log any errors
+        while not error_queue.empty():
             try:
-                outputs.append(self.inference(img))
-            except Exception as e:
-                outputs.append({"heatmap": None, "error": str(e)})
-        return outputs
+                error_msg = error_queue.get_nowait()
+                print(f"Multi-GPU inference error: {error_msg}")
+            except queue.Empty:
+                break
+        
+        # Fill any None results with error responses
+        for i, result in enumerate(results):
+            if result is None:
+                results[i] = {"heatmap": None, "error": "Multi-GPU processing failed"}
+        
+        return results
+    
+    def clear_gpu_cache(self):
+        """Clear GPU cache to free up memory."""
+        if torch.cuda.is_available():
+            for device in self.gpu_devices:
+                if device.startswith('cuda:'):
+                    with torch.cuda.device(device):
+                        torch.cuda.empty_cache()
+            print("GPU cache cleared for all devices")
+    
+    def get_gpu_memory_info(self) -> Dict[str, Dict[str, float]]:
+        """
+        Get memory information for all GPUs.
+        
+        Returns:
+            Dictionary with memory info for each GPU device
+        """
+        memory_info = {}
+        if torch.cuda.is_available():
+            for device in self.gpu_devices:
+                if device.startswith('cuda:'):
+                    gpu_id = int(device.split(':')[1])
+                    memory_info[device] = {
+                        'allocated_gb': torch.cuda.memory_allocated(gpu_id) / (1024**3),
+                        'cached_gb': torch.cuda.memory_reserved(gpu_id) / (1024**3),
+                        'max_allocated_gb': torch.cuda.max_memory_allocated(gpu_id) / (1024**3)
+                    }
+        return memory_info
     
     def _get_mean_stdinv(self, img):
         """
@@ -794,15 +1013,18 @@ class PalEval:
         img = torch.from_numpy(img).transpose(0,2).transpose(1,2).unsqueeze(0).float()
         return img
 
-    def _prepare_input(self, img):
+    def _prepare_input(self, img, device=None):
         """
         Convert numpy image into a normalized tensor (ready to do segmentation)
         """
+        if device is None:
+            device = self.device
+
         mean_img, stdinv_img = self._get_mean_stdinv(img)
 
-        img_tensor = self._numpy2tensor(img).to(self.device)
-        mean_img_tensor = self._numpy2tensor(mean_img).to(self.device)
-        stdinv_img_tensor = self._numpy2tensor(stdinv_img).to(self.device)
+        img_tensor = self._numpy2tensor(img).to(device)
+        mean_img_tensor = self._numpy2tensor(mean_img).to(device)
+        stdinv_img_tensor = self._numpy2tensor(stdinv_img).to(device)
         
         img_tensor = img_tensor - mean_img_tensor
         img_tensor = img_tensor * stdinv_img_tensor
@@ -822,30 +1044,33 @@ class DiffEval:
         self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
         self._load_model()
 
+    def _get_segformer(self, path_or_hub, out_channels=1):
+        # load a pretrained Segformer model
+        self.preprocessor = SegformerImageProcessor.from_pretrained(path_or_hub)
+        model = SegformerForSemanticSegmentation.from_pretrained(path_or_hub)
+        # change the number of output channels
+        model.decode_head.classifier = torch.nn.Conv2d(model.decode_head.classifier.in_channels, out_channels, kernel_size=1)
+        return model
+
     def _load_model(self) -> None:
         base_dir = "/home/jovyan/image-artifacts/baselines/DiffDoctor"
         ckpt = os.path.join(base_dir, "checkpoints", "ad_pytorch_model.bin")
-        self.model = None
-        if os.path.exists(ckpt):
-            try:
-                self.model = torch.jit.load(ckpt, map_location=self.device)
-            except Exception:
-                try:
-                    self.model = torch.load(ckpt, map_location=self.device)
-                except Exception:
-                    self.model = None
-
-    def _prepare(self, image: Image.Image) -> torch.Tensor:
-        arr = np.array(image.resize((512, 512)).convert('RGB'), dtype=np.float32) / 255.0
-        x = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
-        return x.to(self.device)
+        self.model = self._get_segformer("nvidia/mit-b5", out_channels=1)
+        self.model.load_state_dict(torch.load(ckpt))
+        self.model.to(self.device)
+        self.model.eval()
 
     def inference(self, image: Image.Image) -> Dict[str, Any]:
         if self.model is None:
             return {"heatmap": None, "error": "diffdoctor_model_not_loaded"}
-        x = self._prepare(image)
         with torch.no_grad():
-            out = self.model(x)
+            image = transforms.ToTensor()(image).to(self.device)
+            x = self.preprocessor(image, return_tensors='pt',do_rescale=False)['pixel_values'].to(self.device)
+            pred = self.model(x)
+            pred = torch.nn.functional.interpolate(
+                pred.logits, size=x.shape[-2:], mode="bilinear", align_corners=False
+            )
+            out = torch.sigmoid(pred)
         if isinstance(out, torch.Tensor):
             out_np = out.detach().cpu().numpy()
         else:

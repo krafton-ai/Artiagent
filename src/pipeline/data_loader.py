@@ -668,7 +668,7 @@ def _get_coco_image_list(
     data_loader: COCODataLoader, 
     categories: List[str], 
     max_images: Optional[int] = None,
-    max_instances_per_image: Optional[int] = 3
+    # max_instances_per_image: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
     Get image list for COCO dataset with optional filtering.
@@ -682,6 +682,7 @@ def _get_coco_image_list(
     Returns:
         List of image information dictionaries
     """
+    max_instances_per_image = None
     cat_ids = data_loader.get_category_ids(categories)
     image_list = []
     image_ids_seen = set()

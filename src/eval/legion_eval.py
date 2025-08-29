@@ -16,7 +16,7 @@ from PIL import Image  # type: ignore
 from pathlib import Path
 
 from models import QwenEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval
-from eval_utils import Evaluation, parse_json, create_prompt
+from legion_eval_utils import Evaluation, parse_json, create_prompt
 
 def setup_logging(output_dir: str, dataset_type: str) -> logging.Logger:
     """
@@ -270,45 +270,44 @@ def unified_batch_inference(model, images: List[Image.Image], prompt: str) -> Li
     Returns:
         List of dictionaries containing standardized inference results
     """
-    # try:
-    # Handle models that only take images (no prompt)
-    if isinstance(model, (PalEval, DiffEval)):
-        if hasattr(model, 'inference_batch'):
-            results = model.inference_batch(images)
-        else:
-            results = [model.inference(img) for img in images]
-    else:
-        # Models that take both images and prompt
-        if hasattr(model, 'inference_batch'):
-            results = model.inference_batch(images, prompt)
-            print(results)
-        else:
-            results = [model.inference(img, prompt) for img in images]
-    
-    # Standardize each result
-    standardized_results = []
-    for result in results:
-        if result is None:
-            standardized_results.append({"error": "model_returned_none", "raw_response": ""})
-        elif isinstance(result, str):
-            try:
-                parsed_result = parse_json(result)
-                standardized_results.append({"parsed_output": parsed_result, "raw_response": result})
-            except Exception as e:
-                standardized_results.append({"error": "json_parse_failed", "raw_response": result, "parse_error": str(e)})
-        elif isinstance(result, dict):
-            if "raw_response" in result or "error" in result or "heatmap" in result:
-                standardized_results.append(result)
+    try:
+        # Handle models that only take images (no prompt)
+        if isinstance(model, (PalEval, DiffEval)):
+            if hasattr(model, 'inference_batch'):
+                results = model.inference_batch(images)
             else:
-                standardized_results.append({"parsed_output": result, "raw_response": str(result)})
+                results = [model.inference(img) for img in images]
         else:
-            standardized_results.append({"error": "unexpected_return_type", "raw_response": str(result), "type": type(result).__name__})
-    
-    return standardized_results
+            # Models that take both images and prompt
+            if hasattr(model, 'inference_batch'):
+                results = model.inference_batch(images, prompt)
+            else:
+                results = [model.inference(img, prompt) for img in images]
         
-    # except Exception as e:
-    #     # Return error for all images
-    #     return [{"error": "batch_inference_exception", "raw_response": "", "exception": str(e)} for _ in images]
+        # Standardize each result
+        standardized_results = []
+        for result in results:
+            if result is None:
+                standardized_results.append({"error": "model_returned_none", "raw_response": ""})
+            elif isinstance(result, str):
+                try:
+                    parsed_result = parse_json(result)
+                    standardized_results.append({"parsed_output": parsed_result, "raw_response": result})
+                except Exception as e:
+                    standardized_results.append({"error": "json_parse_failed", "raw_response": result, "parse_error": str(e)})
+            elif isinstance(result, dict):
+                if "raw_response" in result or "error" in result or "heatmap" in result:
+                    standardized_results.append(result)
+                else:
+                    standardized_results.append({"parsed_output": result, "raw_response": str(result)})
+            else:
+                standardized_results.append({"error": "unexpected_return_type", "raw_response": str(result), "type": type(result).__name__})
+        
+        return standardized_results
+        
+    except Exception as e:
+        # Return error for all images
+        return [{"error": "batch_inference_exception", "raw_response": "", "exception": str(e)} for _ in images]
 
 
 def extract_prediction_result(unified_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -363,11 +362,6 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
     model = create_model(config)
     data_iterator = DatasetIterator(config)
     evaluator = Evaluation()
-
-    if config.get('model_type') == 'pal' and isinstance(model, PalEval):
-        memory_info = model.get_gpu_memory_info()
-        for device, info in memory_info.items():
-            logger.info(f"📊 GPU {device} - Allocated: {info['allocated_gb']:.2f}GB, Reserved: {info['cached_gb']:.2f}GB")
     
     # Determine number of samples to process
     total_samples = len(data_iterator)
@@ -433,14 +427,11 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
                     'loc_f1': stats['loc_f1'],
                     'prediction': prediction
                 }
-                if sample_result.get('iou', None) is None:
-                    logger.info(f"Sample {i + 1} - Skipped (negative sample)")
-                else:
-                    logger.info(
-                        f"Sample {i + 1} - IoU: {sample_result['iou']:.3f}, "
-                        f"F1: {sample_result['loc_f1']:.3f} (P: {sample_result['loc_precision']:.3f}, "
-                        f"R: {sample_result['loc_recall']:.3f}, TP/FP/FN: {sample_result['loc_tp']}/{sample_result['loc_fp']}/{sample_result['loc_fn']})"
-                    )
+                logger.info(
+                    f"Sample {i + 1} - IoU: {sample_result['iou']:.3f}, "
+                    f"F1: {sample_result['loc_f1']:.3f} (P: {sample_result['loc_precision']:.3f}, "
+                    f"R: {sample_result['loc_recall']:.3f}, TP/FP/FN: {sample_result['loc_tp']}/{sample_result['loc_fp']}/{sample_result['loc_fn']})"
+                )
             elif eval_type == 'explanation':
                 sample_result = {
                     'image_path': str(image_path),
@@ -470,13 +461,6 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
         mean_iou = 0.0
         mean_rouge_l = 0.0
         mean_css = 0.0
-        valid_loc_results = []
-        mean_loc_f1 = 0.0
-        mean_loc_precision = 0.0
-        mean_loc_recall = 0.0
-        total_loc_tp = 0
-        total_loc_fp = 0
-        total_loc_fn = 0
         
         if eval_type == 'binary':
             binary_accuracy = sum(r.get('binary_success', False) for _, r in results.items()) / total_samples
@@ -486,12 +470,13 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             # Filter out None values for SynArtifact negative samples
             valid_loc_results = [r for _, r in results.items() if r.get('iou') is not None]
             mean_iou = sum(r.get('iou', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
-            mean_loc_f1 = sum(r.get('loc_f1', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
-            mean_loc_precision = sum(r.get('loc_precision', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
-            mean_loc_recall = sum(r.get('loc_recall', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
-            total_loc_tp = sum(r.get('loc_tp', 0) for r in valid_loc_results if r.get('loc_tp') is not None)
-            total_loc_fp = sum(r.get('loc_fp', 0) for r in valid_loc_results if r.get('loc_fp') is not None)
-            total_loc_fn = sum(r.get('loc_fn', 0) for r in valid_loc_results if r.get('loc_fn') is not None)
+            # LEGION metrics
+            mean_miou = sum(r.get('miou', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_iou_fg = sum(r.get('iou_foreground', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_iou_bg = sum(r.get('iou_background', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_pixel_f1 = sum(r.get('pixel_f1', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_pixel_precision = sum(r.get('pixel_precision', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_pixel_recall = sum(r.get('pixel_recall', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
         elif eval_type == 'explanation':
             mean_rouge_l = sum(r.get('rouge_l', 0.0) for _, r in results.items()) / total_samples
             mean_css = sum(r.get('css', 0.0) for _, r in results.items()) / total_samples
@@ -507,45 +492,24 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info(f"  TP: {f1_metrics.get('tp', 0)}, FP: {f1_metrics.get('fp', 0)}, FN: {f1_metrics.get('fn', 0)}, TN: {f1_metrics.get('tn', 0)}")
             logger.info(f"  Precision: {f1_metrics.get('precision', 0.0):.3f}")
             logger.info(f"  Recall: {f1_metrics.get('recall', 0.0):.3f}")
-            logger.info(f"  F1-Score: {f1_metrics.get('f1_positive', 0.0):.3f}")
-            logger.info(f"  Negative Precision: {f1_metrics['precision_negative']:.3f}")
-            logger.info(f"  Negative Recall: {f1_metrics['recall_negative']:.3f}")
-            logger.info(f"  Negative F1-Score: {f1_metrics['f1_negative']:.3f}")
-            logger.info(f"  Macro F1: {f1_metrics['macro_f1']:.3f}")
+            logger.info(f"  F1-Score: {f1_metrics.get('f1_score', 0.0):.3f}")
             logger.info(f"  Accuracy: {f1_metrics.get('accuracy', 0.0):.3f}")
             logger.info("")
         elif eval_type == 'localization':
-            valid_samples = len(valid_loc_results)
-            logger.info(f"Threshold-independent Mean IoU: {mean_iou:.3f}")
+            logger.info(f"Mean IoU (all samples): {mean_iou:.3f}")
             logger.info("")
-            logger.info("LOCALIZATION F1 METRICS:")
-            logger.info(f"  Mean F1: {mean_loc_f1:.3f}")
-            logger.info(f"  Mean Precision: {mean_loc_precision:.3f}")
-            logger.info(f"  Mean Recall: {mean_loc_recall:.3f}")
-            logger.info(f"  Total TP/FP/FN: {total_loc_tp}/{total_loc_fp}/{total_loc_fn}")
-            
-            # Compute global F1 (across all samples)
-            global_precision = total_loc_tp / (total_loc_tp + total_loc_fp) if (total_loc_tp + total_loc_fp) > 0 else 0.0
-            global_recall = total_loc_tp / (total_loc_tp + total_loc_fn) if (total_loc_tp + total_loc_fn) > 0 else 0.0
-            global_f1 = 2 * (global_precision * global_recall) / (global_precision + global_recall) if (global_precision + global_recall) > 0 else 0.0
-            logger.info(f"  Global Precision: {global_precision:.3f}")
-            logger.info(f"  Global Recall: {global_recall:.3f}")
-            logger.info(f"  Global F1: {global_f1:.3f}")
-            logger.info(f"Valid samples (positive samples): {valid_samples}")
+            logger.info("PIXEL-LEVEL SEGMENTATION METRICS (Paper Style):")
+            logger.info(f"  Mean IoU (mIoU): {mean_miou:.3f}")
+            logger.info(f"    - Foreground IoU: {mean_iou_fg:.3f}")
+            logger.info(f"    - Background IoU: {mean_iou_bg:.3f}")
+            logger.info(f"  Pixel F1 Score: {mean_pixel_f1:.3f}")
+            logger.info(f"  Pixel Precision: {mean_pixel_precision:.3f}")
+            logger.info(f"  Pixel Recall: {mean_pixel_recall:.3f}")
             logger.info("")
+            logger.info(f"Legacy IoU (for compatibility): {mean_iou:.3f}")
         elif eval_type == 'explanation':
             logger.info(f"Mean ROUGE-L (all samples): {mean_rouge_l:.3f}")
             logger.info(f"Mean CSS (all samples): {mean_css:.3f}")
-
-    # Final GPU memory reporting for PAL model
-    if config.get('model_type') == 'pal' and isinstance(model, PalEval):
-        logger.info("📊 Final GPU Memory Usage:")
-        memory_info = model.get_gpu_memory_info()
-        for device, info in memory_info.items():
-            logger.info(f"    {device} - Max Allocated: {info['max_allocated_gb']:.2f}GB, Current: {info['allocated_gb']:.2f}GB")
-        
-        # Final cache clearing
-        model.clear_gpu_cache()
 
     if isinstance(model, GPTEval):
         try:
@@ -584,11 +548,6 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
     model = create_model(config)
     data_iterator = DatasetIterator(config)
     evaluator = Evaluation()
-
-    if config.get('model_type') == 'pal' and isinstance(model, PalEval):
-        memory_info = model.get_gpu_memory_info()
-        for device, info in memory_info.items():
-            logger.info(f"📊 GPU {device} - Allocated: {info['allocated_gb']:.2f}GB, Reserved: {info['cached_gb']:.2f}GB")
     
     total_samples = len(data_iterator)
     if max_samples is not None:
@@ -604,126 +563,123 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
     target_batch_size: int = int(config.get('batch_size', 2) or 2)
     current_batch_size: int = target_batch_size
 
-    try:
-        while True:
-            if max_samples and processed >= max_samples:
-                break
-            # Collect a batch of samples
-            batch_json_data: List[Dict[str, Any]] = []
-            batch_image_paths: List[Path] = []
-            batch_images: List[Image.Image] = []
-            while len(batch_images) < current_batch_size:
-                try:
-                    json_data, image_path = next(data_iterator)
-                except StopIteration:
-                    break
-                if not os.path.exists(image_path):
-                    logger.warning(f"Image not found: {image_path}")
-                    continue
-                try:
-                    image = Image.open(image_path).convert("RGB")
-                except Exception as e:
-                    logger.warning(f"Failed to load image {image_path}: {e}")
-                    continue
-                batch_json_data.append(json_data)
-                batch_image_paths.append(image_path)
-                batch_images.append(image)
-                if max_samples and (processed + len(batch_images)) >= max_samples:
-                    break
-            if not batch_images:
-                # No more data
-                break
-            logger.info(
-                f"Processing batch starting at index {processed + 1} with size {len(batch_images)}"
-            )
-            # Run batched inference with OOM fallback
+    # try:
+    while True:
+        if max_samples and processed >= max_samples:
+            break
+        # Collect a batch of samples
+        batch_json_data: List[Dict[str, Any]] = []
+        batch_image_paths: List[Path] = []
+        batch_images: List[Image.Image] = []
+        while len(batch_images) < current_batch_size:
             try:
-                # Use unified batch inference
-                batch_unified_results = unified_batch_inference(model, batch_images, prompt)
-                batch_results = [extract_prediction_result(result) for result in batch_unified_results]
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower() and len(batch_images) > 1:
-                    logger.warning("OOM during batched inference. Falling back to per-sample inference for this batch.")
-                    # Reduce future batch size to be more conservative
-                    current_batch_size = max(1, current_batch_size // 2)
-                    batch_results = []
-                    for img in batch_images:
-                        try:
-                            unified_result = unified_inference(model, img, prompt)
-                            batch_results.append(extract_prediction_result(unified_result))
-                        except Exception as inner_e:
-                            logger.error(f"Per-sample inference failed: {inner_e}")
-                            batch_results.append({
-                                'error': str(inner_e)
-                            })
-                else:
-                    raise
-            # Evaluate each item in the batch
-            for idx, (json_data, image_path, image, result) in enumerate(
-                zip(batch_json_data, batch_image_paths, batch_images, batch_results)
-            ):
-                stats = evaluator.generate_statistics(
-                    dataset_type, eval_type, json_data, result, image_size=image.size
+                json_data, image_path = next(data_iterator)
+            except StopIteration:
+                break
+            if not os.path.exists(image_path):
+                logger.warning(f"Image not found: {image_path}")
+                continue
+            try:
+                image = Image.open(image_path).convert("RGB")
+            except Exception as e:
+                logger.warning(f"Failed to load image {image_path}: {e}")
+                continue
+            batch_json_data.append(json_data)
+            batch_image_paths.append(image_path)
+            batch_images.append(image)
+            if max_samples and (processed + len(batch_images)) >= max_samples:
+                break
+        if not batch_images:
+            # No more data
+            break
+        logger.info(
+            f"Processing batch starting at index {processed + 1} with size {len(batch_images)}"
+        )
+        # Run batched inference with OOM fallback
+        try:
+            # Use unified batch inference
+            batch_unified_results = unified_batch_inference(model, batch_images, prompt)
+            batch_results = [extract_prediction_result(result) for result in batch_unified_results]
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and len(batch_images) > 1:
+                logger.warning("OOM during batched inference. Falling back to per-sample inference for this batch.")
+                # Reduce future batch size to be more conservative
+                current_batch_size = max(1, current_batch_size // 2)
+                batch_results = []
+                for img in batch_images:
+                    try:
+                        unified_result = unified_inference(model, img, prompt)
+                        batch_results.append(extract_prediction_result(unified_result))
+                    except Exception as inner_e:
+                        logger.error(f"Per-sample inference failed: {inner_e}")
+                        batch_results.append({
+                            'error': str(inner_e)
+                        })
+            else:
+                raise
+        # Evaluate each item in the batch
+        for idx, (json_data, image_path, image, result) in enumerate(
+            zip(batch_json_data, batch_image_paths, batch_images, batch_results)
+        ):
+            stats = evaluator.generate_statistics(
+                dataset_type, eval_type, json_data, result, image_size=image.size
+            )
+            if eval_type == 'binary':
+                sample_result = {
+                    'image_path': str(image_path),
+                    'binary_success': stats['binary_success'],
+                    'classification': stats['classification'],
+                    'has_gt_artifacts': stats['has_gt_artifacts'],
+                    'has_pred_artifacts': stats['has_pred_artifacts'],
+                    'prediction': result
+                }
+                logger.info(
+                    f"Sample {processed + idx + 1} - Binary: {sample_result['binary_success']}, "
+                    f"Prediction: {result}"
                 )
-                if eval_type == 'binary':
-                    sample_result = {
-                        'image_path': str(image_path),
-                        'binary_success': stats['binary_success'],
-                        'classification': stats['classification'],
-                        'has_gt_artifacts': stats['has_gt_artifacts'],
-                        'has_pred_artifacts': stats['has_pred_artifacts'],
-                        'prediction': result
-                    }
-                    logger.info(
-                        f"Sample {processed + idx + 1} - Binary: {sample_result['binary_success']}, "
-                        f"Prediction: {result}"
-                    )
-                elif eval_type == 'localization':
-                    sample_result = {
-                        'image_path': str(image_path),
-                        'iou': stats['iou'],
-                        'loc_tp': stats['loc_tp'],
-                        'loc_fp': stats['loc_fp'],
-                        'loc_fn': stats['loc_fn'],
-                        'loc_precision': stats['loc_precision'],
-                        'loc_recall': stats['loc_recall'],
-                        'loc_f1': stats['loc_f1'],
-                        'prediction': result
-                    }
-                    if sample_result.get('iou', None) is None:
-                        logger.info(f"Sample {processed + idx + 1} - Skipped (negative sample)")
-                    else:
-                        logger.info(
-                            f"Sample {processed + idx + 1} - IoU: {sample_result['iou']:.3f}, "
-                            f"F1: {sample_result['loc_f1']:.3f} (P: {sample_result['loc_precision']:.3f}, "
-                            f"R: {sample_result['loc_recall']:.3f}, TP/FP/FN: {sample_result['loc_tp']}/{sample_result['loc_fp']}/{sample_result['loc_fn']})"
-                        )
-                elif eval_type == 'explanation':
-                    sample_result = {
-                        'image_path': str(image_path),
-                        'rouge_l': stats['rouge_l'],
-                        'css': stats['css'],
-                        'prediction': result
-                    }
-                    logger.info(
-                        f"Sample {processed + idx + 1} - ROUGE-L: {sample_result['rouge_l']:.3f}, "
-                        f"CSS: {sample_result['css']:.3f}"
-                    )
+            elif eval_type == 'localization':
+                sample_result = {
+                    'image_path': str(image_path),
+                    'iou': stats['iou'],
+                    # Paper metrics
+                    'miou': stats['miou'],
+                    'iou_foreground': stats['iou_foreground'],
+                    'iou_background': stats['iou_background'],
+                    'pixel_f1': stats['pixel_f1'],
+                    'pixel_precision': stats['pixel_precision'],
+                    'pixel_recall': stats['pixel_recall'],
+                    'prediction': result
+                }
+                if sample_result.get('miou', None) is None:
+                    logger.info(f"Sample {processed + idx + 1} - no artifacts, skip localization eval")
                 else:
-                    raise ValueError(f"Unsupported evaluation type: {eval_type}")
-
-                results[processed + idx] = sample_result
-
-            processed += len(batch_images)
-
-            if config.get('model_type') == 'pal' and isinstance(model, PalEval) and processed % (10 * current_batch_size) == 0:
-                model.clear_gpu_cache()
-                logger.info(f"🧹 Cleared GPU cache after processing {processed} samples")
+                    logger.info(
+                        f"Sample {processed + idx + 1} - mIoU: {sample_result['miou']:.3f} (FG: {sample_result['iou_foreground']:.3f}, "
+                        f"BG: {sample_result['iou_background']:.3f}), Pixel F1: {sample_result['pixel_f1']:.3f} "
+                        f"(P: {sample_result['pixel_precision']:.3f}, R: {sample_result['pixel_recall']:.3f})"
+                    )
+            elif eval_type == 'explanation':
+                sample_result = {
+                    'image_path': str(image_path),
+                    'rouge_l': stats['rouge_l'],
+                    'css': stats['css'],
+                    'prediction': result
+                }
+                logger.info(
+                    f"Sample {processed + idx + 1} - ROUGE-L: {sample_result['rouge_l']:.3f}, "
+                    f"CSS: {sample_result['css']:.3f}"
+                )
+            else:
+                raise ValueError(f"Unsupported evaluation type: {eval_type}")
             
-    except StopIteration:
-        logger.info("Reached end of dataset")
-    except Exception as e:
-        logger.error(f"Error during batch processing: {e}")
+            results[processed + idx] = sample_result
+            
+        processed += len(batch_images)
+            
+    # except StopIteration:
+    #     logger.info("Reached end of dataset")
+    # except Exception as e:
+    #     logger.error(f"Error during batch processing: {e}")
     
     # Compute summary statistics
     if results:
@@ -739,7 +695,6 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
         total_loc_fn = 0
         mean_rouge_l = 0.0
         mean_css = 0.0
-        valid_loc_results = []
         
         if eval_type == 'binary':
             binary_accuracy = sum(r.get('binary_success', False) for _, r in results.items()) / total_samples
@@ -749,12 +704,13 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             # Filter out None values for SynArtifact negative samples
             valid_loc_results = [r for _, r in results.items() if r.get('iou') is not None]
             mean_iou = sum(r.get('iou', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
-            mean_loc_f1 = sum(r.get('loc_f1', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
-            mean_loc_precision = sum(r.get('loc_precision', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
-            mean_loc_recall = sum(r.get('loc_recall', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
-            total_loc_tp = sum(r.get('loc_tp', 0) for r in valid_loc_results if r.get('loc_tp') is not None)
-            total_loc_fp = sum(r.get('loc_fp', 0) for r in valid_loc_results if r.get('loc_fp') is not None)
-            total_loc_fn = sum(r.get('loc_fn', 0) for r in valid_loc_results if r.get('loc_fn') is not None)
+            # LEGION metrics
+            mean_miou = sum(r.get('miou', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_iou_fg = sum(r.get('iou_foreground', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_iou_bg = sum(r.get('iou_background', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_pixel_f1 = sum(r.get('pixel_f1', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_pixel_precision = sum(r.get('pixel_precision', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
+            mean_pixel_recall = sum(r.get('pixel_recall', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
         elif eval_type == 'explanation':
             mean_rouge_l = sum(r.get('rouge_l', 0.0) for _, r in results.items()) / total_samples
             mean_css = sum(r.get('css', 0.0) for _, r in results.items()) / total_samples
@@ -770,22 +726,25 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info(f"  TP: {f1_metrics['tp']}, FP: {f1_metrics['fp']}, FN: {f1_metrics['fn']}, TN: {f1_metrics['tn']}")
             logger.info(f"  Precision: {f1_metrics['precision']:.3f}")
             logger.info(f"  Recall: {f1_metrics['recall']:.3f}")
-            logger.info(f"  Positive F1-Score: {f1_metrics['f1_positive']:.3f}")
+            logger.info(f"  F1-Score: {f1_metrics.get('f1_positive', 0.0):.3f}")
             logger.info(f"  Negative Precision: {f1_metrics['precision_negative']:.3f}")
             logger.info(f"  Negative Recall: {f1_metrics['recall_negative']:.3f}")
             logger.info(f"  Negative F1-Score: {f1_metrics['f1_negative']:.3f}")
             logger.info(f"  Macro F1: {f1_metrics['macro_f1']:.3f}")
-            logger.info(f"  Accuracy: {f1_metrics['accuracy']:.3f}")
+            logger.info(f"  Accuracy: {f1_metrics.get('accuracy', 0.0):.3f}")
             logger.info("")
         elif eval_type == 'localization':
-            valid_samples = len(valid_loc_results)
-            logger.info(f"Threshold-independent Mean IoU: {mean_iou:.3f}")
             logger.info("")
-            logger.info("LOCALIZATION F1 METRICS:")
-            logger.info(f"  Mean F1: {mean_loc_f1:.3f}")
-            logger.info(f"  Mean Precision: {mean_loc_precision:.3f}")
-            logger.info(f"  Mean Recall: {mean_loc_recall:.3f}")
-            logger.info(f"  Total TP/FP/FN: {total_loc_tp}/{total_loc_fp}/{total_loc_fn}")
+            logger.info("PIXEL-LEVEL SEGMENTATION METRICS (Paper Style):")
+            logger.info(f"  Mean IoU (mIoU): {mean_miou:.3f}")
+            logger.info(f"    - Foreground IoU: {mean_iou_fg:.3f}")
+            logger.info(f"    - Background IoU: {mean_iou_bg:.3f}")
+            logger.info(f"  Pixel F1 Score: {mean_pixel_f1:.3f}")
+            logger.info(f"  Pixel Precision: {mean_pixel_precision:.3f}")
+            logger.info(f"  Pixel Recall: {mean_pixel_recall:.3f}")
+            logger.info("")
+            logger.info(f"Legacy IoU (for compatibility): {mean_iou:.3f}")
+            logger.info("")
             
             # Compute global F1 (across all samples)
             global_precision = total_loc_tp / (total_loc_tp + total_loc_fp) if (total_loc_tp + total_loc_fp) > 0 else 0.0
@@ -794,22 +753,11 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info(f"  Global Precision: {global_precision:.3f}")
             logger.info(f"  Global Recall: {global_recall:.3f}")
             logger.info(f"  Global F1: {global_f1:.3f}")
-            logger.info(f"Valid samples (positive samples): {valid_samples}")
             logger.info("")
         elif eval_type == 'explanation':
             logger.info(f"Mean ROUGE-L (all samples): {mean_rouge_l:.3f}")
             logger.info(f"Mean CSS (all samples): {mean_css:.3f}")
     
-    # Final GPU memory reporting for PAL model
-    if config.get('model_type') == 'pal' and isinstance(model, PalEval):
-        logger.info("📊 Final GPU Memory Usage:")
-        memory_info = model.get_gpu_memory_info()
-        for device, info in memory_info.items():
-            logger.info(f"    {device} - Max Allocated: {info['max_allocated_gb']:.2f}GB, Current: {info['allocated_gb']:.2f}GB")
-        
-        # Final cache clearing
-        model.clear_gpu_cache()
-
     if isinstance(model, GPTEval):
         try:
             logger.info(f"Total cost: {model.money_manager.total_cost}")
@@ -845,10 +793,6 @@ def main():
                        help='Custom base directory for dataset')
     parser.add_argument('--batch-size', type=int, default=1,
                        help='Batched inference size (default: 1)')
-    parser.add_argument('--use-multi-gpu', action='store_true',
-                       help='Enable multi-GPU inference for PAL model')
-    parser.add_argument('--gpu-devices', type=str, nargs='+', default=None,
-                       help='Specify GPU devices to use (e.g., 0 1 or cuda:0 cuda:1)')
                        
     args = parser.parse_args()
     
@@ -875,9 +819,7 @@ def main():
         'log_dir': args.log_dir,
         'use_finetuned': args.use_finetuned,
         'device': args.device,
-        'batch_size': args.batch_size,
-        'use_multi_gpu': args.use_multi_gpu,
-        'gpu_devices': args.gpu_devices
+        'batch_size': args.batch_size
     }
     
     # Setup logging
@@ -889,18 +831,6 @@ def main():
     logger.info(f"🗒️ Evaluating: {args.type}")
     logger.info(f"📁 Dataset path: {base_dir}")
     logger.info(f"🔧 Device: {args.device}")
-
-    # Multi-GPU configuration logging
-    if args.use_multi_gpu:
-        if args.model != 'pal':
-            logger.warning("⚠️  Multi-GPU is only supported for PAL model. Ignoring --use-multi-gpu flag.")
-            config['use_multi_gpu'] = False
-        else:
-            logger.info(f"🔀 Multi-GPU: Enabled")
-            if args.gpu_devices:
-                logger.info(f"🔀 GPU devices: {args.gpu_devices}")
-            else:
-                logger.info(f"🔀 GPU devices: Auto-detect (using first 2 GPUs)")
     
     try:
         # Run evaluation

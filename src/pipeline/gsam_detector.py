@@ -1,16 +1,11 @@
 import sys
 import os
-import argparse
-from collections import defaultdict
 import multiprocessing as mp
 import numpy as np
-import cv2
-import random
 from typing import List, Dict, Tuple, Optional
 import openai
 import torch
 from PIL import Image
-import json
 import torchvision
 import supervision as sv
 
@@ -20,37 +15,36 @@ sys.path.append(os.path.join(os.getcwd(), 'segment_anything'))
 sys.path.append(os.path.join(os.getcwd(), 'pipeline'))
 
 # Grounding DINO
-import groundingdino.datasets.transforms as T
-from groundingdino.models import build_model
-from groundingdino.util.slconfig import SLConfig
-from groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
 from groundingdino.util.inference import Model
 
-# Segment Anything
+# S
 from segment_anything import (
     sam_model_registry,
     sam_hq_model_registry,
     SamPredictor
 )
 
-from pipeline.prompts import get_entity_subparts_by_type
-
 class GSAMDetector:
     """Handler for Grounded SAM part detection model"""
     
+    # Constants for better code maintainability
+    DEFAULT_CONTAINMENT_THRESHOLD = 0.9
+    DEFAULT_MIN_AREA_RATIO = 0.005
+    DEFAULT_MAX_AREA_RATIO = 0.5
+    
     def __init__(self, 
-                 grounding_config_file: Optional[str] = None,
-                 grounding_checkpoint: Optional[str] = None,
-                 sam_version: str = "vit_h",
-                 sam_checkpoint: Optional[str] = None,
-                 sam_hq_checkpoint: Optional[str] = None,
-                 use_sam_hq: bool = False,
-                 box_threshold: float = 0.3,
-                 text_threshold: float = 0.25,
-                 nms_threshold: float = 0.5,
-                 bert_base_uncased_path: Optional[str] = None,
-                 device: str = "cuda",
-                 openai_client: Optional[openai.OpenAI] = None):
+                grounding_config_file: Optional[str] = None,
+                grounding_checkpoint: Optional[str] = None,
+                sam_version: str = "vit_h",
+                sam_checkpoint: Optional[str] = None,
+                sam_hq_checkpoint: Optional[str] = None,
+                use_sam_hq: bool = False,
+                box_threshold: float = 0.3,
+                text_threshold: float = 0.25,
+                nms_threshold: float = 0.5,
+                bert_base_uncased_path: Optional[str] = None,
+                device: str = "cuda",
+                openai_client: Optional[openai.OpenAI] = None):
         """
         Initialize GSAM detector
         
@@ -116,7 +110,8 @@ class GSAMDetector:
         return np.array(result_masks)
     
     def detect_parts(self, image: np.ndarray, entities: List[str], subentities: List[str], 
-                     min_area_ratio: float = 0.005, max_area_ratio: float = 0.5) -> Tuple[List[Dict], List[Dict], any]:
+                    entity_subentity_mapping: Dict[str, List[str]],
+                    min_area_ratio: float = 0.005, max_area_ratio: float = 0.5) -> Tuple[List[Dict], List[Dict], any]:
         """
         Run part detection on image
         
@@ -130,9 +125,9 @@ class GSAMDetector:
         Returns:
             Tuple of (predictions, entity_predictions, visualized_output):
             - predictions: List of dictionaries, each containing subentity detection with keys:
-              'pred_box', 'pred_class', 'score', 'pred_mask', 'subentity_name', 'mapped_entity_name'
+                'pred_box', 'pred_class', 'score', 'pred_mask', 'subentity_name', 'mapped_entity_name'
             - entity_predictions: List of dictionaries, each containing entity detection with keys:
-              'pred_box', 'pred_class', 'score', 'pred_mask', 'entity_name'
+                'pred_box', 'pred_class', 'score', 'pred_mask', 'entity_name'
             - visualized_output: PIL Image with annotations
         """
         # Store current image size for area calculations
@@ -144,9 +139,11 @@ class GSAMDetector:
         # Get grounding output
         detections, phrases = self.grounding_model.predict_with_caption(
             image=image,
-            caption=", ".join(entities) +", " +  ", ".join(subentities),
+            caption=", ".join([*entities, *subentities]),
             box_threshold=self.box_threshold,
             text_threshold=self.text_threshold
+            # box_threshold=0.3,
+            # text_threshold=0.25
         )
         
         # Generate class_id from phrases since predict_with_caption doesn't include it
@@ -158,6 +155,7 @@ class GSAMDetector:
             torch.from_numpy(detections.xyxy), 
             torch.from_numpy(detections.confidence), 
             self.nms_threshold
+            # self.nms_threshold
         ).numpy().tolist()
 
         detections.xyxy = detections.xyxy[nms_idx]
@@ -168,9 +166,9 @@ class GSAMDetector:
 
         detections.mask = self.segment(
             image=image,
-            xyxy=detections.xyxy
+            xyxy=detections.xyxy,
         )
-
+        
         # Separate entity and subentity detections
         entity_indices = []
         subentity_indices = []
@@ -184,66 +182,72 @@ class GSAMDetector:
         print(f"Found {len(entity_indices)} entity detections and {len(subentity_indices)} subentity detections")
         
         # Create individual entity masks with class information
-        entity_masks = []  # List of tuples: (mask, class_idx, detection_idx)
+        filtered_entities = []  # List of tuples: (mask, class_idx, detection_idx)
+        image_area = self.current_image_size[0] * self.current_image_size[1]
         for i in entity_indices:
             entity_mask = torch.from_numpy(detections.mask[i])
             entity_class = detections.class_id[i]
-            entity_masks.append((entity_mask, entity_class, i))
+            entity_name = entities[entity_class]
+            area_ratio = torch.sum(entity_mask > 0) / image_area
+            if 0.005 <= area_ratio:
+                filtered_entities.append((entity_mask, entity_class, entity_name, i))
+                print(f"Kept entity '{entity_name}' (class {entity_class}) with area ratio {area_ratio:.4f}")
+            else:
+                print(f"Discarded entity '{entity_name}' (class {entity_class}) - area ratio {area_ratio:.4f} outside range [{min_area_ratio}, {max_area_ratio}]")
         
-        # Map subentities to entities using IoU and apply area ratio filtering
-        filtered_indices = []
-        filtered_subentity_names = []
-        filtered_entity_names = []
-        iou_threshold = 0.9  # Minimum IoU to consider a mapping valid
+        # Map subentities to entities using containment ratio and apply area ratio filtering
+        filtered_subentities = []
+        containment_ratio_threshold = 0.9  # Minimum containment ratio to consider a mapping valid
         
         for sub_idx in subentity_indices:
             sub_mask = torch.from_numpy(detections.mask[sub_idx])
-            best_iou = 0.0
+            
+            subentity_name = vocab[detections.class_id[sub_idx]]
+            best_containment_ratio = 0.0
             best_entity_class = None
             
-            # Calculate IoU with each individual entity mask
-            for entity_mask, entity_class, _ in entity_masks:
+            # Calculate containment ratio with each individual entity mask
+            for entity_mask, entity_class, entity_name, _ in filtered_entities:
                 if torch.sum(entity_mask) == 0:  # Skip empty entity masks
                     continue
-                    
-                # Calculate IoU between subentity mask and entity mask
+                
+                if entity_name not in entity_subentity_mapping[subentity_name]:
+                    continue
+                
+                # Calculate containment ratio between subentity mask and entity mask
                 sub_mask_area = torch.sum(sub_mask & entity_mask).item()
                 intersection = torch.sum(sub_mask & entity_mask).item()
-                iou = intersection / sub_mask_area if sub_mask_area > 0 else 0
+                containment_ratio = intersection / sub_mask_area if sub_mask_area > 0 else 0
                 
-                if iou > best_iou:
-                    best_iou = iou
+                if containment_ratio > best_containment_ratio:
+                    best_containment_ratio = containment_ratio
                     best_entity_class = entity_class
             
-            # Only keep subentity if it maps to an entity with sufficient IoU
-            if best_iou >= iou_threshold and best_entity_class is not None:
-                subentity_name = vocab[detections.class_id[sub_idx]]
+            # Only keep subentity if it maps to an entity with sufficient containment ratio
+            if best_containment_ratio >= containment_ratio_threshold and best_entity_class is not None:
                 entity_name = entities[best_entity_class]
                 
                 # Apply area ratio filtering
-                mask = detections.mask[sub_idx]
-                mask_area = np.sum(mask > 0)
-                image_area = self.current_image_size[0] * self.current_image_size[1]
-                area_ratio = mask_area / image_area
+                sub_mask_area = torch.sum(sub_mask > 0)
+                area_ratio = sub_mask_area / image_area
                 
-                if min_area_ratio <= area_ratio <= max_area_ratio:
-                    filtered_indices.append(sub_idx)
-                    filtered_subentity_names.append(subentity_name)
-                    filtered_entity_names.append(entity_name)
-                    print(f"Mapped subentity '{subentity_name}' to entity '{entity_name}' with IoU {best_iou:.3f}")
+                if area_ratio <= max_area_ratio and sub_mask_area > 512:
+                    filtered_subentities.append((sub_idx, subentity_name, entity_name))
+                    print(f"Mapped subentity '{subentity_name}' to entity '{entity_name}' with containment ratio {best_containment_ratio:.3f}")
                 else:
                     print(f"Discarded subentity '{subentity_name}' - area ratio {area_ratio:.4f} outside range [{min_area_ratio}, {max_area_ratio}]")
             else:
-                print(f"Discarded subentity '{vocab[detections.class_id[sub_idx]]}' - no valid entity mapping (best IoU: {best_iou:.3f})")
+                print(f"Discarded subentity '{subentity_name}' - no valid entity mapping (best containment ratio: {best_containment_ratio:.3f})")
         
-        print(f"After entity mapping and area ratio filtering: {len(filtered_indices)} detections remain")
+        print(f"After entity mapping and area ratio filtering: {len(filtered_subentities)} detections remain")
         
         # Use the filtered results from above
         
-        if len(filtered_indices) == 0:
-            raise ValueError("No subentities mapped to entities, returning empty predictions")
+        if len(filtered_subentities) == 0 and len(filtered_entities) == 0:
+            raise ValueError("No entity or subentity detected")
             
         # Filter detections to keep only mapped subentities
+        filtered_indices = [sub_idx for sub_idx, _, _ in filtered_subentities]
         filtered_xyxy = detections.xyxy[filtered_indices]
         filtered_confidence = detections.confidence[filtered_indices]
         filtered_class_id = detections.class_id[filtered_indices]
@@ -278,21 +282,21 @@ class GSAMDetector:
                 'pred_class': classes_tensor[i],
                 'score': scores_tensor[i],
                 'pred_mask': masks_tensor[i] if len(masks_tensor) > 0 else torch.empty(0, 0, dtype=torch.bool),
-                'subentity': filtered_subentity_names[i],
-                'entity': filtered_entity_names[i],
+                'subentity': filtered_subentities[i][1],
+                'entity': filtered_subentities[i][2],
             }
             predictions.append(pred_instance)
         
         # Create entity predictions as list of dictionaries
         entity_predictions = []
         if entity_indices:
-            for entity_idx in entity_indices:
+            for entity_mask, entity_class, entity_name, i in filtered_entities:
                 entity_pred_instance = {
-                    'pred_box': torch.from_numpy(detections.xyxy[entity_idx]).float(),
-                    'pred_class': torch.tensor(detections.class_id[entity_idx]).long(),
-                    'score': torch.tensor(detections.confidence[entity_idx]).float(),
-                    'pred_mask': torch.from_numpy(detections.mask[entity_idx]).bool(),
-                    'entity': entities[detections.class_id[entity_idx]],
+                    'pred_box': torch.from_numpy(detections.xyxy[i]).float(),
+                    'pred_class': torch.tensor(detections.class_id[i]).long(),
+                    'score': torch.tensor(detections.confidence[i]).float(),
+                    'pred_mask': torch.from_numpy(detections.mask[i]).bool(),
+                    'entity': entity_name,
                 }
                 entity_predictions.append(entity_pred_instance)
         
