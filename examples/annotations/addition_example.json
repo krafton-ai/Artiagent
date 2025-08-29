@@ -1,0 +1,19 @@
+{
+  "image_name": "addition_example.jpg",
+  "description": "Person with extra fingers and duplicate facial features",
+  "global_explanation": "",
+  "bboxes": [
+    {
+      "bbox": [0.2, 0.4, 0.6, 0.8],
+      "category": "addition",
+      "caption": "Hand with six fingers - extra finger appears unnaturally duplicated between ring and pinky finger"
+    },
+    {
+      "bbox": [0.1, 0.1, 0.9, 0.5],
+      "category": "addition", 
+      "caption": "Face has duplicate left eye - second eye appears floating above the normal eye position"
+    }
+  ],
+  "artifact_type": "addition",
+  "explanation": "Addition artifacts manifest as excessive or repeated components. In this example, we see a hand with an extra finger and a face with a duplicate eye, both creating implausible duplications that break natural anatomy."
+}

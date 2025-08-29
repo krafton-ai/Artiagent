@@ -1,0 +1,19 @@
+{
+  "image_name": "distortion_example.jpg",
+  "description": "Animal with warped facial features and twisted body parts",
+  "global_explanation": "",
+  "bboxes": [
+    {
+      "bbox": [0.2, 0.1, 0.8, 0.4],
+      "category": "distortion",
+      "caption": "Dog's face severely warped - snout is twisted at impossible angle and eyes are asymmetrically positioned"
+    },
+    {
+      "bbox": [0.3, 0.5, 0.7, 0.9],
+      "category": "distortion", 
+      "caption": "Dog's rear legs are unnaturally bent and stretched - proportions are completely wrong making the animal appear broken"
+    }
+  ],
+  "artifact_type": "distortion",
+  "explanation": "Distortion artifacts occur when objects have details that are not typical, making them unrecognizable or visually broken. This example shows a dog with severely warped facial features and impossibly bent limbs that break natural anatomy."
+}

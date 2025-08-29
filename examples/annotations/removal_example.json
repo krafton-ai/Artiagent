@@ -1,0 +1,19 @@
+{
+  "image_name": "removal_example.jpg", 
+  "description": "Car missing a wheel and incomplete building structure",
+  "global_explanation": "",
+  "bboxes": [
+    {
+      "bbox": [0.3, 0.6, 0.7, 0.9],
+      "category": "removal",
+      "caption": "Car is missing its front right wheel - only three wheels visible where four should be present"
+    },
+    {
+      "bbox": [0.1, 0.1, 0.4, 0.6],
+      "category": "removal",
+      "caption": "Building structure incomplete - upper floors are cut off mid-construction with visible steel beams ending abruptly"
+    }
+  ],
+  "artifact_type": "removal",
+  "explanation": "Removal artifacts appear as omitted components that should be present. Here we see a car missing a wheel and a building with incomplete upper structure, creating unrealistic objects that lack expected parts."
+}
