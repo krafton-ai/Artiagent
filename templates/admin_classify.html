@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Classification - Unsure Images{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>🔧 Admin Classification - Unsure Images</h1>
+            <a href="/admin" class="btn btn-outline-secondary">← Back to Admin Dashboard</a>
+        </div>
+        
+        <div class="alert alert-info">
+            <h5>📋 Admin Review Instructions:</h5>
+            <p class="mb-2">These are images that users marked as "Unsure" during classification. Your task is to make the final decision:</p>
+            <ul class="mb-0">
+                <li><strong>YES - Has Artifacts:</strong> Image contains visible artifacts and should be annotated</li>
+                <li><strong>NO - No Artifacts:</strong> Image is clean and should be excluded from annotation</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="progress-info" id="progress-info">
+            <div class="d-flex justify-content-between align-items-center">
+                <span><strong>Admin Review Progress:</strong></span>
+                <span id="progress-text">Loading...</span>
+            </div>
+            <div class="progress mt-2">
+                <div class="progress-bar bg-warning" id="progress-bar" role="progressbar" style="width: 0%"></div>
+            </div>
+        </div>
+        
+        <div class="text-center">
+            <div id="image-container" style="display: none;">
+                <img id="current-image" class="image-display" alt="Image to classify" style="max-height: 600px;">
+                <div id="prompt-container" class="mt-2 mb-3" style="display: none;">
+                    <div class="alert alert-info">
+                        <small><strong>Generation Prompt:</strong></small>
+                        <div id="current-prompt" class="small"></div>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <h4>Final Decision: Does this image contain artifacts?</h4>
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+                        <button class="btn btn-danger btn-large" onclick="adminClassifyImage(true)">
+                            👍 YES - Has Artifacts
+                        </button>
+                        <button class="btn btn-success btn-large" onclick="adminClassifyImage(false)">
+                            👎 NO - No Artifacts
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="loading-message" class="text-center">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-3">Loading next image...</p>
+            </div>
+            
+            <div id="completion-message" class="text-center" style="display: none;">
+                <div class="alert alert-success">
+                    <h3>🎉 Admin Classification Complete!</h3>
+                    <p>All unsure images have been reviewed. Great job!</p>
+                    <a href="/admin" class="btn btn-primary btn-large">Return to Admin Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5>📊 Admin Session Stats</h5>
+            </div>
+            <div class="card-body">
+                <div id="admin-stats">
+                    <p><strong>Images Reviewed:</strong> <span id="admin-classified-count">0</span></p>
+                    <p><strong>Session Started:</strong> <span id="session-start-time">-</span></p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card mt-3">
+            <div class="card-header">
+                <h5>ℹ️ Context</h5>
+            </div>
+            <div class="card-body">
+                <p><strong>Why these images are here:</strong></p>
+                <ul class="small">
+                    <li>Users marked them as "Unsure" during classification</li>
+                    <li>They need expert review to determine if artifacts are present</li>
+                    <li>Your decision affects whether they go to annotation</li>
+                    <li>Images marked "YES" will be added to the annotation queue</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="card mt-3">
+            <div class="card-header">
+                <h5>💡 Admin Tips</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled">
+                    <li>🔍 <strong>Look for subtle artifacts</strong> users might have missed</li>
+                    <li>⚖️ <strong>Be consistent</strong> with the project artifact definition</li>
+                    <li>🎯 <strong>Trust your expertise</strong> - make the final call</li>
+                    <li>💾 <strong>Decisions are final</strong> and immediately saved</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentImage = null;
+let adminClassifiedCount = 0;
+let sessionStartTime = new Date();
+let imagePrompts = {};
+
+document.getElementById('session-start-time').textContent = sessionStartTime.toLocaleTimeString();
+
+function updateProgress() {
+    fetch('/api/statistics')
+        .then(response => response.json())
+        .then(data => {
+            const totalUnsure = data.images_unsure || 0;
+            const adminCompleted = data.admin_classification_completed || 0;
+            const percentage = totalUnsure > 0 ? Math.round((adminCompleted / totalUnsure) * 100) : 0;
+            
+            document.getElementById('progress-text').textContent = 
+                `${adminCompleted} / ${totalUnsure} reviewed (${percentage}%)`;
+            document.getElementById('progress-bar').style.width = `${percentage}%`;
+        })
+        .catch(error => {
+            console.error('Error updating progress:', error);
+        });
+}
+
+function loadPrompts() {
+    fetch('/api/prompts')
+        .then(response => response.json())
+        .then(data => {
+            imagePrompts = data.prompts || {};
+        })
+        .catch(error => {
+            console.error('Error loading prompts:', error);
+        });
+}
+
+function displayPrompt(imageName) {
+    const promptContainer = document.getElementById('prompt-container');
+    const promptText = document.getElementById('current-prompt');
+    
+    if (imagePrompts[imageName]) {
+        promptText.textContent = imagePrompts[imageName];
+        promptContainer.style.display = 'block';
+    } else {
+        promptContainer.style.display = 'none';
+    }
+}
+
+function loadNextImage() {
+    document.getElementById('loading-message').style.display = 'block';
+    document.getElementById('image-container').style.display = 'none';
+    document.getElementById('completion-message').style.display = 'none';
+    document.getElementById('prompt-container').style.display = 'none';
+    
+    fetch('/api/get-admin-image/classification')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('loading-message').style.display = 'none';
+            
+            if (data.completed) {
+                document.getElementById('completion-message').style.display = 'block';
+            } else {
+                currentImage = data.image_name;
+                document.getElementById('current-image').src = data.image_url;
+                document.getElementById('image-container').style.display = 'block';
+                
+                // Display prompt for this image
+                displayPrompt(data.image_name);
+            }
+            
+            updateProgress();
+        })
+        .catch(error => {
+            console.error('Error loading image:', error);
+            document.getElementById('loading-message').innerHTML = 
+                '<div class="alert alert-danger">Error loading image. Please refresh the page.</div>';
+        });
+}
+
+function adminClassifyImage(hasArtifact) {
+    if (!currentImage) return;
+    
+    // Disable buttons to prevent double-clicking
+    const buttons = document.querySelectorAll('.btn-large');
+    buttons.forEach(btn => btn.disabled = true);
+    
+    fetch('/api/submit-admin-classification', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            image_name: currentImage,
+            has_artifact: hasArtifact
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            adminClassifiedCount++;
+            document.getElementById('admin-classified-count').textContent = adminClassifiedCount;
+            
+            // Load next image after a short delay
+            setTimeout(() => {
+                buttons.forEach(btn => btn.disabled = false);
+                loadNextImage();
+            }, 500);
+        } else {
+            alert('Error saving admin classification: ' + (data.error || 'Unknown error'));
+            buttons.forEach(btn => btn.disabled = false);
+        }
+    })
+    .catch(error => {
+        console.error('Error submitting admin classification:', error);
+        alert('Error submitting classification. Please try again.');
+        buttons.forEach(btn => btn.disabled = false);
+    });
+}
+
+// Load first image on page load
+document.addEventListener('DOMContentLoaded', function() {
+    updateProgress();
+    loadPrompts();
+    loadNextImage();
+    
+    // Update progress every 30 seconds
+    setInterval(updateProgress, 30000);
+});
+</script>
+{% endblock %}

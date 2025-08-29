@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Home{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body text-center">
+                <h1 class="card-title mb-4">Image Annotation System</h1>
+                <p class="lead mb-4">Welcome to the collaborative image annotation platform. Choose your task below:</p>
+                
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100">
+                            <div class="card-body d-flex flex-column">
+                                <h3 class="card-title">Step 1: Classification</h3>
+                                <p class="card-text flex-grow-1">
+                                    Review images and classify whether they contain artifacts or not. 
+                                    This is the first step in the annotation process.
+                                </p>
+                                <a href="/classify" class="btn btn-primary btn-large">Start Classification</a>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100">
+                            <div class="card-body d-flex flex-column">
+                                <h3 class="card-title">Step 2: Annotation</h3>
+                                <p class="card-text flex-grow-1">
+                                    For images with artifacts, draw bounding boxes and provide detailed annotations.
+                                    Only available after classification is complete.
+                                </p>
+                                <a href="/annotate" class="btn btn-success btn-large">Start Annotation</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-4">
+                    <h4>Important Guidelines:</h4>
+                    <ul class="list-unstyled">
+                        <li>📋 <strong>Sequential Process:</strong> Classification must be completed before annotation</li>
+                        <li>👥 <strong>Collaborative:</strong> Multiple annotators can work simultaneously</li>
+                        <li>💾 <strong>Auto-Save:</strong> Your progress is automatically saved</li>
+                        <li>🔄 <strong>No Duplicates:</strong> System prevents overlapping work</li>
+                    </ul>
+                </div>
+                
+                <div class="mt-4">
+                    <a href="/admin" class="btn btn-outline-secondary">View Progress Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

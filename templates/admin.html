@@ -1,0 +1,445 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">📊 Admin Dashboard</h1>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card bg-primary text-white">
+            <div class="card-body text-center">
+                <h3>{{ stats.total_images }}</h3>
+                <p class="mb-0">Total Images</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-info text-white">
+            <div class="card-body text-center">
+                <h3>{{ stats.classification_completed }}</h3>
+                <p class="mb-0">Classification Done</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-warning text-white">
+            <div class="card-body text-center">
+                <h3>{{ stats.images_with_artifacts }}</h3>
+                <p class="mb-0">Images with Artifacts</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-success text-white">
+            <div class="card-body text-center">
+                <h3>{{ stats.annotation_completed }}</h3>
+                <p class="mb-0">Annotation Done</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card bg-secondary text-white">
+            <div class="card-body text-center">
+                <h3>{{ stats.images_no_artifacts }}</h3>
+                <p class="mb-0">No Artifacts</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-warning text-white">
+            <div class="card-body text-center">
+                <h3>{{ stats.images_unsure }}</h3>
+                <p class="mb-0">Unsure (Admin Review)</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-info text-white">
+            <div class="card-body text-center">
+                <h3>{{ stats.admin_classification_completed }}</h3>
+                <p class="mb-0">Admin Classified</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-dark text-white">
+            <div class="card-body text-center">
+                <h3>{{ stats.admin_annotation_completed }}</h3>
+                <p class="mb-0">Admin Annotated</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5>📋 Classification Progress</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Completed:</span>
+                    <strong>{{ stats.classification_completed }} / {{ stats.total_images }}</strong>
+                </div>
+                <div class="progress mb-2">
+                    <div class="progress-bar bg-info" 
+                         style="width: {% if stats.total_images > 0 %}{{ (stats.classification_completed / stats.total_images * 100) | round }}{% else %}0{% endif %}%">
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between text-muted">
+                    <span>Remaining: {{ stats.classification_remaining }}</span>
+                    <span>In Progress: {{ stats.classification_in_progress }}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5>🎨 Annotation Progress</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Completed:</span>
+                    <strong>{{ stats.annotation_completed }} / {{ stats.images_with_artifacts }}</strong>
+                </div>
+                <div class="progress mb-2">
+                    <div class="progress-bar bg-success" 
+                         style="width: {% if stats.images_with_artifacts > 0 %}{{ (stats.annotation_completed / stats.images_with_artifacts * 100) | round }}{% else %}0{% endif %}%">
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between text-muted">
+                    <span>Remaining: {{ stats.annotation_remaining }}</span>
+                    <span>In Progress: {{ stats.annotation_in_progress }}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5>🔄 Real-time Status</h5>
+                <button class="btn btn-sm btn-outline-primary" onclick="refreshStats()">
+                    🔄 Refresh
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="real-time-stats">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Classification Phase</h6>
+                            <div id="classification-status">
+                                {% if stats.classification_remaining == 0 %}
+                                    <div class="alert alert-success">✅ Classification phase completed!</div>
+                                {% else %}
+                                    <div class="alert alert-info">🔄 Classification in progress...</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Annotation Phase</h6>
+                            <div id="annotation-status">
+                                {% if stats.annotation_remaining == 0 and stats.images_with_artifacts > 0 %}
+                                    <div class="alert alert-success">✅ Annotation phase completed!</div>
+                                {% elif stats.images_with_artifacts == 0 %}
+                                    <div class="alert alert-secondary">⏳ Waiting for classification to identify artifacts...</div>
+                                {% else %}
+                                    <div class="alert alert-info">🔄 Annotation in progress...</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5>📁 Data Management</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <a href="/upload" class="btn btn-outline-primary">📤 Upload Images</a>
+                    <button class="btn btn-outline-success" onclick="downloadResults()">📥 Download Results</button>
+                    <button class="btn btn-outline-info" onclick="exportProgress()">📊 Export Progress Report</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5>🔗 Quick Links</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <a href="/classify" class="btn btn-outline-primary">👁️ Classification Interface</a>
+                    <a href="/annotate" class="btn btn-outline-success">🎨 Annotation Interface</a>
+                    <button class="btn btn-outline-warning" onclick="generateShareableLinks()">🔗 Generate Shareable Links</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5>🔧 Admin Tasks</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="d-grid gap-2">
+                            <a href="/admin/classify" class="btn btn-outline-warning" 
+                               {% if stats.images_unsure == 0 %}disabled{% endif %}>
+                                🤷 Review Unsure Images ({{ stats.images_unsure - stats.admin_classification_completed }}/{{ stats.images_unsure }})
+                            </a>
+                            <a href="/admin/annotate" class="btn btn-outline-info"
+                               {% if stats.admin_annotation_available == 0 %}disabled{% endif %}>
+                                🎨 Admin Annotation ({{ stats.admin_annotation_available }} pending)
+                            </a>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        {% if stats.images_unsure - stats.admin_classification_completed > 0 %}
+                            <div class="alert alert-warning">
+                                <strong>{{ stats.images_unsure - stats.admin_classification_completed }}</strong> 
+                                unsure images need admin classification
+                            </div>
+                        {% elif stats.admin_annotation_available > 0 %}
+                            <div class="alert alert-info">
+                                <strong>{{ stats.admin_annotation_available }}</strong> 
+                                admin-classified images need annotation
+                            </div>
+                        {% else %}
+                            <div class="alert alert-success">
+                                All admin tasks completed!
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5>📈 Progress Timeline</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="rounded-circle bg-primary text-white d-flex align-items-center justify-content-center" 
+                                 style="width: 40px; height: 40px;">1</div>
+                            <div class="ms-3">
+                                <strong>Upload Images</strong>
+                                <br><small class="text-muted">{{ stats.total_images }} images uploaded</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="rounded-circle {% if stats.classification_remaining == 0 %}bg-success{% else %}bg-warning{% endif %} text-white d-flex align-items-center justify-content-center" 
+                                 style="width: 40px; height: 40px;">2</div>
+                            <div class="ms-3">
+                                <strong>Classification</strong>
+                                <br><small class="text-muted">
+                                    {% if stats.classification_remaining == 0 %}
+                                        Completed
+                                    {% else %}
+                                        {{ stats.classification_completed }}/{{ stats.total_images }} done
+                                    {% endif %}
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-flex align-items-center mb-3">
+                            <div class="rounded-circle {% if stats.annotation_remaining == 0 and stats.images_with_artifacts > 0 %}bg-success{% elif stats.images_with_artifacts > 0 %}bg-warning{% else %}bg-secondary{% endif %} text-white d-flex align-items-center justify-content-center" 
+                                 style="width: 40px; height: 40px;">3</div>
+                            <div class="ms-3">
+                                <strong>Annotation</strong>
+                                <br><small class="text-muted">
+                                    {% if stats.annotation_remaining == 0 and stats.images_with_artifacts > 0 %}
+                                        Completed
+                                    {% elif stats.images_with_artifacts > 0 %}
+                                        {{ stats.annotation_completed }}/{{ stats.images_with_artifacts }} done
+                                    {% else %}
+                                        Waiting for artifacts...
+                                    {% endif %}
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal for shareable links -->
+<div class="modal fade" id="linksModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">🔗 Shareable Links</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info">
+                    <strong>📋 Instructions:</strong> Share these links with your annotators. Each person will automatically be assigned different images to prevent duplicates.
+                </div>
+                <div class="mb-3">
+                    <label class="form-label"><strong>Classification Interface:</strong></label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="classification-link" readonly>
+                        <button class="btn btn-outline-secondary" onclick="copyToClipboard('classification-link')">Copy</button>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label"><strong>Annotation Interface:</strong></label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="annotation-link" readonly>
+                        <button class="btn btn-outline-secondary" onclick="copyToClipboard('annotation-link')">Copy</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function refreshStats() {
+    fetch('/api/statistics')
+        .then(response => response.json())
+        .then(data => {
+            location.reload(); // Simple refresh for now
+        })
+        .catch(error => {
+            console.error('Error refreshing stats:', error);
+        });
+}
+
+function downloadResults() {
+    // Create download links for result files
+    const links = [
+        { url: '/api/download/classification', filename: 'classification_results.json' },
+        { url: '/api/download/annotation', filename: 'annotation_results.json' }
+    ];
+    
+    links.forEach(link => {
+        const a = document.createElement('a');
+        a.href = link.url;
+        a.download = link.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    });
+}
+
+function exportProgress() {
+    fetch('/api/statistics')
+        .then(response => response.json())
+        .then(data => {
+            const report = {
+                timestamp: new Date().toISOString(),
+                summary: data,
+                details: {
+                    classification_completion_rate: data.total_images > 0 ? 
+                        ((data.classification_completed / data.total_images) * 100).toFixed(2) + '%' : '0%',
+                    annotation_completion_rate: data.images_with_artifacts > 0 ? 
+                        ((data.annotation_completed / data.images_with_artifacts) * 100).toFixed(2) + '%' : '0%',
+                    artifact_rate: data.total_images > 0 ? 
+                        ((data.images_with_artifacts / data.total_images) * 100).toFixed(2) + '%' : '0%'
+                }
+            };
+            
+            const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `progress_report_${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+}
+
+function generateShareableLinks() {
+    const baseUrl = window.location.origin;
+    document.getElementById('classification-link').value = `${baseUrl}/classify`;
+    document.getElementById('annotation-link').value = `${baseUrl}/annotate`;
+    
+    const modal = new bootstrap.Modal(document.getElementById('linksModal'));
+    modal.show();
+}
+
+function copyToClipboard(elementId) {
+    const element = document.getElementById(elementId);
+    element.select();
+    element.setSelectionRange(0, 99999); // For mobile devices
+    
+    try {
+        document.execCommand('copy');
+        
+        // Show feedback
+        const button = element.nextElementSibling;
+        const originalText = button.textContent;
+        button.textContent = 'Copied!';
+        button.classList.replace('btn-outline-secondary', 'btn-success');
+        
+        setTimeout(() => {
+            button.textContent = originalText;
+            button.classList.replace('btn-success', 'btn-outline-secondary');
+        }, 2000);
+    } catch (err) {
+        console.error('Could not copy text: ', err);
+    }
+}
+
+// Auto-refresh stats every 30 seconds
+setInterval(() => {
+    fetch('/api/statistics')
+        .then(response => response.json())
+        .then(data => {
+            // Update key stats without full page reload
+            document.querySelectorAll('.card h3').forEach((el, index) => {
+                const values = [data.total_images, data.classification_completed, data.images_with_artifacts, data.annotation_completed];
+                if (values[index] !== undefined) {
+                    el.textContent = values[index];
+                }
+            });
+        })
+        .catch(error => {
+            console.error('Error auto-refreshing stats:', error);
+        });
+}, 30000);
+</script>
+{% endblock %}

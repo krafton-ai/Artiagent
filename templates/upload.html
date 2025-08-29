@@ -1,0 +1,308 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Images{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h3>📤 Upload Images for Annotation</h3>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <strong>📋 Instructions:</strong>
+                    <ul class="mb-0 mt-2">
+                        <li>Select multiple image files (PNG, JPG, JPEG, GIF, BMP)</li>
+                        <li>Images will be available for annotation immediately after upload</li>
+                        <li>Supported formats: .png, .jpg, .jpeg, .gif, .bmp</li>
+                        <li>Recommended size: Under 5MB per image for optimal performance</li>
+                    </ul>
+                </div>
+                
+                <form id="upload-form" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="images" class="form-label">
+                            <strong>Select Images:</strong>
+                        </label>
+                        <input type="file" class="form-control" id="images" name="images" 
+                               multiple accept=".png,.jpg,.jpeg,.gif,.bmp" required>
+                    </div>
+                    
+                    <div id="file-preview" class="mb-3" style="display: none;">
+                        <h5>Selected Files:</h5>
+                        <div id="file-list" class="list-group">
+                            <!-- File list will be populated here -->
+                        </div>
+                    </div>
+                    
+                    <div class="text-center">
+                        <button type="submit" class="btn btn-primary btn-large">
+                            📤 Upload Images
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="clearSelection()">
+                            🗑️ Clear Selection
+                        </button>
+                    </div>
+                </form>
+                
+                <div id="upload-progress" class="mt-4" style="display: none;">
+                    <h5>Upload Progress:</h5>
+                    <div class="progress">
+                        <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" 
+                             role="progressbar" style="width: 0%"></div>
+                    </div>
+                    <div id="progress-text" class="text-center mt-2">Preparing upload...</div>
+                </div>
+                
+                <div id="upload-result" class="mt-4" style="display: none;">
+                    <!-- Upload result will be shown here -->
+                </div>
+            </div>
+        </div>
+        
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5>📊 Current Image Status</h5>
+            </div>
+            <div class="card-body">
+                <div id="image-stats">
+                    <div class="row text-center">
+                        <div class="col-md-3">
+                            <div class="border p-3 rounded">
+                                <h4 id="total-images" class="text-primary">-</h4>
+                                <p class="mb-0">Total Images</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="border p-3 rounded">
+                                <h4 id="classified-images" class="text-info">-</h4>
+                                <p class="mb-0">Classified</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="border p-3 rounded">
+                                <h4 id="artifact-images" class="text-warning">-</h4>
+                                <p class="mb-0">With Artifacts</p>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="border p-3 rounded">
+                                <h4 id="annotated-images" class="text-success">-</h4>
+                                <p class="mb-0">Annotated</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="text-center mt-3">
+                    <a href="/admin" class="btn btn-outline-primary">View Full Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('images').addEventListener('change', function(e) {
+    const files = e.target.files;
+    const fileList = document.getElementById('file-list');
+    const filePreview = document.getElementById('file-preview');
+    
+    fileList.innerHTML = '';
+    
+    if (files.length > 0) {
+        filePreview.style.display = 'block';
+        
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            const fileSize = (file.size / 1024 / 1024).toFixed(2); // Size in MB
+            
+            const listItem = document.createElement('div');
+            listItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+            
+            const isValidType = file.type.match(/^image\/(png|jpe?g|gif|bmp)$/i);
+            const isValidSize = file.size <= 10 * 1024 * 1024; // 10MB limit
+            
+            let statusBadge = '';
+            let textClass = '';
+            
+            if (!isValidType) {
+                statusBadge = '<span class="badge bg-danger">Invalid Type</span>';
+                textClass = 'text-muted';
+            } else if (!isValidSize) {
+                statusBadge = '<span class="badge bg-warning">Too Large</span>';
+                textClass = 'text-muted';
+            } else {
+                statusBadge = '<span class="badge bg-success">Ready</span>';
+            }
+            
+            listItem.innerHTML = `
+                <div class="${textClass}">
+                    <strong>${file.name}</strong>
+                    <br><small>${fileSize} MB</small>
+                </div>
+                ${statusBadge}
+            `;
+            
+            fileList.appendChild(listItem);
+        }
+    } else {
+        filePreview.style.display = 'none';
+    }
+});
+
+document.getElementById('upload-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const files = document.getElementById('images').files;
+    if (files.length === 0) {
+        alert('Please select at least one image to upload.');
+        return;
+    }
+    
+    // Validate files
+    const validFiles = [];
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const isValidType = file.type.match(/^image\/(png|jpe?g|gif|bmp)$/i);
+        const isValidSize = file.size <= 10 * 1024 * 1024; // 10MB limit
+        
+        if (isValidType && isValidSize) {
+            validFiles.push(file);
+        }
+    }
+    
+    if (validFiles.length === 0) {
+        alert('No valid image files selected. Please check file types and sizes.');
+        return;
+    }
+    
+    if (validFiles.length !== files.length) {
+        const proceed = confirm(`Only ${validFiles.length} out of ${files.length} files are valid. Continue with valid files?`);
+        if (!proceed) return;
+    }
+    
+    // Show progress
+    document.getElementById('upload-progress').style.display = 'block';
+    document.getElementById('upload-result').style.display = 'none';
+    
+    const formData = new FormData();
+    validFiles.forEach(file => {
+        formData.append('images', file);
+    });
+    
+    // Disable form
+    const submitBtn = document.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Uploading...';
+    
+    const xhr = new XMLHttpRequest();
+    
+    xhr.upload.addEventListener('progress', function(e) {
+        if (e.lengthComputable) {
+            const percentComplete = (e.loaded / e.total) * 100;
+            document.getElementById('progress-bar').style.width = percentComplete + '%';
+            document.getElementById('progress-text').textContent = 
+                `Uploading... ${Math.round(percentComplete)}% (${e.loaded} / ${e.total} bytes)`;
+        }
+    });
+    
+    xhr.addEventListener('load', function() {
+        if (xhr.status === 200) {
+            try {
+                const response = JSON.parse(xhr.responseText);
+                if (response.success) {
+                    document.getElementById('upload-result').innerHTML = `
+                        <div class="alert alert-success">
+                            <h5>✅ Upload Successful!</h5>
+                            <p>${response.message}</p>
+                        </div>
+                    `;
+                    
+                    // Clear form
+                    document.getElementById('upload-form').reset();
+                    document.getElementById('file-preview').style.display = 'none';
+                    
+                    // Update stats
+                    setTimeout(updateStats, 1000);
+                } else {
+                    throw new Error(response.message || 'Upload failed');
+                }
+            } catch (error) {
+                document.getElementById('upload-result').innerHTML = `
+                    <div class="alert alert-danger">
+                        <h5>❌ Upload Failed</h5>
+                        <p>Error: ${error.message}</p>
+                    </div>
+                `;
+            }
+        } else {
+            document.getElementById('upload-result').innerHTML = `
+                <div class="alert alert-danger">
+                    <h5>❌ Upload Failed</h5>
+                    <p>Server error: ${xhr.status} ${xhr.statusText}</p>
+                </div>
+            `;
+        }
+        
+        // Re-enable form
+        submitBtn.disabled = false;
+        submitBtn.textContent = '📤 Upload Images';
+        
+        // Hide progress after delay
+        setTimeout(() => {
+            document.getElementById('upload-progress').style.display = 'none';
+        }, 2000);
+        
+        // Show result
+        document.getElementById('upload-result').style.display = 'block';
+    });
+    
+    xhr.addEventListener('error', function() {
+        document.getElementById('upload-result').innerHTML = `
+            <div class="alert alert-danger">
+                <h5>❌ Upload Failed</h5>
+                <p>Network error occurred. Please check your connection and try again.</p>
+            </div>
+        `;
+        
+        // Re-enable form
+        submitBtn.disabled = false;
+        submitBtn.textContent = '📤 Upload Images';
+        document.getElementById('upload-progress').style.display = 'none';
+        document.getElementById('upload-result').style.display = 'block';
+    });
+    
+    xhr.open('POST', '/upload', true);
+    xhr.send(formData);
+});
+
+function clearSelection() {
+    document.getElementById('upload-form').reset();
+    document.getElementById('file-preview').style.display = 'none';
+    document.getElementById('upload-result').style.display = 'none';
+}
+
+function updateStats() {
+    fetch('/api/statistics')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('total-images').textContent = data.total_images;
+            document.getElementById('classified-images').textContent = data.classification_completed;
+            document.getElementById('artifact-images').textContent = data.images_with_artifacts;
+            document.getElementById('annotated-images').textContent = data.annotation_completed;
+        })
+        .catch(error => {
+            console.error('Error updating stats:', error);
+        });
+}
+
+// Load initial stats
+document.addEventListener('DOMContentLoaded', function() {
+    updateStats();
+});
+</script>
+{% endblock %}
