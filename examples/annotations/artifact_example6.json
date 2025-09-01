@@ -1,0 +1,12 @@
+{
+  "image_name": "artifact_example6.png",
+  "artifact_type": "addition",
+  "description": "Extra leg to the girl among the crowd",
+  "bboxes": [
+    {
+      "bbox": [1208.67, 487.82, 1310.87, 678.84],
+      "category": "addition",
+      "caption": "There is an extra leg sticking out from nowhere in the crowd sitting in the background, next to the girl in the middle"
+    }
+  ]
+}

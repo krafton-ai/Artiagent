@@ -1,0 +1,22 @@
+{
+  "image_name": "artifact_example4.png",
+  "artifact_type": "fusion",
+  "description": "Marketplace scene with fusion and distortion artifacts",
+  "bboxes": [
+    {
+      "bbox": [10.94, 344.38, 156.37, 655.29],
+      "category": "distortion",
+      "caption": "Background features are indistinguishable and distorted - architectural elements lack proper geometric structure"
+    },
+    {
+      "bbox": [774.16, 284.21, 1022.89, 690.39],
+      "category": "distortion",
+      "caption": "Background features are indistinguishable and distorted - architectural elements lack proper geometric structure"
+    },
+    {
+      "bbox": [466.27, 414.59, 548.51, 566.03],
+      "category": "fusion",
+      "caption": "Person in the middle has hat merged with body - unclear boundary between hat and torso"
+    }
+  ]
+}

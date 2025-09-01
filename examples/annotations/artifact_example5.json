@@ -1,0 +1,12 @@
+{
+  "image_name": "artifact_example5.png",
+  "artifact_type": "fusion",
+  "description": "Three lambs with fusion artifact",
+  "bboxes": [
+    {
+      "bbox": [224.02, 132.15, 316.27, 248.27],
+      "category": "fusion",
+      "caption": "Two lambs' bodies are merged into one head - impossible anatomical structure where multiple bodies share a single head"
+    }
+  ]
+}

@@ -5,6 +5,32 @@
 {% block content %}
 <div class="row">
     <div class="col-12">
+        <!-- CRITICAL GUIDELINES NOTIFICATION -->
+        <div class="alert alert-warning border-3 mb-4 shadow" style="border-width: 3px !important; background-color: #fff3cd;">
+            <div class="row align-items-center">
+                <div class="col-md-1 text-center">
+                    <i class="fas fa-exclamation-triangle fa-3x text-warning"></i>
+                </div>
+                <div class="col-md-11">
+                    <h4 class="alert-heading mb-2">
+                        <i class="fas fa-book-open me-2"></i>PLEASE READ THE GUIDELINES FIRST!
+                    </h4>
+                    <p class="mb-2">
+                        <strong>Before starting classification, it's essential to read our comprehensive guidelines.</strong>
+                        Understanding artifact definitions and examples will significantly improve annotation quality.
+                    </p>
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        <a href="/guidelines" class="btn btn-warning btn-sm fw-bold">
+                            <i class="fas fa-book me-1"></i>READ FULL GUIDELINES
+                        </a>
+                        <span class="small text-muted">
+                            ⏱️ Takes 5-10 minutes • Essential for accurate work • Review anytime
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Artifact Definition Section -->
         <div class="artifact-guide mb-4" style="background-color: #fff3cd; border: 1px solid #ffecb5;">
             <h3>📖 Artifact Definition</h3>
@@ -38,44 +64,62 @@
             </div>
         </div>
 
-        <!-- TODO: Add detailed guidelines for artifact identification here -->
-        <div class="artifact-guide">
-            <h3>🎯 Artifact Identification Guidelines</h3>
+        <!-- Detailed Description Section -->
+        <div class="artifact-guide mt-3" style="background-color: #e8f4fd; border: 1px solid #b3d7ff; padding: 20px;">
+            <h3>📋 Detailed Classification Guidelines</h3>
             <div class="row">
-                <div class="col-md-6">
-                    <h5>✅ What ARE artifacts:</h5>
-                    <ul>
-                        <li>Unnatural distortions or deformations</li>
-                        <li>Blurred or pixelated areas</li>
-                        <li>Impossible physical structures</li>
-                        <li>Color bleeding or aberrations</li>
-                    </ul>
-                </div>
-                <div class="col-md-6">
-                    <h5>❌ What are NOT artifacts:</h5>
-                    <ul>
-                        <li>Natural image noise or grain</li>
-                        <li>Motion blur from movement</li>
-                        <li>Depth of field effects</li>
-                        <li>Natural reflections or refractions</li>
-                    </ul>
+                <div class="col-12">
+                    <!-- TODO: Add detailed classification guidelines here -->
+                    <p class="mb-3"><strong>Our task focuses on structural artifacts, including distortions, duplicated or missing parts, and merged objects.</strong></p>
+                    <div class="alert alert-warning">
+                        <p><small>Text distortions, stylistic errors, physical implausibility and other natural image features are not considered artifacts in this task.</small></p>
+                        <p><small>Check the provided prompts used for the image generation. Prompt alignment is not considered in this task.</small></p>
+                        <p><small>Unrealistic images generated due to the prompts are not considered artifacts unless they contain structural errors.</small></p>
+                    </div>
+                    <p class="mb-3"><strong>Take your time and look carefully at all parts of the image.</strong></p>
+                    <div class="alert alert-warning">
+                        <p><small>Images seemingly natural at first glance may contain artifacts. Pay attention to the details and parts highly capable of containing artifacts.</small></p>
+                        <p><small>If still unsure, mark as <strong>Unsure</strong> for admin review.</small></p>
+                    </div>
                 </div>
             </div>
-            <p class="mt-3"><strong>We focus on structural artifacts only. When in doubt, reference to the examples, and if still unsure, mark Unsure..</strong></p>
         </div>
-        
-        <!-- Examples Section -->
-        <div class="artifact-guide mt-4" style="background-color: #f8f9fa; border: 1px solid #dee2e6;">
-            <h3>📸 Examples of Images with Artifacts</h3>
-            <p class="mb-3">These are examples of images that <strong>SHOULD be classified as "Has Artifacts"</strong>:</p>
+
+        <!-- Classification Examples Section -->
+        <div class="artifact-guide mt-4" style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 20px;">
+            <h3>📸 Classification Examples</h3>
+            <p class="mb-4"><strong>Study these examples to understand what should and shouldn't be classified as artifacts:</strong></p>
             
-            <div id="examples-container" class="row">
-                <div class="col-12 text-center">
-                    <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading examples...</span>
+            <!-- Has Artifacts Examples -->
+            <div class="mb-5">
+                <h4 class="text-success mb-3">✅ HAS Artifacts</h4>
+                <p class="mb-3"><em>These images contain structural defects and should be classified as having artifacts:</em></p>
+                <div id="has-artifacts-container" class="d-flex flex-wrap gap-3 justify-content-start">
+                    <div class="text-center">
+                        <div class="spinner-border text-success" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading examples...</p>
                     </div>
-                    <p class="mt-2">Loading examples...</p>
                 </div>
+            </div>
+            
+            <!-- No Artifacts Examples -->
+            <div class="mb-4">
+                <h4 class="text-danger mb-3">❌ NO Artifacts</h4>
+                <p class="mb-3"><em>These images should NOT be classified as having artifacts:</em></p>
+                <div id="no-artifacts-container" class="d-flex flex-wrap gap-3 justify-content-start">
+                    <div class="text-center">
+                        <div class="spinner-border text-danger" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading examples...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="alert alert-info">
+                <strong>💡 Classification Tip:</strong> When uncertain, study these examples carefully. If still unsure after comparison, mark as <strong>Unsure</strong> for expert admin review.
             </div>
         </div>
     </div>
@@ -168,41 +212,123 @@
 
 {% block scripts %}
 <script>
+// Global state management with cleanup
 let currentImage = null;
 let userClassifiedCount = 0;
 let sessionStartTime = new Date();
 let imagePrompts = {};
 
+// Request management for stability
+let requestInProgress = false;
+let retryCount = 0;
+const MAX_RETRY_COUNT = 3;
+const RETRY_DELAY = 1000;
+
+// Memory management
+let loadedImages = new Set();
+const MAX_CACHED_IMAGES = 10;
+
+// Error handling
+let consecutiveErrors = 0;
+const MAX_CONSECUTIVE_ERRORS = 5;
+
 document.getElementById('session-start-time').textContent = sessionStartTime.toLocaleTimeString();
 
-function updateProgress() {
-    fetch('/api/statistics')
-        .then(response => response.json())
-        .then(data => {
-            const percentage = data.total_images > 0 ? 
-                Math.round((data.classification_completed / data.total_images) * 100) : 0;
+// Enhanced request function with retry and error handling
+async function makeRequest(url, options = {}) {
+    const defaultOptions = {
+        method: 'GET',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        timeout: 10000
+    };
+    
+    const requestOptions = { ...defaultOptions, ...options };
+    
+    for (let attempt = 0; attempt <= MAX_RETRY_COUNT; attempt++) {
+        try {
+            console.log(`Making request to ${url}, attempt ${attempt + 1}`);
             
-            document.getElementById('progress-text').textContent = 
-                `${data.classification_completed} / ${data.total_images} completed (${percentage}%)`;
-            document.getElementById('progress-bar').style.width = `${percentage}%`;
-        })
-        .catch(error => {
-            console.error('Error updating progress:', error);
-        });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), requestOptions.timeout);
+            
+            const response = await fetch(url, {
+                ...requestOptions,
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            consecutiveErrors = 0; // Reset error count on success
+            return data;
+            
+        } catch (error) {
+            console.error(`Request attempt ${attempt + 1} failed:`, error);
+            consecutiveErrors++;
+            
+            if (attempt === MAX_RETRY_COUNT) {
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    showErrorMessage('Multiple requests failed. Please refresh the page and try again.');
+                }
+                throw error;
+            }
+            
+            // Wait before retry
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (attempt + 1)));
+        }
+    }
 }
 
-function loadPrompts() {
-    fetch('/api/prompts')
-        .then(response => response.json())
-        .then(data => {
-            console.log('Prompts API response:', data);
-            imagePrompts = data.prompts || {};
-            console.log('Loaded imagePrompts:', imagePrompts);
-            console.log('Number of prompts loaded:', Object.keys(imagePrompts).length);
-        })
-        .catch(error => {
-            console.error('Error loading prompts:', error);
-        });
+function showErrorMessage(message) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'alert alert-danger alert-dismissible fade show position-fixed';
+    errorDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; max-width: 400px;';
+    errorDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    document.body.appendChild(errorDiv);
+    
+    // Auto remove after 10 seconds
+    setTimeout(() => {
+        if (errorDiv.parentNode) {
+            errorDiv.parentNode.removeChild(errorDiv);
+        }
+    }, 10000);
+}
+
+async function updateProgress() {
+    try {
+        const data = await makeRequest('/api/statistics');
+        const percentage = data.total_images > 0 ? 
+            Math.round((data.classification_completed / data.total_images) * 100) : 0;
+        
+        document.getElementById('progress-text').textContent = 
+            `${data.classification_completed} / ${data.total_images} completed (${percentage}%)`;
+        document.getElementById('progress-bar').style.width = `${percentage}%`;
+    } catch (error) {
+        console.error('Error updating progress:', error);
+        // Don't show error for progress updates - they're not critical
+    }
+}
+
+async function loadPrompts() {
+    try {
+        const data = await makeRequest('/api/prompts');
+        console.log('Prompts API response:', data);
+        imagePrompts = data.prompts || {};
+        console.log('Loaded imagePrompts:', imagePrompts);
+        console.log('Number of prompts loaded:', Object.keys(imagePrompts).length);
+    } catch (error) {
+        console.error('Error loading prompts:', error);
+        showErrorMessage('Failed to load image prompts. Some features may not work correctly.');
+    }
 }
 
 function displayPrompt(imageName) {
@@ -223,133 +349,303 @@ function displayPrompt(imageName) {
     }
 }
 
-function loadNextImage() {
-    document.getElementById('loading-message').style.display = 'block';
-    document.getElementById('image-container').style.display = 'none';
-    document.getElementById('completion-message').style.display = 'none';
-    document.getElementById('prompt-container').style.display = 'none';
+async function loadNextImage() {
+    // Prevent concurrent image loading
+    if (requestInProgress) {
+        console.log('Request already in progress, skipping...');
+        return;
+    }
     
-    fetch('/api/get-image/classification')
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById('loading-message').style.display = 'none';
+    requestInProgress = true;
+    
+    try {
+        // Clean up previous image
+        cleanupPreviousImage();
+        
+        // Show loading state
+        document.getElementById('loading-message').style.display = 'block';
+        document.getElementById('image-container').style.display = 'none';
+        document.getElementById('completion-message').style.display = 'none';
+        document.getElementById('prompt-container').style.display = 'none';
+        
+        const data = await makeRequest('/api/get-image/classification');
+        
+        document.getElementById('loading-message').style.display = 'none';
+        
+        if (data.completed) {
+            document.getElementById('completion-message').style.display = 'block';
+        } else if (data.image_name && data.image_url) {
+            // Set current image
+            currentImage = data.image_name;
             
-            if (data.completed) {
-                document.getElementById('completion-message').style.display = 'block';
-            } else {
-                currentImage = data.image_name;
-                document.getElementById('current-image').src = data.image_url;
-                document.getElementById('image-container').style.display = 'block';
-                
-                // Display prompt for this image
-                displayPrompt(data.image_name);
-            }
+            // Preload image before displaying
+            await loadImageWithTimeout(data.image_url);
             
-            updateProgress();
-        })
-        .catch(error => {
-            console.error('Error loading image:', error);
+            // Display the image
+            const imgElement = document.getElementById('current-image');
+            imgElement.src = data.image_url;
+            document.getElementById('image-container').style.display = 'block';
+            
+            // Track loaded images for memory management
+            manageImageCache(data.image_name);
+            
+            // Display prompt for this image
+            displayPrompt(data.image_name);
+            
+            retryCount = 0; // Reset retry count on success
+        } else {
+            throw new Error('Invalid image data received');
+        }
+        
+        // Update progress
+        updateProgress();
+        
+    } catch (error) {
+        console.error('Error loading image:', error);
+        
+        if (retryCount < MAX_RETRY_COUNT) {
+            retryCount++;
+            console.log(`Retrying image load, attempt ${retryCount}`);
+            
             document.getElementById('loading-message').innerHTML = 
-                '<div class="alert alert-danger">Error loading image. Please refresh the page.</div>';
-        });
+                `<div class="alert alert-warning">Loading failed, retrying... (${retryCount}/${MAX_RETRY_COUNT})</div>`;
+            
+            // Retry after delay
+            setTimeout(() => {
+                requestInProgress = false;
+                loadNextImage();
+            }, RETRY_DELAY * retryCount);
+        } else {
+            document.getElementById('loading-message').innerHTML = 
+                '<div class="alert alert-danger">Error loading image after multiple attempts. <button class="btn btn-primary btn-sm ms-2" onclick="location.reload()">Refresh Page</button></div>';
+            showErrorMessage('Failed to load image after multiple attempts. Please refresh the page.');
+        }
+    } finally {
+        if (retryCount >= MAX_RETRY_COUNT || currentImage) {
+            requestInProgress = false;
+        }
+    }
 }
 
-function classifyImage(hasArtifact) {
-    if (!currentImage) return;
+function loadImageWithTimeout(imageUrl, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        const timer = setTimeout(() => {
+            reject(new Error('Image loading timeout'));
+        }, timeout);
+        
+        img.onload = () => {
+            clearTimeout(timer);
+            resolve(img);
+        };
+        
+        img.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('Image loading failed'));
+        };
+        
+        img.src = imageUrl;
+    });
+}
+
+function manageImageCache(imageName) {
+    loadedImages.add(imageName);
+    
+    // Clean up old images if cache is too large
+    if (loadedImages.size > MAX_CACHED_IMAGES) {
+        const imagesToRemove = Array.from(loadedImages).slice(0, loadedImages.size - MAX_CACHED_IMAGES);
+        imagesToRemove.forEach(img => loadedImages.delete(img));
+    }
+}
+
+function cleanupPreviousImage() {
+    const imgElement = document.getElementById('current-image');
+    if (imgElement.src) {
+        // Clear the source to free memory
+        imgElement.src = '';
+    }
+}
+
+async function classifyImage(hasArtifact) {
+    if (!currentImage || requestInProgress) {
+        console.log('Cannot classify: no image or request in progress');
+        return;
+    }
+    
+    requestInProgress = true;
     
     // Disable buttons to prevent double-clicking
     const buttons = document.querySelectorAll('.btn-large');
     buttons.forEach(btn => btn.disabled = true);
     
-    fetch('/api/submit-classification', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            image_name: currentImage,
-            has_artifact: hasArtifact
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
+    try {
+        console.log(`Submitting classification: ${currentImage} -> ${hasArtifact}`);
+        
+        const data = await makeRequest('/api/submit-classification', {
+            method: 'POST',
+            body: JSON.stringify({
+                image_name: currentImage,
+                has_artifact: hasArtifact
+            })
+        });
+        
         if (data.success) {
             userClassifiedCount++;
             document.getElementById('user-classified-count').textContent = userClassifiedCount;
+            console.log('Classification submitted successfully');
             
             // Load next image after a short delay
             setTimeout(() => {
                 buttons.forEach(btn => btn.disabled = false);
+                requestInProgress = false;
                 loadNextImage();
             }, 500);
         } else {
-            alert('Error saving classification: ' + (data.error || 'Unknown error'));
-            buttons.forEach(btn => btn.disabled = false);
+            throw new Error(data.error || 'Unknown server error');
         }
-    })
-    .catch(error => {
+        
+    } catch (error) {
         console.error('Error submitting classification:', error);
-        alert('Error submitting classification. Please try again.');
+        showErrorMessage(`Failed to submit classification: ${error.message}`);
+        
+        // Re-enable buttons
         buttons.forEach(btn => btn.disabled = false);
-    });
+        requestInProgress = false;
+    }
 }
 
-function loadExamples() {
-    fetch('/api/examples')
-        .then(response => response.json())
-        .then(examples => {
-            const container = document.getElementById('examples-container');
-            container.innerHTML = '';
+async function loadClassificationExamples() {
+    try {
+        const data = await makeRequest('/api/classification-examples');
+            // Load "Has Artifacts" examples
+            const hasArtifactsContainer = document.getElementById('has-artifacts-container');
+            hasArtifactsContainer.innerHTML = '';
             
-            examples.forEach(example => {
+            data.has_artifacts.forEach(example => {
                 const exampleDiv = document.createElement('div');
-                exampleDiv.className = 'col-md-6 col-lg-3 mb-4';
-                
-                // Get category badge color
-                const badgeColors = {
-                    'addition': 'bg-primary',
-                    'removal': 'bg-warning',
-                    'distortion': 'bg-danger',
-                    'fusion': 'bg-success'
-                };
-                const badgeColor = badgeColors[example.artifact_type] || 'bg-secondary';
-                
+                exampleDiv.className = 'text-center';
+                exampleDiv.style.minWidth = '280px';
+                exampleDiv.style.maxWidth = '350px';
                 exampleDiv.innerHTML = `
                     <div class="card h-100">
                         <img src="/examples/images/${example.image_name}" class="card-img-top" 
-                             alt="${example.description}" style="height: 150px; object-fit: cover;">
-                        <div class="card-body d-flex flex-column">
-                            <div class="mb-2">
-                                <span class="badge ${badgeColor}">${example.artifact_type.toUpperCase()}</span>
-                            </div>
-                            <h6 class="card-title">${example.description}</h6>
+                             alt="${example.description}" style="height: 220px; width: 100%; object-fit: contain; background-color: #f8f9fa; border-bottom: 1px solid #dee2e6;">
+                        <div class="card-body p-3">
+                            <h6 class="card-title mb-2 text-success">${example.artifact_type}</h6>
+                            <p class="card-title mb-2 fw-normal">${example.explanation}</p>
+                            <p class="card-text small text-muted mb-0">${example.description}</p>
                         </div>
                     </div>
                 `;
-                
-                container.appendChild(exampleDiv);
+                hasArtifactsContainer.appendChild(exampleDiv);
             });
             
-            if (examples.length === 0) {
-                container.innerHTML = '<div class="col-12 text-center text-muted">No examples available</div>';
+            // Load "No Artifacts" examples
+            const noArtifactsContainer = document.getElementById('no-artifacts-container');
+            noArtifactsContainer.innerHTML = '';
+            
+            data.no_artifacts.forEach(example => {
+                const exampleDiv = document.createElement('div');
+                exampleDiv.className = 'text-center';
+                exampleDiv.style.minWidth = '280px';
+                exampleDiv.style.maxWidth = '350px';
+                exampleDiv.innerHTML = `
+                    <div class="card h-100">
+                        <img src="/examples/images/${example.image_name}" class="card-img-top" 
+                             alt="${example.description}" style="height: 220px; width: 100%; object-fit: contain; background-color: #f8f9fa; border-bottom: 1px solid #dee2e6;">
+                        <div class="card-body p-3">
+                            <h6 class="card-title mb-2 text-danger">${example.type}</h6>
+                            <h6 class="card-title mb-2 fw-normal">${example.explanation}</h6>
+                            <p class="card-text small text-muted mb-0">${example.description}</p>
+                        </div>
+                    </div>
+                `;
+                noArtifactsContainer.appendChild(exampleDiv);
+            });
+            
+            if (data.has_artifacts.length === 0) {
+                hasArtifactsContainer.innerHTML = '<div class="text-center text-muted small">No examples available</div>';
             }
-        })
-        .catch(error => {
-            console.error('Error loading examples:', error);
-            document.getElementById('examples-container').innerHTML = 
-                '<div class="col-12 text-center text-danger">Error loading examples</div>';
-        });
+            
+            if (data.no_artifacts.length === 0) {
+                noArtifactsContainer.innerHTML = '<div class="text-center text-muted small">No examples available</div>';
+            }
+    } catch (error) {
+        console.error('Error loading classification examples:', error);
+        document.getElementById('has-artifacts-container').innerHTML = 
+            '<div class="text-center text-danger small">Failed to load artifact examples</div>';
+        document.getElementById('no-artifacts-container').innerHTML = 
+            '<div class="text-center text-danger small">Failed to load clean examples</div>';
+        showErrorMessage('Failed to load classification examples. Some features may not work correctly.');
+    }
 }
 
-// Load first image on page load
-document.addEventListener('DOMContentLoaded', function() {
-    updateProgress();
-    loadPrompts();
-    loadNextImage();
-    loadExamples();
+// Memory management and cleanup
+function performCleanup() {
+    // Clean up old error messages
+    const errorMessages = document.querySelectorAll('.alert-danger.position-fixed');
+    errorMessages.forEach(msg => {
+        if (msg.parentNode) {
+            msg.parentNode.removeChild(msg);
+        }
+    });
     
-    // Update progress every 30 seconds
+    // Reset consecutive error count periodically
+    if (consecutiveErrors > 0) {
+        consecutiveErrors = Math.max(0, consecutiveErrors - 1);
+    }
+}
+
+// Handle page visibility changes for better resource management
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+        console.log('Page hidden, pausing operations');
+    } else {
+        console.log('Page visible, resuming operations');
+        // Check if we need to reload current image
+        if (!currentImage && !requestInProgress) {
+            loadNextImage();
+        }
+    }
+});
+
+// Handle network connectivity issues
+window.addEventListener('online', function() {
+    console.log('Network connection restored');
+    consecutiveErrors = 0;
+    if (!currentImage && !requestInProgress) {
+        loadNextImage();
+    }
+});
+
+window.addEventListener('offline', function() {
+    console.log('Network connection lost');
+    showErrorMessage('Network connection lost. Please check your internet connection.');
+});
+
+// Load first image on page load
+document.addEventListener('DOMContentLoaded', async function() {
+    console.log('Page loaded, initializing...');
+    
+    try {
+        // Load initial data
+        await Promise.all([
+            updateProgress(),
+            loadPrompts(),
+            loadClassificationExamples()
+        ]);
+        
+        // Load first image
+        await loadNextImage();
+        
+    } catch (error) {
+        console.error('Error during initialization:', error);
+        showErrorMessage('Failed to initialize the application. Please refresh the page.');
+    }
+    
+    // Set up periodic updates and cleanup
     setInterval(updateProgress, 30000);
+    setInterval(performCleanup, 60000); // Clean up every minute
 });
 </script>
 {% endblock %}

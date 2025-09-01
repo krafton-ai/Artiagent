@@ -1,0 +1,12 @@
+{
+  "image_name": "artifact_example2.png",
+  "artifact_type": "distortion",
+  "description": "Person with distorted umbrella",
+  "bboxes": [
+    {
+      "bbox": [163.79, 50.48, 918.77, 644.76],
+      "category": "distortion",
+      "caption": "Physically distorted umbrella with parts connected in an unnatural way - umbrella structure is geometrically impossible"
+    }
+  ]
+}

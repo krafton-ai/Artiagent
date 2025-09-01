@@ -1,0 +1,12 @@
+{
+  "image_name": "artifact_example1.png",
+  "artifact_type": "addition",
+  "description": "Vector illustration with extra finger",
+  "bboxes": [
+    {
+      "bbox": [622.32, 563.03, 1003.27, 943.98],
+      "category": "addition",
+      "caption": "Extra finger on the foreground arm - humans should have 5 fingers per hand"
+    }
+  ]
+}

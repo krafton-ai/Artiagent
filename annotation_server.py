@@ -14,9 +14,29 @@ from datetime import datetime
 from flask import Flask, request, jsonify, render_template, send_from_directory, session
 from werkzeug.utils import secure_filename
 import fcntl
+import logging
+from functools import wraps
+from collections import defaultdict
+import weakref
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-this'  # Change this in production
+
+# Global caches for stability
+_prompt_cache = {}
+_prompt_cache_time = 0
+_examples_cache = {}
+_examples_cache_time = 0
+CACHE_DURATION = 300  # 5 minutes
+
+# Request throttling
+request_counts = defaultdict(list)
+REQUEST_LIMIT = 50  # requests per minute per user
+REQUEST_WINDOW = 60
 
 # Configuration
 IMAGES_DIR = Path("annotation_images")
@@ -32,6 +52,69 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 # Thread lock for file operations
 file_lock = threading.Lock()
+
+def throttle_requests(func):
+    """Decorator to throttle requests per user"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        user_id = session.get('user_id', request.remote_addr)
+        current_time = time.time()
+        
+        # Clean old requests
+        request_counts[user_id] = [
+            req_time for req_time in request_counts[user_id]
+            if current_time - req_time < REQUEST_WINDOW
+        ]
+        
+        # Check rate limit
+        if len(request_counts[user_id]) >= REQUEST_LIMIT:
+            logger.warning(f"Rate limit exceeded for user {user_id}")
+            return jsonify({"error": "Rate limit exceeded. Please slow down."}), 429
+        
+        # Add current request
+        request_counts[user_id].append(current_time)
+        
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in {func.__name__}: {str(e)}")
+            return jsonify({"error": "Internal server error"}), 500
+    
+    return wrapper
+
+def with_retry(max_retries=3, delay=0.1):
+    """Decorator to retry operations with exponential backoff"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    logger.warning(f"Attempt {attempt + 1} failed for {func.__name__}: {str(e)}")
+                    time.sleep(delay * (2 ** attempt))
+            return None
+        return wrapper
+    return decorator
+
+def ensure_session(func):
+    """Decorator to ensure user has a valid session"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if 'user_id' not in session:
+            session['user_id'] = str(uuid.uuid4())
+            session['created_at'] = time.time()
+        
+        # Validate session age (expire after 24 hours)
+        if time.time() - session.get('created_at', 0) > 86400:
+            session.clear()
+            session['user_id'] = str(uuid.uuid4())
+            session['created_at'] = time.time()
+        
+        return func(*args, **kwargs)
+    return wrapper
 
 class WorkCoordinator:
     """Handles work assignment and progress tracking"""
@@ -280,32 +363,77 @@ class WorkCoordinator:
 # Initialize work coordinator
 coordinator = WorkCoordinator()
 
+@with_retry(max_retries=5, delay=0.1)
 def save_result_safely(filename, data):
-    """Save data to JSON file safely with file locking"""
+    """Save data to JSON file safely with file locking and retry mechanism"""
     with file_lock:
+        temp_filename = f"{filename}.tmp"
+        backup_filename = f"{filename}.backup"
+        
         try:
+            # Create backup of existing file
+            if os.path.exists(filename):
+                import shutil
+                shutil.copy2(filename, backup_filename)
+            
             # Read existing data
             existing_data = []
             if os.path.exists(filename):
-                with open(filename, 'r') as f:
+                with open(filename, 'r', encoding='utf-8') as f:
                     existing_data = json.load(f)
+            
+            # Validate data structure
+            if not isinstance(existing_data, list):
+                existing_data = []
             
             # Add new data
             existing_data.append(data)
             
-            # Write back
-            with open(filename, 'w') as f:
-                json.dump(existing_data, f, indent=2)
+            # Write to temporary file first
+            with open(temp_filename, 'w', encoding='utf-8') as f:
+                json.dump(existing_data, f, indent=2, ensure_ascii=False)
             
+            # Atomic move
+            import shutil
+            shutil.move(temp_filename, filename)
+            
+            # Remove backup on success
+            if os.path.exists(backup_filename):
+                os.remove(backup_filename)
+            
+            logger.info(f"Successfully saved result to {filename}")
             return True
+            
         except Exception as e:
-            print(f"Error saving result: {e}")
-            return False
+            logger.error(f"Error saving result to {filename}: {e}")
+            
+            # Cleanup temporary file
+            if os.path.exists(temp_filename):
+                try:
+                    os.remove(temp_filename)
+                except:
+                    pass
+            
+            # Restore from backup if needed
+            if os.path.exists(backup_filename) and not os.path.exists(filename):
+                try:
+                    import shutil
+                    shutil.move(backup_filename, filename)
+                    logger.info(f"Restored {filename} from backup")
+                except:
+                    pass
+            
+            raise  # Let retry mechanism handle this
 
 @app.route('/')
 def home():
     """Home page - choose task type"""
     return render_template('home.html')
+
+@app.route('/guidelines')
+def guidelines():
+    """Comprehensive guidelines page"""
+    return render_template('guidelines.html')
 
 @app.route('/classify')
 def classify():
@@ -424,10 +552,11 @@ def submit_admin_annotation():
         return jsonify({"error": "Failed to save result"}), 500
 
 @app.route('/api/get-image/<task_type>')
+@ensure_session
+@throttle_requests
 def get_image(task_type):
     """Get next image for classification or annotation"""
-    user_id = session.get('user_id', str(uuid.uuid4()))
-    session['user_id'] = user_id
+    user_id = session['user_id']
     
     if task_type == "classification":
         image_name = coordinator.get_next_classification_image(user_id)
@@ -446,11 +575,11 @@ def get_image(task_type):
     })
 
 @app.route('/api/submit-classification', methods=['POST'])
+@ensure_session
+@throttle_requests
 def submit_classification():
     """Submit classification result"""
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "No user session"}), 400
+    user_id = session['user_id']
     
     data = request.json
     image_name = data.get('image_name')
@@ -475,11 +604,11 @@ def submit_classification():
         return jsonify({"error": "Failed to save result"}), 500
 
 @app.route('/api/submit-annotation', methods=['POST'])
+@ensure_session
+@throttle_requests
 def submit_annotation():
     """Submit annotation result"""
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "No user session"}), 400
+    user_id = session['user_id']
     
     data = request.json
     image_name = data.get('image_name')
@@ -520,55 +649,187 @@ def serve_example_image(filename):
     """Serve example images"""
     return send_from_directory(Path("examples/images"), filename)
 
-@app.route('/api/examples')
-def get_examples():
-    """Get all example annotations"""
+@with_retry(max_retries=3, delay=0.1)
+def load_examples_from_disk():
+    """Load examples from disk with caching"""
+    global _examples_cache, _examples_cache_time
+    
+    current_time = time.time()
+    
+    # Return cached data if still valid
+    if _examples_cache and (current_time - _examples_cache_time) < CACHE_DURATION:
+        logger.debug("Returning cached examples")
+        return _examples_cache
+    
+    logger.info("Loading examples from disk")
     examples_dir = Path("examples/annotations")
     examples = []
     
     if examples_dir.exists():
-        for json_file in examples_dir.glob("*.json"):
+        for json_file in sorted(examples_dir.glob("*.json")):  # Sort for consistency
             try:
-                with open(json_file, 'r') as f:
+                with open(json_file, 'r', encoding='utf-8') as f:
                     example_data = json.load(f)
-                    examples.append(example_data)
+                    # Validate example structure
+                    if isinstance(example_data, dict) and 'image_name' in example_data:
+                        examples.append(example_data)
+                        logger.debug(f"Loaded example: {example_data.get('image_name')}")
             except Exception as e:
-                print(f"Error loading example {json_file}: {e}")
+                logger.error(f"Error loading example {json_file}: {e}")
+    
+    # Update cache
+    _examples_cache = examples
+    _examples_cache_time = current_time
+    
+    logger.info(f"Successfully loaded {len(examples)} examples")
+    return examples
+
+@app.route('/api/examples')
+@ensure_session
+@throttle_requests
+def get_examples():
+    """Get all example annotations with caching"""
+    try:
+        return jsonify(load_examples_from_disk())
+    except Exception as e:
+        logger.error(f"Error in get_examples: {e}")
+        return jsonify([]), 500
+
+@app.route('/api/classification-examples')
+def get_classification_examples():
+    """Get examples for classification - showing has artifacts vs no artifacts"""
+    # TODO: Replace with actual examples - these are temporary samples
+    examples = {
+        "has_artifacts": [
+            {
+                "image_name": "artifact_example1.png",
+                "description": "Vector illustration of a cartoon businessman and woman, both wearing black suits and glasses, giving the thumbs up. A long arm is visible in the foreground.",
+                "artifact_type": "Addition",
+                "explanation": "extra finger on the foreground arm"
+            },
+            {
+                "image_name": "artifact_example2.png", 
+                "description": "A person is standing outside with an open umbrella covering them.",
+                "artifact_type": "Distortion",
+                "explanation": "physically distorted umbrella, with the parts connected in an unnatural way"
+            },
+            {
+                "image_name": "artifact_example3.png",
+                "description": "A man standing at a table with two pizzas.",
+                "artifact_type": "Removal",
+                "explanation": "fingers missing from the hand"
+            },
+            {
+                "image_name": "artifact_example4.png",
+                "description": "A marketplace with several people wandering around and riding bikes.",
+                "artifact_type": "Fusion, Distortion",
+                "explanation": "background features indistinguishable and distorted, person in the middle has the hat merged with the body"
+            },
+            {
+                "image_name": "artifact_example5.png",
+                "description": "Three lambs standing on a dirt road.",
+                "artifact_type": "Fusion",
+                "explanation": "two lambs' bodies are merged into one head"
+            },
+            {
+                "image_name": "artifact_example6.png",
+                "description": "A blurry photo of a skateboarder doing tricks while people watch.",
+                "artifact_type": "Addition",
+                "explanation": "extra leg to the girl among the crowd"
+            }
+        ],
+        "no_artifacts": [
+            {
+                "image_name": "clean_example1.png",
+                "type": "Physical abnoramlity",
+                "description": "There's a plane parked in a court yard.",
+                "explanation": "unrealistic situations. Not classified as artifacts in this task."
+            },
+            {
+                "image_name": "clean_example2.png",
+                "type": "Stylistic error",
+                "description": "Video game icon design depicting a tribal mask.",
+                "explanation": "Stylistic errors are not classified as artifacts in this task. Cartoonish or painting style images are only classified as artifacts if there are structural errors."
+            },
+            {
+                "image_name": "clean_example3.png",
+                "type": "Text distortion",
+                "description": "A glass bottle with a note inside of it.",
+                "explanation": "Text distortions or errors. Not considered artifacts in this task."
+            },
+            {
+                "image_name": "clean_example4.png",
+                "type": "Physical abnormality",
+                "description": "A person walking past an overflowing trash can.",
+                "explanation": "person walking towards the trash can. Not considered artifacts in this task."
+            },
+            {
+                "image_name": "clean_example5.png",
+                "type": "Physical abnormality",
+                "description": "A bowl of food with gravy and a ladle sits on a table.",
+                "explanation": "Spoon floating upon the gravy. Not considered in this scope."
+            },
+            {
+                "image_name": "clean_example6.png",
+                "type": "Cultural misalignment",
+                "description": "Stop sign in front of a road with a car driving.",
+                "explanation": "left-oriented road, Stop sign facing the wrong way. Not considered an artifact in this scope."
+            }
+        ]
+    }
     
     return jsonify(examples)
 
-@app.route('/api/prompts')
-def get_prompts():
-    """Get prompt data for images"""
+@with_retry(max_retries=3, delay=0.2)
+def load_prompts_from_disk():
+    """Load prompts from disk with caching"""
+    global _prompt_cache, _prompt_cache_time
+    
+    current_time = time.time()
+    
+    # Return cached data if still valid
+    if _prompt_cache and (current_time - _prompt_cache_time) < CACHE_DURATION:
+        logger.debug("Returning cached prompts")
+        return _prompt_cache
+    
+    logger.info("Loading prompts from disk")
+    
+    # Look for JSON files in the images directory
+    json_files = list(IMAGES_DIR.glob("*.json"))
+    
+    if not json_files:
+        logger.warning("No JSON file found in images directory")
+        return {"prompts": {}}
+    
+    # Use the first JSON file found
+    prompts_file = json_files[0]
+    logger.info(f"Using prompts file: {prompts_file}")
+    
     try:
-        # Look for JSON files in the images directory
-        prompts_file = None
-        for json_file in IMAGES_DIR.glob("*.json"):
-            prompts_file = json_file
-            break
-        
-        if not prompts_file or not prompts_file.exists():
-            print("No JSON file found in images directory")
-            return jsonify({"prompts": {}, "debug": "No JSON file found"})
-        
-        print(f"Found prompts file: {prompts_file}")
-        
-        with open(prompts_file, 'r') as f:
+        with open(prompts_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         # Create a mapping from image names to prompts
         prompts_map = {}
         
-        if 'images' in data:
-            print(f"Processing {len(data['images'])} image entries")
+        if 'images' in data and isinstance(data['images'], list):
+            logger.info(f"Processing {len(data['images'])} image entries")
+            
+            # Get list of actual image files for efficient matching
+            actual_images = {f.name for f in IMAGES_DIR.glob("*") 
+                           if f.suffix.lower() in {'.png', '.jpg', '.jpeg', '.gif', '.bmp'}}
             
             for i, image_data in enumerate(data['images']):
-                # Try different ways to match images to prompts
-                # Method 1: Use caption_index to match with image filenames
+                if not isinstance(image_data, dict):
+                    continue
+                
                 caption_index = image_data.get('caption_index', i)
                 prompt = image_data.get('prompt', '')
                 
-                # Look for images that might match this index
+                if not prompt:  # Skip empty prompts
+                    continue
+                
+                # Generate possible filenames for this prompt
                 possible_names = [
                     f"image_{caption_index:04d}_flux-schnell.png",
                     f"image_{caption_index:04d}_flux-schnell.jpg",
@@ -581,25 +842,44 @@ def get_prompts():
                     f"{caption_index:04d}.jpg"
                 ]
                 
+                # Check which files actually exist
                 found_match = False
                 for name in possible_names:
-                    if (IMAGES_DIR / name).exists():
+                    if name in actual_images:
                         prompts_map[name] = prompt
-                        print(f"Matched caption_index {caption_index} → {name}: {prompt[:50]}...")
+                        logger.debug(f"Mapped {name} -> {prompt[:50]}...")
                         found_match = True
                         break
                 
                 if not found_match:
-                    print(f"No match found for caption_index {caption_index}, tried: {possible_names[:3]}...")
+                    logger.debug(f"No match found for caption_index {caption_index}")
         
-        print(f"Created prompts map with {len(prompts_map)} entries")
-        return jsonify({"prompts": prompts_map, "debug": f"Loaded {len(prompts_map)} prompts"})
+        result = {"prompts": prompts_map}
         
+        # Update cache
+        _prompt_cache = result
+        _prompt_cache_time = current_time
+        
+        logger.info(f"Successfully loaded {len(prompts_map)} prompts")
+        return result
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in prompts file: {e}")
+        return {"prompts": {}, "error": "Invalid JSON format"}
     except Exception as e:
-        print(f"Error loading prompts: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"prompts": {}, "error": str(e)})
+        logger.error(f"Error loading prompts: {e}")
+        raise
+
+@app.route('/api/prompts')
+@ensure_session
+@throttle_requests
+def get_prompts():
+    """Get prompt data for images with caching"""
+    try:
+        return jsonify(load_prompts_from_disk())
+    except Exception as e:
+        logger.error(f"Error in get_prompts: {e}")
+        return jsonify({"prompts": {}, "error": "Failed to load prompts"}), 500
 
 @app.route('/upload', methods=['GET', 'POST'])
 def upload_images():

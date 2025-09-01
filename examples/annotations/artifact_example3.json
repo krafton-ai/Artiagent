@@ -1,0 +1,12 @@
+{
+  "image_name": "artifact_example3.png",
+  "artifact_type": "removal",
+  "description": "Man with missing fingers",
+  "bboxes": [
+    {
+      "bbox": [720.68, 738.96, 843.97, 859.48],
+      "category": "removal",
+      "caption": "Missing fingers from the hand - incomplete hand structure where fingers should be present"
+    }
+  ]
+}
