@@ -668,7 +668,7 @@ def _get_coco_image_list(
     data_loader: COCODataLoader, 
     categories: List[str], 
     max_images: Optional[int] = None,
-    # max_instances_per_image: Optional[int] = None
+    max_instances_per_image: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
     Get image list for COCO dataset with optional filtering.
@@ -682,7 +682,6 @@ def _get_coco_image_list(
     Returns:
         List of image information dictionaries
     """
-    max_instances_per_image = None
     cat_ids = data_loader.get_category_ids(categories)
     image_list = []
     image_ids_seen = set()
@@ -822,6 +821,7 @@ def _get_image_list(
     data_loader: Any, 
     categories: List[str], 
     max_images: Optional[int] = None,
+    max_instances_per_image: Optional[int] = None,
     logger: logging.Logger = None
 ) -> List[Dict[str, Any]]:
     """
@@ -832,13 +832,14 @@ def _get_image_list(
         data_loader: Data loader instance
         categories: List of categories to process
         max_images: Maximum number of images to process
+        max_instances_per_image: Maximum number of instances per image
         logger: Logger instance
         
     Returns:
         List of image information dictionaries
     """
     if dataset_type == "coco":
-        return _get_coco_image_list(data_loader, categories, max_images)
+        return _get_coco_image_list(data_loader, categories, max_images, max_instances_per_image)
     elif dataset_type == "imagenet":
         return _get_imagenet_image_list(data_loader, categories, max_images)
     elif dataset_type == "custom":

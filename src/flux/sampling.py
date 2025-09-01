@@ -126,8 +126,6 @@ def denoise_first_order(
             # inject_list = inject_list[len(inject_list) - end_timestep_idx + 1:]
 
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
-
-    step_list = []
     for i, (t_curr, t_prev) in enumerate(zip(timesteps[:-1], timesteps[1:])):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
         info['t'] = t_prev if inverse else t_curr
@@ -201,7 +199,6 @@ def denoise(
             # inject_list = inject_list[len(inject_list) - end_timestep_idx + 1:]
 
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
-    step_list = []
     for i, (t_curr, t_prev) in enumerate(zip(timesteps[:-1], timesteps[1:])):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
         info['t'] = t_prev if inverse else t_curr
@@ -224,6 +221,7 @@ def denoise(
             guidance=guidance_vec,
             info=info
         )
+        
 
         img_mid = img + (t_prev - t_curr) / 2 * pred
 
