@@ -189,7 +189,7 @@ class GSAMDetector:
             entity_class = detections.class_id[i]
             entity_name = entities[entity_class]
             area_ratio = torch.sum(entity_mask > 0) / image_area
-            if 0.005 <= area_ratio:
+            if 0.01 <= area_ratio:
                 filtered_entities.append((entity_mask, entity_class, entity_name, i))
                 print(f"Kept entity '{entity_name}' (class {entity_class}) with area ratio {area_ratio:.4f}")
             else:
@@ -302,6 +302,121 @@ class GSAMDetector:
         
         print(f"Returning {len(filtered_indices)} mapped subentity detections and {len(entity_predictions)} entity detections")
         return predictions, entity_predictions, annotated_image
+    
+    def detect_entities(self, image: np.ndarray, entities: List[str], 
+                       min_area_ratio: float = 0.01, max_area_ratio: float = 1.0) -> Tuple[List[Dict], any]:
+        """
+        Run entity detection on image (entities only, no subentities)
+        
+        Args:
+            image: Input image as numpy array (RGB format)
+            entities: List of entity names
+            min_area_ratio: Minimum area ratio for filtering
+            max_area_ratio: Maximum area ratio for filtering
+        
+        Returns:
+            Tuple of (entity_predictions, visualized_output):
+            - entity_predictions: List of dictionaries, each containing entity detection with keys:
+                'pred_box', 'pred_class', 'score', 'pred_mask', 'entity_name'
+            - visualized_output: PIL Image with annotations
+        """
+        # Store current image size for area calculations
+        self.current_image_size = image.shape[:2]
+        
+        # Get grounding output
+        detections, phrases = self.grounding_model.predict_with_caption(
+            image=image,
+            caption=", ".join(entities),
+            box_threshold=self.box_threshold,
+            text_threshold=self.text_threshold
+        )
+        
+        # Generate class_id from phrases since predict_with_caption doesn't include it
+        detections.class_id = Model.phrases2classes(phrases=phrases, classes=entities)
+           
+        # NMS post process
+        print(f"Before NMS: {len(detections.xyxy)} boxes")
+        nms_idx = torchvision.ops.nms(
+            torch.from_numpy(detections.xyxy), 
+            torch.from_numpy(detections.confidence), 
+            self.nms_threshold
+        ).numpy().tolist()
+
+        detections.xyxy = detections.xyxy[nms_idx]
+        detections.confidence = detections.confidence[nms_idx]
+        detections.class_id = detections.class_id[nms_idx]
+        # Also filter phrases to match the filtered detections
+        phrases = [phrases[i] for i in nms_idx]
+
+        detections.mask = self.segment(
+            image=image,
+            xyxy=detections.xyxy,
+        )
+        
+        print(f"Found {len(detections.class_id)} entity detections")
+        
+        # Filter entities by area ratio
+        filtered_entities = []
+        image_area = self.current_image_size[0] * self.current_image_size[1]
+        
+        for i in range(len(detections.class_id)):
+            entity_mask = torch.from_numpy(detections.mask[i])
+            entity_class = detections.class_id[i]
+            entity_name = entities[entity_class]
+            area_ratio = torch.sum(entity_mask > 0) / image_area
+            
+            if min_area_ratio <= area_ratio <= max_area_ratio:
+                filtered_entities.append(i)
+                print(f"Kept entity '{entity_name}' (class {entity_class}) with area ratio {area_ratio:.4f}")
+            else:
+                print(f"Discarded entity '{entity_name}' (class {entity_class}) - area ratio {area_ratio:.4f} outside range [{min_area_ratio}, {max_area_ratio}]")
+        
+        if len(filtered_entities) == 0:
+            raise ValueError("No entities detected after filtering")
+        
+        # Filter detections to keep only valid entities
+        filtered_xyxy = detections.xyxy[filtered_entities]
+        filtered_confidence = detections.confidence[filtered_entities]
+        filtered_class_id = detections.class_id[filtered_entities]
+        filtered_mask = detections.mask[filtered_entities]
+
+        # Create filtered detections object for annotation
+        filtered_detections = sv.Detections(
+            xyxy=filtered_xyxy,
+            confidence=filtered_confidence,
+            class_id=filtered_class_id,
+            mask=filtered_mask
+        )
+
+        # Annotate image with filtered detections
+        box_annotator = sv.BoundingBoxAnnotator()
+        mask_annotator = sv.MaskAnnotator()
+        label_annotator = sv.LabelAnnotator()
+        
+        labels = [
+            f"{entities[class_id]} {confidence:0.2f}" 
+            for class_id, confidence in zip(filtered_class_id, filtered_confidence)]
+        
+        annotated_image = mask_annotator.annotate(scene=image.copy(), detections=filtered_detections)
+        annotated_image = box_annotator.annotate(scene=annotated_image, detections=filtered_detections)
+        annotated_image = label_annotator.annotate(scene=annotated_image, detections=filtered_detections, labels=labels)
+        # Convert annotated image to PIL Image
+        annotated_image = Image.fromarray(annotated_image)
+
+        # Create entity predictions as list of dictionaries
+        entity_predictions = []
+        for i, entity_idx in enumerate(filtered_entities):
+            entity_pred_instance = {
+                'pred_box': torch.from_numpy(detections.xyxy[entity_idx]).float(),
+                'pred_class': torch.tensor(detections.class_id[entity_idx]).long(),
+                'score': torch.tensor(detections.confidence[entity_idx]).float(),
+                'pred_mask': torch.from_numpy(detections.mask[entity_idx]).bool(),
+                'entity': entities[detections.class_id[entity_idx]],
+            }
+            entity_predictions.append(entity_pred_instance)
+        
+        print(f"Returning {len(entity_predictions)} entity detections")
+        return entity_predictions, annotated_image
     
     def cleanup(self):
         """Clean up model resources"""

@@ -405,8 +405,19 @@ class InstanceProcessor:
                 # Find closest patch in full reference pool
                 best_ref = min(full_ref_coords, key=lambda ref: abs(coord[0] - ref[0]) + abs(coord[1] - ref[1]))
                 reference_coords_final.append(best_ref)
+        
+        coord_dict = {
+            'A_only_coords': A_only_coords,
+            'B_only_coords': B_only_coords,
+            'overlap_target_coords': overlap_target_coords,
+            'A_only_ref_coords': A_only_ref_coords,
+            'B_only_ref_coords': B_only_ref_coords,
+            'full_ref_coords': full_ref_coords,
+            'target_coords_final': target_coords_final,
+            'reference_coords_final': reference_coords_final,
+        }
 
-        return target_coords_final, reference_coords_final, entity_B_prediction['entity']
+        return target_coords_final, reference_coords_final, entity_B_prediction['entity'], coord_dict
     
     @staticmethod
     def map_coords_to_patch_indices(artifact_type: str, target_patches: List[Tuple[int, int]], reference_patches: List[Tuple[int, int]],

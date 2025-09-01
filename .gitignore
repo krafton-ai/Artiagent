@@ -14,6 +14,7 @@ assets/
 loki/
 src/train/LLaMA-Factory/data
 src/GroundingDINO/build/
+data/eval_coco_animals/
 # Environment files (contains sensitive data)
 .env
 .env.local

@@ -107,7 +107,6 @@ class Flux(nn.Module):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
         inject_pe = pe.clone()
-        print(info['addition'], info['removal'], info['distortion'], info['fusion'])
         if not info['inverse']:
         # Initialize accumulated lists for tracking all processed IDs
             accumulated_target_ids = []
