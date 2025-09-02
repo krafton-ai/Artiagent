@@ -408,7 +408,7 @@ def create_fusion_artifact_annotations(
     img_filename: str,
 
 ) -> Dict[str, Any]:
-    target_patches, reference_patches, fused_entity = InstanceProcessor.create_fusion_artifact_patches(
+    target_patches, reference_patches, fused_entity, coord_dict = InstanceProcessor.create_fusion_artifact_patches(
         entity_prediction,
         entity_predictions,
         predictions,
@@ -444,6 +444,7 @@ def create_fusion_artifact_annotations(
         'target_mask': target_mask,
         'reference_mask': reference_mask,
         'distortion_kernel': None,
+        'coord_dict': coord_dict
     }
 
     return result_dict
@@ -810,7 +811,7 @@ def run_gsam_processing(
     
     # Get image list
     logger.info("Loading image list...")
-    image_list = _get_image_list(dataset_type, data_loader, categories, max_images, logger)
+    image_list = _get_image_list(dataset_type, data_loader, categories, max_images, max_instances_per_image=5, logger=logger)
     
     # Shuffle and limit
     if seed is not None:

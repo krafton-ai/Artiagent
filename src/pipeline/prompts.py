@@ -31,15 +31,15 @@ def encode_image_to_base64(image):
 IN_CONTEXT_EXAMPLES = {
     "addition": {
         "positive": {
-            "reasoning": "The third image in the target region shows a clear presence of an elephant's ear. The pattern and texture are consistent with an elephant's ear and are positioned in a manner that is anatomically plausible for an elephant",
-            "object_name": "an ear of an elephant",
+            "explanation": " The zebra has an extra ear on the middle of its head.",
+            "object_name": "an ear of zebra",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/original_target.png')),
             "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/artifact_target.png'))
         },
         "negative": {
-            "reasoning": "The third image in the target region does not show a clear presence of a zebra's tail. Although the target region is altered, the pattern and texture are not consistent with a zebra's tail and are not positioned in a manner that is anatomically plausible for a zebra",
-            "object_name": "a tail of a zebra",
+            "explanation": "This is Case-A; the original image already had an ear of a cat in the image, while the artifact image did not duplicate it.",
+            "object_name": "an ear of a cat",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/negative/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/negative/original_target.png')),
             "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/negative/artifact_target.png'))
@@ -47,30 +47,39 @@ IN_CONTEXT_EXAMPLES = {
     },
     "removal": {
         "positive": {
-            "reasoning": "The third image shows the region where the zebra's leg is expected. In this image, the leg is absent, and the area is filled with background textures that blend with the ground and surroundings.",
-            "object_name": "a leg of a zebra",
+            "explanation": "The bird is missing its tail, where the bird should have a tail.",
+            "object_name": "a tail of a bird",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/positive/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/positive/original_target.png')),
             "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/positive/artifact_target.png'))
         },
         "negative": {
-            "reasoning": "The third image in the target region shows where an ear of a cat originally was. In this image, although the ear looks shrinked, compared to the second image, which is the target region of the original image, the object was not removed properly.",
-            "object_name": "an ear of a cat",
+            "explanation": "Although the ear of a dog is manipulated, it did not remove the ear of the dog.",
+            "object_name": "an ear of a dog",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/negative/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/negative/original_target.png')),
             "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/negative/artifact_target.png'))
         }
     },
+    "distortion": {
+        "positive": {
+            "explanation": "The face of the person is distorted, as the facial features are not defined well.",
+            "object_name": "a hand of a person",
+            "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/distortion/positive/original_masked.png')),
+            "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/distortion/positive/original_target.png')),
+            "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/distortion/positive/artifact_target.png'))
+        }
+    },
     "fusion": {
         "positive": {
-            "reasoning": "The second image shows two heads of sheeps. In the third image, the heads are fused together, and the two sheeps are merged into one.",
-            "object_name": "a sheep and a sheep",
+            "explanation": "The heads of two cats are merged into one.",
+            "object_name": "a cat and a cat",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/positive/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/positive/original_target.png')),
             "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/positive/artifact_target.png'))
         },
         "negative": {
-            "reasoning": "The second image shows two elephants overlapping in the image. In the third image, although the target region looks blurred, the two elephants have a clear boundary.",
+            "explanation": "Although the boundary of the two elephant has been manipulated, the boundary between the two elephants is still visible in the artifact image.",
             "object_name": "an elephant and a baby elephant",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/negative/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/negative/original_target.png')),
@@ -92,6 +101,10 @@ class ArtifactSuccessResponse(BaseModel):
     success: bool   
 
 class ArtifactExplanationResponse(BaseModel):
+    explanation: str
+
+class ArtifactDescriptionResponse(BaseModel):
+    has_artifact: bool
     explanation: str
     
 def get_entity_subentities(client, image, money_manager=None):
@@ -208,6 +221,213 @@ def get_entity_subentities(client, image, money_manager=None):
     except Exception as e:
         print(f"Error analyzing sampled instance: {e}")
         return None
+    
+def artifact_description(client, masked_original_image, target_original_image, target_artifact_image, object_name, artifact_type, money_manager=None):
+    """
+    Combined function that filters artifacts and generates explanations in a single API call.
+    
+    Combines both detection logic and explanation generation into one prompt for efficiency.
+    
+    Args:
+        client: OpenAI client
+        masked_original_image: Original image with target region masked out
+        target_original_image: Original image showing only the target region  
+        target_artifact_image: Artifact image showing only the target region
+        object_name: Description of the object (e.g., "a hand of a person")
+        artifact_type: Either "addition", "removal", "fusion", or "distortion"
+        money_manager: MoneyManager instance for cost tracking (optional)
+        
+    Returns:
+        ArtifactDescriptionResponse: Contains 'has_artifact' boolean, 'reasoning' string for detection, 
+                                   and 'explanation' string describing the artifact
+    """
+    # Encode images to base64
+    original_masked = encode_image_to_base64(masked_original_image)
+    original_target = encode_image_to_base64(target_original_image)
+    artifact_target = encode_image_to_base64(target_artifact_image)
+
+    # Combined instruction for both detection and explanation
+    combined_instruction = {
+        "addition": (
+            "You are an expert at detecting and describing addition-type artifacts in AI-generated images.\n\n"
+            "Addition artifacts occur when a part of an object is duplicated and placed adjacent to the original, "
+            "creating anatomically or structurally implausible duplications (e.g., extra fingers, duplicate ears, duplicate wheels).\n\n"
+            "You will be shown:\n"
+            "\t1. An original image without the target region\n"
+            "\t2. An original image with only the target region\n"
+            "\t3. An artifact image with only the target region\n"
+            "\t4. The object name that may be added\n\n"
+            "Your task is to:\n"
+            "1. **DETECT**: Determine if there is a successful addition artifact in the third image\n"
+            "2. **EXPLAIN**: If an artifact is present, describe what looks wrong in the target region\n\n"
+            "Detection criteria for addition artifacts:\n"
+            "\t• **Case A — Object present in target (Image 2)**: If the second image already contains the specified object, then the third image must show a **plausible duplication** or **additional instance** of the object. The new instance should be **distinct** from the original.\n"
+            "\t• **Case B — No object in target (Image 2)**: If the second image does **not** contain the object, the third image must show a **clearly new instance** with a **distinct boundary/contour**.\n\n"
+            "Reject if there is only subtle texture change, brightness shift, or local warping rather than a new instance.\n\n"
+            "For explanation: Focus on cues like duplicated parts, unnatural growths, or extra elements that conflict with normal anatomy or structure."
+        ),
+        "removal": (
+            "You are an expert at detecting and describing removal-type artifacts in AI-generated images.\n\n"
+            "Removal artifacts occur when a part of an object is deleted and the area is inpainted with background, "
+            "resulting in missing features or gaps where something should be present (e.g., missing fingers, absent ears).\n\n"
+            "You will be shown:\n"
+            "\t1. An original image without the target region\n"
+            "\t2. An original image with only the target region\n"
+            "\t3. An artifact image with only the target region\n"
+            "\t4. The object name that may be removed\n\n"
+            "Your task is to:\n"
+            "1. **DETECT**: Determine if there is a successful removal artifact in the third image\n"
+            "2. **EXPLAIN**: If an artifact is present, describe what looks wrong in the target region\n\n"
+            "Detection criteria (be strict):\n"
+            "\t• **Definitive removal evidence**: stump/termination cues, disrupted silhouette, hollow/negative space, texture continuation/inpainting traces, mismatched shadows/reflections, or symmetry break.\n"
+            "\t• **Ambiguity/occlusion rule**: If the missing part could plausibly be merely *hidden*, set has_artifact = false.\n"
+            "\t• **Anatomical plausibility check**: If the scene still reads as anatomically correct and a typical pose could hide the part, set has_artifact = false.\n\n"
+            "For explanation: Focus on cues like missing structure, unnatural gaps, smoothed-over areas, or anatomical discontinuity where something appears to be absent."
+        ),
+        "fusion": (
+            "You are an expert at detecting and describing fusion-type artifacts in AI-generated images.\n\n"
+            "Fusion artifacts occur when parts or distinct entities are unnaturally merged together, "
+            "creating blurred boundaries, overlapped textures, or structural entanglement (e.g., two animals merged into one).\n\n"
+            "You will be shown:\n"
+            "\t1. An original image without the target region\n"
+            "\t2. An original image with only the target region\n"
+            "\t3. An artifact image with only the target region\n"
+            "\t4. The two object names that may be fused\n\n"
+            "Your task is to:\n"
+            "1. **DETECT**: Determine if there is a successful fusion artifact in the third image\n"
+            "2. **EXPLAIN**: If an artifact is present, describe what looks wrong in the target region\n\n"
+            "Detection criteria (be strict):\n"
+            "\t• **Boundary visibility comparison**: Compare Image 2 and Image 3. If a clear, continuous boundary between the two objects remains visible in Image 3 (similar to Image 2), set has_artifact = false.\n"
+            "\t• **Fusion cues needed**: boundary loss/softening across seams; cross-object texture/color blending; geometry interpenetration; inconsistent occlusion ordering.\n"
+            "\t• **Not fusion**: mere blur, minor warping, or lighting change that preserves recognizable boundary.\n\n"
+            "For explanation: Focus on cues like boundary loss/softening across seams, cross-object texture/color bleed, geometry interpenetration, and inconsistent occlusion ordering."
+        ),
+        "distortion": (
+            "You are an expert at describing distortion-type artifacts in AI-generated images.\n\n"
+            "Distortion artifacts occur when parts are warped, creating unnatural geometry, irregular textures, or visual blending errors.\n\n"
+            "You will be shown:\n"
+            "\t1. An original image without the target region\n"
+            "\t2. An original image with only the target region\n"
+            "\t3. An artifact image with only the target region\n"
+            "\t4. The object name that may be distorted\n\n"
+            "Your task is to:\n"
+            "1. **EXPLAIN**: Describe what looks wrong or unnatural in the target region\n\n"
+            "For explanation: Focus on cues like warped shapes, unnatural geometry, irregular textures, or visual blending errors that make the structure appear broken or malformed."
+        )
+    }
+
+    prompt = f"""
+    {combined_instruction[artifact_type]}
+    
+    Return your analysis in the following format:
+    "has_artifact": true/false (whether the artifact is successfully present, always true for distortion)
+    "explanation": "Detailed description of what looks wrong in the region (empty string if no artifact)"
+    
+    Important: 
+    - Focus on visible evidence in the target region
+    - Use simple, clear language for explanations
+    - Do not refer to images by number; say "the region" or "the area" instead
+    - Make explanations understandable for non-experts
+    """
+
+    try:
+        # Handle distortion separately since it has no in-context examples
+        if artifact_type == "distortion":
+            response = client.responses.parse(
+                # Add a positive in-context learning example for distortion
+                model="gpt-4o",
+                input=[
+                    {"role": "system", "content": prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['original_masked']}"},
+                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['original_target']}"},
+                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['artifact_target']}"},
+                            {"type": "input_text", "text": f"{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['object_name']}"}
+                            ]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "output_text", "text": f'{{"has_artifact": true, "explanation": "{IN_CONTEXT_EXAMPLES["distortion"]["positive"]["explanation"]}"}}'}
+                        ]
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{original_masked}"},
+                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{original_target}"},
+                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{artifact_target}"},
+                            {"type": "input_text", "text": f"{object_name}"}
+                        ]
+                    }
+                ],
+                temperature=0.2,
+                text_format=ArtifactDescriptionResponse
+            )
+        else:
+            # Use in-context examples for addition, removal, fusion
+            response = client.responses.parse(
+                model="gpt-4o",
+                input=[
+                    {"role": "system", "content": prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['original_masked']}"},
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['original_target']}"},
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['artifact_target']}"},
+                                    {"type": "input_text", "text": f"{IN_CONTEXT_EXAMPLES[artifact_type]['positive']['object_name']}"}
+                                ]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "output_text", "text": f'{{"has_artifact": true, "explanation": "{IN_CONTEXT_EXAMPLES[artifact_type]["positive"]["explanation"]}"}}'}
+                        ]
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['negative']['original_masked']}"},
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['negative']['original_target']}"},
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{IN_CONTEXT_EXAMPLES[artifact_type]['negative']['artifact_target']}"},
+                                    {"type": "input_text", "text": f"{IN_CONTEXT_EXAMPLES[artifact_type]['negative']['object_name']}"}
+                                ]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "output_text", "text": f'{{"has_artifact": false, "explanation": ""}}'}
+                        ]
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{original_masked}"},
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{original_target}"},
+                                    {"type": "input_image", "image_url": f"data:image/jpeg;base64,{artifact_target}"},
+                                    {"type": "input_text", "text": f"{object_name}"}
+                                ]
+                    }
+                ],
+                temperature=0.2,
+                text_format=ArtifactDescriptionResponse
+            )
+
+        # Track costs with money manager
+        if money_manager:
+            money_manager(response)
+
+        return response.output_parsed
+
+    except Exception as e:
+        print(f"Error in artifact description ({artifact_type}): {e}")
+        return ArtifactDescriptionResponse(
+            has_artifact=False,
+            explanation=""
+        )
 
 def artifact_success(client, masked_original_image, target_original_image, target_artifact_image, object_name, artifact_type, money_manager=None):
     """
@@ -365,6 +585,122 @@ def artifact_success(client, masked_original_image, target_original_image, targe
     except Exception as e:
         print(f"Error in artifact query ({artifact_type}): {e}")
         return None
+
+
+def artifact_explanation_from_triplet(
+    client,
+    masked_original_image,
+    target_original_image,
+    target_artifact_image,
+    object_name,
+    artifact_type,
+    money_manager=None,
+):
+    """
+    Generate a natural language explanation of the injected artifact using the *same inputs* as
+    `artifact_success`: three images (masked original, original target crop, artifact target crop)
+    and one object name, while making the VLM explicitly adhere to the provided artifact type
+    ("addition", "removal", or "fusion").
+
+    Inputs:
+      - masked_original_image: original image with the target region masked out (numpy or PIL)
+      - target_original_image: original image showing only the target region
+      - target_artifact_image: artifact image showing only the target region
+      - object_name: textual description of the object/objects (e.g., "an ear of a cat", or for fusion: "a sheep and a sheep")
+      - artifact_type: one of {"addition","removal","fusion"}
+
+    Returns:
+      ArtifactExplanationResponse (pydantic) with a single natural-language `explanation` string.
+    """
+
+    # Encode images
+    original_masked = encode_image_to_base64(masked_original_image)
+    original_target = encode_image_to_base64(target_original_image)
+    artifact_target = encode_image_to_base64(target_artifact_image)
+
+    # Type-specific guidance to FORCE adherence to the artifact type semantics
+    type_guidance = {
+        "addition": (
+            "You are describing an **ADDITION** artifact.\n"
+            "An addition artifact introduces a *new instance* of the specified object part in the target region.\n"
+            "Focus on cues like:duplicated parts, unnatural growths, or extra elements that conflict with normal anatomy or structure.\n"
+            "and avoid calling mere local warps or texture changes an addition. If Image 2 already had the part,explain how Image 3 shows a second instance; if Image 2 lacked it, explain how Image 3 introduces a clear, separable instance consistent with the object class."
+        ),
+        "removal": (
+            "You are describing a **REMOVAL** artifact.\n"
+            "A removal artifact deletes the specified part, replacing it with inpainted/background content.\n"
+            "Focus on cues like: missing structure, unnatural gaps, smoothed-over areas, or anatomical discontinuity where something appears to be absent.\n"
+            "If the absence could be plausibly explained by occlusion or viewpoint, acknowledge that ambiguity."
+        ),
+        "distortion": (
+            "You are describing a **DISTORTION** artifact.\n"
+            "A distortion artifact warps the specified part, creating unnatural geometry, irregular textures, or visual blending errors.\n"
+            "Focus on cues like: warped shapes, unnatural geometry, irregular textures, or visual blending errors that make the structure appear broken or malformed.\n"
+        ),
+        "fusion": (
+            "You are describing a **FUSION** artifact.\n"
+            "A fusion artifact unnaturally merges two parts or entities, degrading or erasing the boundary between them.\n"
+            "Focus on cues like: boundary loss/softening across seams, cross-object texture/color bleed, geometry interpenetration, and inconsistent occlusion ordering. If a clean boundary remains, note that as evidence against fusion."
+        ),
+    }
+
+    # Build the instruction prompt
+    if artifact_type not in type_guidance:
+        raise ValueError(f"Unsupported artifact_type: {artifact_type}")
+
+    prompt = f"""
+You will receive three images (in this order) and an object name:
+  1) Original image WITHOUT the target region (masked)
+  2) Original image showing ONLY the target region
+  3) Artifact image showing ONLY the target region (this is the image to describe)
+  4) The **object name** regarding the injected artifact
+
+TASK: Write a concise one sentence description describing what looks wrong in **Image 3** consistent with the given artifact type.
+Be specific about visible cues. When helpful, you may implicitly contrast with Image 2 to justify your claim (e.g., boundary changes), but DO NOT refer to the images by number; say "the region" or "the area" instead.
+
+{type_guidance[artifact_type]}
+
+Strict rules:
+- Focus on visible evidence in the provided region; do not speculate about unseen areas.
+- Do not output JSON or code fences. Return plain natural language only.
+- Explicitly frame your explanation in terms of the **object name** provided, making clear how the abnormality relates to that object being an artifact.
+- Use simple, clear language in your explanation. Avoid technical jargon unless it is necessary to describe the artifact. Make your description easy to understand for someone without expert knowledge.
+- Do not justify why this is an artifact injection. Only describe the visible abnormality in the image region, without reasoning about generation or intent.
+- Do not describe the artifact type, or how the artifact is created. Just describe the visual abnormality in the region.
+
+
+"""
+
+    try:
+        response = client.responses.parse(
+            model="gpt-4o",
+            input=[
+                {
+                    "role": "system",
+                    "content": prompt,
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{original_masked}"},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{original_target}"},
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{artifact_target}"},
+                        {"type": "input_text", "text": f"{object_name}"},
+                    ],
+                },
+            ],
+            temperature=0.2,
+            text_format=ArtifactExplanationResponse,
+        )
+
+        if money_manager:
+            money_manager(response)
+
+        return response.output_parsed
+
+    except Exception as e:
+        print(f"Error in artifact explanation from triplet ({artifact_type}): {e}")
+        return {"explanation": ""}
 
 def artifact_explanation(client, real_image, artifact_image, object_name, artifact_type, money_manager=None):
     """
@@ -587,8 +923,7 @@ class MoneyManager:
             self.total_cost += input_cost + output_cost
 
     def refresh(self) -> None:
-        self.total_cost = 0.0
-########## deprecated ##########
+        self.total_cost = 0.0########## deprecated ##########
 '''
 def get_entity_subparts_by_type(client, image, artifact_type, money_manager=None):
 
