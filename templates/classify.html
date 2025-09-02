@@ -135,6 +135,24 @@
             <div class="progress mt-2">
                 <div class="progress-bar" id="progress-bar" role="progressbar" style="width: 0%"></div>
             </div>
+            <small class="text-muted text-center">❗️ Collective Progress of all annotators</small>
+        </div>
+        
+        <!-- Individual Annotator Progress -->
+        <div class="individual-progress mt-3" id="individual-progress">
+            <div class="card">
+                <div class="card-header py-2">
+                    <h6 class="mb-0">👥 Individual Annotator Progress</h6>
+                </div>
+                <div class="card-body py-2" id="individual-progress-body">
+                    <div class="text-center">
+                        <div class="spinner-border spinner-border-sm" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <small class="ms-2">Loading individual progress...</small>
+                    </div>
+                </div>
+            </div>
         </div>
         
         <div class="text-center">
@@ -203,6 +221,7 @@
                     <li>⏱️ <strong>Take your time</strong> - accuracy is more important than speed</li>
                     <li>🤔 <strong>When uncertain</strong> - lean towards "No Artifacts"</li>
                     <li>💾 <strong>Auto-saved</strong> - your classification is immediately recorded</li>
+                    <li>💬 <strong>Contact</strong> - Reach me out on Slack @Minyoung Ahn if any questions/reports</li>
                 </ul>
             </div>
         </div>
@@ -312,9 +331,99 @@ async function updateProgress() {
         document.getElementById('progress-text').textContent = 
             `${data.classification_completed} / ${data.total_images} completed (${percentage}%)`;
         document.getElementById('progress-bar').style.width = `${percentage}%`;
+        
+        // Update individual progress
+        updateIndividualProgress();
     } catch (error) {
         console.error('Error updating progress:', error);
         // Don't show error for progress updates - they're not critical
+    }
+}
+
+async function updateIndividualProgress() {
+    try {
+        const data = await makeRequest('/api/individual-progress');
+        const progressBody = document.getElementById('individual-progress-body');
+        
+        if (!data.by_ip || Object.keys(data.by_ip).length === 0) {
+            progressBody.innerHTML = '<small class="text-muted">No individual progress data available yet.</small>';
+            return;
+        }
+        
+        let html = '<div class="row g-2">';
+        
+        // Sort IPs by total progress (classification + annotation)
+        const sortedIPs = Object.entries(data.by_ip).sort(([,a], [,b]) => 
+            (b.classification_count + b.annotation_count) - (a.classification_count + a.annotation_count)
+        );
+        
+        sortedIPs.forEach(([ip, stats], index) => {
+            const totalCount = stats.classification_count + stats.annotation_count;
+            const displayIP = ip.includes(':') ? ip.split(':').pop() : ip; // Show only relevant part of IP
+            const maskedIP = displayIP.replace(/\d+$/, 'xxx'); // Mask last part for privacy
+            
+            html += `
+                <div class="col-md-6 col-lg-4 mb-2">
+                    <div class="card border-primary" style="font-size: 0.9em;">
+                        <div class="card-body p-2">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <strong class="text-primary">Annotator ${index + 1}</strong>
+                                <small class="text-muted">${maskedIP}</small>
+                            </div>
+                            <div class="mb-1">
+                                <div class="d-flex justify-content-between">
+                                    <span>🔍 Classifications:</span>
+                                    <strong class="text-success">${stats.classification_count}</strong>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span>📝 Annotations:</span>
+                                    <strong class="text-warning">${stats.annotation_count}</strong>
+                                </div>
+                                <hr class="my-1">
+                                <div class="d-flex justify-content-between">
+                                    <span>📊 Total:</span>
+                                    <strong class="text-primary">${totalCount}</strong>
+                                </div>
+                            </div>
+                            <div class="progress" style="height: 4px;">
+                                <div class="progress-bar bg-success" style="width: ${stats.classification_count > 0 ? Math.min(100, (stats.classification_count / 10) * 100) : 0}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        
+        // Add summary
+        const totalClassifications = Object.values(data.by_ip).reduce((sum, stats) => sum + stats.classification_count, 0);
+        const totalAnnotations = Object.values(data.by_ip).reduce((sum, stats) => sum + stats.annotation_count, 0);
+        
+        html += `
+            <div class="mt-2 pt-2 border-top">
+                <div class="row text-center">
+                    <div class="col-4">
+                        <small class="text-muted">Active Annotators</small><br>
+                        <strong class="text-primary">${Object.keys(data.by_ip).length}</strong>
+                    </div>
+                    <div class="col-4">
+                        <small class="text-muted">Total Classifications</small><br>
+                        <strong class="text-success">${totalClassifications}</strong>
+                    </div>
+                    <div class="col-4">
+                        <small class="text-muted">Total Annotations</small><br>
+                        <strong class="text-warning">${totalAnnotations}</strong>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        progressBody.innerHTML = html;
+    } catch (error) {
+        console.error('Error updating individual progress:', error);
+        document.getElementById('individual-progress-body').innerHTML = 
+            '<small class="text-danger">Error loading individual progress</small>';
     }
 }
 
