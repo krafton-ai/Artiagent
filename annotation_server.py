@@ -46,6 +46,9 @@ ANNOTATION_RESULTS = RESULTS_DIR / "annotation_results.json"
 WORK_ASSIGNMENT_FILE = RESULTS_DIR / "work_assignments.json"
 PROGRESS_FILE = RESULTS_DIR / "progress.json"
 
+# Assignment timeout configuration (in seconds)
+ASSIGNMENT_TIMEOUT = 10 * 60  # 10 minutes - configurable timeout for stale assignments
+
 # Ensure directories exist
 IMAGES_DIR.mkdir(exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -117,7 +120,7 @@ def ensure_session(func):
     return wrapper
 
 class WorkCoordinator:
-    """Handles work assignment and progress tracking"""
+    """Handles work assignment and progress tracking with automatic timeout management"""
     
     def __init__(self):
         self.lock = threading.Lock()
@@ -137,17 +140,37 @@ class WorkCoordinator:
                     self.progress["admin_classification_completed"] = []
                 if "admin_annotation_completed" not in self.progress:
                     self.progress["admin_annotation_completed"] = []
-                    self.save_progress()  # Save migrated format
+                
+                # Add individual annotator progress tracking
+                if "user_completions" not in self.progress:
+                    self.progress["user_completions"] = {
+                        "classification": {},  # user_id -> {"images": [], "ip": ""}
+                        "annotation": {}        # user_id -> {"images": [], "ip": ""}
+                    }
+                
+                # Add IP to user mapping for session consolidation
+                if "ip_to_users" not in self.progress:
+                    self.progress["ip_to_users"] = {}  # ip -> [user_ids]
+                
+                # Migrate assignment format to include timestamps
+                self._migrate_assignment_format()
+                
+                self.save_progress()  # Save migrated format
             else:
                 self.progress = {
                     "classification_completed": [],
                     "annotation_completed": [],
-                    "classification_in_progress": {},
-                    "annotation_in_progress": {},
+                    "classification_in_progress": {},  # user_id -> {"image": image_name, "timestamp": timestamp}
+                    "annotation_in_progress": {},      # user_id -> {"image": image_name, "timestamp": timestamp}
                     "images_with_artifacts": [],
                     "images_unsure": [],
                     "admin_classification_completed": [],
-                    "admin_annotation_completed": []
+                    "admin_annotation_completed": [],
+                    "user_completions": {
+                        "classification": {},
+                        "annotation": {}
+                    },
+                    "ip_to_users": {}
                 }
                 self.save_progress()
         except Exception as e:
@@ -160,7 +183,12 @@ class WorkCoordinator:
                 "images_with_artifacts": [],
                 "images_unsure": [],
                 "admin_classification_completed": [],
-                "admin_annotation_completed": []
+                "admin_annotation_completed": [],
+                "user_completions": {
+                    "classification": {},
+                    "annotation": {}
+                },
+                "ip_to_users": {}
             }
     
     def save_progress(self):
@@ -168,28 +196,111 @@ class WorkCoordinator:
         with open(PROGRESS_FILE, 'w') as f:
             json.dump(self.progress, f, indent=2)
     
-    def get_next_classification_image(self, user_id):
-        """Get next image for classification"""
+    def _migrate_assignment_format(self):
+        """Migrate old assignment format (user_id -> image) to new format (user_id -> {image, timestamp})"""
+        current_time = time.time()
+        
+        for task_type in ["classification_in_progress", "annotation_in_progress"]:
+            if task_type in self.progress:
+                assignments = self.progress[task_type]
+                migrated = {}
+                
+                for user_id, assignment in assignments.items():
+                    # Check if already in new format
+                    if isinstance(assignment, dict) and "image" in assignment and "timestamp" in assignment:
+                        migrated[user_id] = assignment
+                    else:
+                        # Old format: user_id -> image_name
+                        # Migrate to new format with current timestamp
+                        migrated[user_id] = {
+                            "image": assignment,
+                            "timestamp": current_time
+                        }
+                        logger.info(f"Migrated {task_type} assignment for user {user_id}: {assignment}")
+                
+                self.progress[task_type] = migrated
+    
+    def _cleanup_stale_assignments(self):
+        """Remove assignments that are older than ASSIGNMENT_TIMEOUT seconds"""
+        current_time = time.time()
+        cleaned_count = 0
+        
+        for task_type in ["classification_in_progress", "annotation_in_progress"]:
+            if task_type not in self.progress:
+                continue
+                
+            assignments = self.progress[task_type]
+            stale_users = []
+            
+            for user_id, assignment in assignments.items():
+                # Handle both old and new format during migration period
+                if isinstance(assignment, dict):
+                    timestamp = assignment.get("timestamp", 0)
+                    image_name = assignment.get("image", "unknown")
+                else:
+                    # Old format fallback - assume it's stale since we can't track time
+                    timestamp = 0
+                    image_name = assignment
+                
+                # Check if assignment is stale
+                if current_time - timestamp > ASSIGNMENT_TIMEOUT:
+                    stale_users.append(user_id)
+                    logger.info(f"Cleaning up stale {task_type} assignment: user {user_id}, image {image_name}, age {int(current_time - timestamp)}s")
+                    cleaned_count += 1
+            
+            # Remove stale assignments
+            for user_id in stale_users:
+                del assignments[user_id]
+        
+        if cleaned_count > 0:
+            logger.info(f"Cleaned up {cleaned_count} stale assignments")
+            self.save_progress()
+        
+        return cleaned_count
+    
+    def cleanup_stale_assignments_manual(self):
+        """Manual cleanup trigger for testing and admin use"""
         with self.lock:
+            return self._cleanup_stale_assignments()
+    
+    def get_next_classification_image(self, user_id):
+        """Get next image for classification with automatic stale assignment cleanup"""
+        with self.lock:
+            # Clean up stale assignments first
+            self._cleanup_stale_assignments()
+            
             # Get all images
             all_images = [f for f in os.listdir(IMAGES_DIR) 
                          if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp'))]
             
+            # Get currently assigned images (extract from new format)
+            assigned_images = set()
+            for assignment in self.progress["classification_in_progress"].values():
+                if isinstance(assignment, dict):
+                    assigned_images.add(assignment.get("image"))
+                else:
+                    # Handle old format during migration
+                    assigned_images.add(assignment)
+            
             # Remove completed and in-progress images
             available_images = [img for img in all_images 
                               if img not in self.progress["classification_completed"] 
-                              and img not in self.progress["classification_in_progress"].values()]
+                              and img not in assigned_images]
             
             if not available_images:
                 return None
             
-            # Assign next image
+            # Assign next image with timestamp
             next_image = available_images[0]
-            self.progress["classification_in_progress"][user_id] = next_image
+            self.progress["classification_in_progress"][user_id] = {
+                "image": next_image,
+                "timestamp": time.time()
+            }
             self.save_progress()
+            logger.info(f"Assigned classification image {next_image} to user {user_id}")
             return next_image
     
-    def complete_classification(self, user_id, image_name, classification_result):
+    def complete_classification(self, user_id, image_name, classification_result, user_ip=None):
         """Mark classification as complete"""
         with self.lock:
             # Remove from in-progress
@@ -206,26 +317,45 @@ class WorkCoordinator:
             elif classification_result == 'unsure' and image_name not in self.progress["images_unsure"]:
                 self.progress["images_unsure"].append(image_name)
             
+            # Track individual user completion
+            self._track_user_completion(user_id, image_name, "classification", user_ip)
+            
             self.save_progress()
     
     def get_next_annotation_image(self, user_id):
-        """Get next image for annotation (only artifact images)"""
+        """Get next image for annotation (only artifact images) with automatic stale assignment cleanup"""
         with self.lock:
+            # Clean up stale assignments first
+            self._cleanup_stale_assignments()
+            
+            # Get currently assigned images (extract from new format)
+            assigned_images = set()
+            for assignment in self.progress["annotation_in_progress"].values():
+                if isinstance(assignment, dict):
+                    assigned_images.add(assignment.get("image"))
+                else:
+                    # Handle old format during migration
+                    assigned_images.add(assignment)
+            
             # Get artifact images that need annotation
             available_images = [img for img in self.progress["images_with_artifacts"]
                               if img not in self.progress["annotation_completed"]
-                              and img not in self.progress["annotation_in_progress"].values()]
+                              and img not in assigned_images]
             
             if not available_images:
                 return None
             
-            # Assign next image
+            # Assign next image with timestamp
             next_image = available_images[0]
-            self.progress["annotation_in_progress"][user_id] = next_image
+            self.progress["annotation_in_progress"][user_id] = {
+                "image": next_image,
+                "timestamp": time.time()
+            }
             self.save_progress()
+            logger.info(f"Assigned annotation image {next_image} to user {user_id}")
             return next_image
     
-    def complete_annotation(self, user_id, image_name):
+    def complete_annotation(self, user_id, image_name, user_ip=None):
         """Mark annotation as complete"""
         with self.lock:
             # Remove from in-progress
@@ -236,14 +366,23 @@ class WorkCoordinator:
             if image_name not in self.progress["annotation_completed"]:
                 self.progress["annotation_completed"].append(image_name)
             
+            # Track individual user completion
+            self._track_user_completion(user_id, image_name, "annotation", user_ip)
+            
             self.save_progress()
     
     def get_current_image(self, user_id, task_type):
         """Get currently assigned image for user"""
         if task_type == "classification":
-            return self.progress["classification_in_progress"].get(user_id)
+            assignment = self.progress["classification_in_progress"].get(user_id)
         else:
-            return self.progress["annotation_in_progress"].get(user_id)
+            assignment = self.progress["annotation_in_progress"].get(user_id)
+        
+        # Handle both old and new assignment formats
+        if isinstance(assignment, dict):
+            return assignment.get("image")
+        else:
+            return assignment
     
     def get_statistics(self):
         """Get current progress statistics"""
@@ -359,6 +498,85 @@ class WorkCoordinator:
                 self.progress["admin_annotation_completed"].append(image_name)
             
             self.save_progress()
+    
+    def _track_user_completion(self, user_id, image_name, task_type, user_ip=None):
+        """Track individual user completion with IP association"""
+        # Initialize user completion data if not exists
+        if user_id not in self.progress["user_completions"][task_type]:
+            self.progress["user_completions"][task_type][user_id] = {
+                "images": [],
+                "ip": user_ip or "unknown"
+            }
+        
+        # Add image to user's completed list if not already there
+        user_data = self.progress["user_completions"][task_type][user_id]
+        if image_name not in user_data["images"]:
+            user_data["images"].append(image_name)
+        
+        # Update IP if provided and different
+        if user_ip and user_data["ip"] != user_ip:
+            user_data["ip"] = user_ip
+        
+        # Track IP to users mapping
+        if user_ip:
+            if user_ip not in self.progress["ip_to_users"]:
+                self.progress["ip_to_users"][user_ip] = []
+            if user_id not in self.progress["ip_to_users"][user_ip]:
+                self.progress["ip_to_users"][user_ip].append(user_id)
+    
+    def get_individual_annotator_stats(self):
+        """Get individual annotator progress statistics grouped by IP"""
+        stats = {
+            "by_ip": {},
+            "by_user": {
+                "classification": {},
+                "annotation": {}
+            }
+        }
+        
+        # Group by IP address
+        for ip, user_ids in self.progress.get("ip_to_users", {}).items():
+            ip_stats = {
+                "classification_count": 0,
+                "annotation_count": 0,
+                "users": [],
+                "last_active_user": None
+            }
+            
+            # Aggregate stats for all users from this IP
+            classification_images = set()
+            annotation_images = set()
+            
+            for user_id in user_ids:
+                # Classification stats
+                user_classification = self.progress["user_completions"]["classification"].get(user_id, {})
+                if user_classification:
+                    classification_images.update(user_classification.get("images", []))
+                    ip_stats["users"].append(user_id)
+                    ip_stats["last_active_user"] = user_id  # Last user will be the most recent
+                
+                # Annotation stats  
+                user_annotation = self.progress["user_completions"]["annotation"].get(user_id, {})
+                if user_annotation:
+                    annotation_images.update(user_annotation.get("images", []))
+                    if user_id not in ip_stats["users"]:
+                        ip_stats["users"].append(user_id)
+                    ip_stats["last_active_user"] = user_id
+            
+            ip_stats["classification_count"] = len(classification_images)
+            ip_stats["annotation_count"] = len(annotation_images)
+            stats["by_ip"][ip] = ip_stats
+        
+        # Individual user stats
+        for task_type in ["classification", "annotation"]:
+            for user_id, user_data in self.progress["user_completions"][task_type].items():
+                stats["by_user"][task_type][user_id] = {
+                    "count": len(user_data.get("images", [])),
+                    "ip": user_data.get("ip", "unknown"),
+                    "images": user_data.get("images", [])
+                }
+        
+        return stats
 
 # Initialize work coordinator
 coordinator = WorkCoordinator()
@@ -432,8 +650,18 @@ def home():
 
 @app.route('/guidelines')
 def guidelines():
-    """Comprehensive guidelines page"""
-    return render_template('guidelines.html')
+    """Redirect to English guidelines by default"""
+    return render_template('guidelines_eng.html')
+
+@app.route('/guidelines_eng')
+def guidelines_eng():
+    """English guidelines page"""
+    return render_template('guidelines_eng.html')
+
+@app.route('/guidelines_kor')
+def guidelines_kor():
+    """Korean guidelines page"""
+    return render_template('guidelines_kor.html')
 
 @app.route('/classify')
 def classify():
@@ -598,7 +826,7 @@ def submit_classification():
     }
     
     if save_result_safely(CLASSIFICATION_RESULTS, result_data):
-        coordinator.complete_classification(user_id, image_name, classification_result)
+        coordinator.complete_classification(user_id, image_name, classification_result, request.remote_addr)
         return jsonify({"success": True})
     else:
         return jsonify({"error": "Failed to save result"}), 500
@@ -629,7 +857,7 @@ def submit_annotation():
     }
     
     if save_result_safely(ANNOTATION_RESULTS, result_data):
-        coordinator.complete_annotation(user_id, image_name)
+        coordinator.complete_annotation(user_id, image_name, request.remote_addr)
         return jsonify({"success": True})
     else:
         return jsonify({"error": "Failed to save result"}), 500
@@ -638,6 +866,11 @@ def submit_annotation():
 def get_statistics():
     """Get current statistics"""
     return jsonify(coordinator.get_statistics())
+
+@app.route('/api/individual-progress')
+def get_individual_progress():
+    """Get individual annotator progress statistics"""
+    return jsonify(coordinator.get_individual_annotator_stats())
 
 @app.route('/images/<filename>')
 def serve_image(filename):
@@ -918,6 +1151,72 @@ def download_annotation_results():
         return send_from_directory(RESULTS_DIR, 'annotation_results.json', as_attachment=True)
     except FileNotFoundError:
         return jsonify({"error": "Annotation results not found"}), 404
+
+@app.route('/api/admin/cleanup-stale-assignments')
+def cleanup_stale_assignments_route():
+    """Admin endpoint to manually trigger cleanup of stale assignments"""
+    try:
+        cleaned_count = coordinator.cleanup_stale_assignments_manual()
+        return jsonify({
+            "success": True,
+            "message": f"Cleaned up {cleaned_count} stale assignments",
+            "cleaned_count": cleaned_count
+        })
+    except Exception as e:
+        logger.error(f"Error during stale assignment cleanup: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/api/admin/assignment-status')
+def get_assignment_status():
+    """Admin endpoint to check current assignment status"""
+    try:
+        with coordinator.lock:
+            current_time = time.time()
+            status = {
+                "classification_assignments": {},
+                "annotation_assignments": {},
+                "timeout_seconds": ASSIGNMENT_TIMEOUT
+            }
+            
+            # Get classification assignments with ages
+            for user_id, assignment in coordinator.progress["classification_in_progress"].items():
+                if isinstance(assignment, dict):
+                    age = int(current_time - assignment.get("timestamp", 0))
+                    status["classification_assignments"][user_id] = {
+                        "image": assignment.get("image"),
+                        "age_seconds": age,
+                        "is_stale": age > ASSIGNMENT_TIMEOUT
+                    }
+                else:
+                    status["classification_assignments"][user_id] = {
+                        "image": assignment,
+                        "age_seconds": "unknown (old format)",
+                        "is_stale": True
+                    }
+            
+            # Get annotation assignments with ages
+            for user_id, assignment in coordinator.progress["annotation_in_progress"].items():
+                if isinstance(assignment, dict):
+                    age = int(current_time - assignment.get("timestamp", 0))
+                    status["annotation_assignments"][user_id] = {
+                        "image": assignment.get("image"),
+                        "age_seconds": age,
+                        "is_stale": age > ASSIGNMENT_TIMEOUT
+                    }
+                else:
+                    status["annotation_assignments"][user_id] = {
+                        "image": assignment,
+                        "age_seconds": "unknown (old format)",
+                        "is_stale": True
+                    }
+        
+        return jsonify(status)
+    except Exception as e:
+        logger.error(f"Error getting assignment status: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     print("Starting Image Annotation Server...")

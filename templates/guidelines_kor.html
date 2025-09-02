@@ -1,0 +1,436 @@
+{% extends "base.html" %}
+
+{% block title %}Annotation Guidelines{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <!-- Header -->
+            <div class="text-center mb-4">
+                <h1 class="display-4 text-primary">📋 Annotation Guidelines</h1>
+                <p class="lead text-muted">Classification / Annotation 작업을 시작하기 전에 필수로 읽어주세요</p>
+            </div>
+
+            <!-- Critical Notice -->
+            <div class="alert alert-danger border-3 mb-5" style="border-width: 3px !important;">
+                <div class="row align-items-center">
+                    <div class="col-md-2 text-center">
+                        <i class="fas fa-exclamation-triangle fa-4x text-danger"></i>
+                    </div>
+                    <div class="col-md-10">
+                        <h4 class="alert-heading mb-3">⚠️ 중요: 시작하기 전에 모든 가이드라인을 읽어주세요</h4>
+                        <p class="mb-2"><strong>작업을 시작하기 전에 이 페이지 전체를 꼼꼼히 읽어주세요.</strong></p>
+                        <p class="mb-0"><strong>아래의 예시와 정의를 충분히 숙지하시기 바랍니다.</strong></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Table of Contents -->
+            <div class="card mb-5">
+                <div class="card-header bg-primary text-white">
+                    <h3 class="mb-0">📖 목차</h3>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <ul class="list-unstyled">
+                                <li><a href="#artifact-definition" class="text-decoration-none">1. Artifact 정의</a></li>
+                                <li><a href="#artifact-categories" class="text-decoration-none">2. Artifact 종류</a></li>
+                                <li><a href="#classification-guidelines" class="text-decoration-none">3. Classification 가이드라인</a></li>
+                            </ul>
+                        </div>
+                        <div class="col-md-6">
+                            <ul class="list-unstyled">
+                                <li><a href="#annotation-guidelines" class="text-decoration-none">4. Annotation 가이드라인</a></li>
+                                <li><a href="#visual-examples" class="text-decoration-none">5. 이미지 예시</a></li>
+                                <li><a href="#getting-started" class="text-decoration-none">6. 시작하기</a></li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Artifact Definition -->
+            <section id="artifact-definition" class="mb-5">
+                <div class="card border-warning">
+                    <div class="card-header bg-warning text-dark">
+                        <h2 class="mb-0">🎯 1. Artifact 정의</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="alert alert-info">
+                            <h4>Image Artifact란:</h4>
+                            <blockquote class="blockquote">
+                                <strong>T2I 생성 모델에 의해 생성된 이미지 내에서 의도되지 않았거나, 불가능하거나, 시각적으로 손상된 영역을 의미합니다.
+                                이러한 artifact는 종종 이미지의 자연스러운 의도나 시각적 일관성을 깨뜨리며, 손가락이 추가된 사람, 바퀴가 모자란 자동차, 신체 일부가 없는 동물 등이 있으며, 이미지 품질이나 현실성을 크게 저하시킬 수 있습니다.</strong>
+                            </blockquote>
+                        </div>
+                        
+                        <div class="row mt-4">
+                            <div class="col-md-6">
+                                <h4 class="text-success">✅ 본 연구의 초점: 구조적(Structural) Artifact</h4>
+                                <ul>
+                                    <li><strong>Distortion:</strong> 불가능한 기하학적 구조를 가진 물체</li>
+                                    <li><strong>Removal:</strong> 불완전한 물체나 신체 부위</li>
+                                    <li><strong>Addition:</strong> 중복되거나 추가된 요소</li>
+                                    <li><strong>Fusion:</strong> 부자연스럽게 합쳐진 것들</li>
+                                </ul>
+                            </div>
+                            <div class="col-md-6">
+                                <h4 class="text-danger">❌ Artifact로 간주하지 않는 것</h4>
+                                <ul>
+                                    <li><strong>텍스트 왜곡:</strong> 흐려지거나 잘못된 텍스트</li>
+                                    <li><strong>스타일 오류:</strong> 이미지 스타일의 비현실성</li>
+                                    <li><strong>물리적 불가능성:</strong> 비현실적이지만 구조적인 이상이 없는 장면</li>
+                                    <li><strong>프롬프트 불일치:</strong> 설명과 일치하지 않는 이미지</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Artifact Categories -->
+            <section id="artifact-categories" class="mb-5">
+                <div class="card border-info">
+                    <div class="card-header bg-info text-white">
+                        <h2 class="mb-0">🏷️ 2. Artifact 종류</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6 col-lg-3 mb-4">
+                                <div class="card h-100 border-primary">
+                                    <div class="card-header bg-primary text-white text-center">
+                                        <h5 class="mb-0"><i class="fas fa-plus-circle"></i> Addition</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <p><strong>정의:</strong> 중복되거나 반복되어 이미지의 현실성을 해치는 구성 요소.</p>
+                                        <p><strong>예시:</strong></p>
+                                        <ul class="small">
+                                            <li>6개 이상의 손가락을 가진 사람</li>
+                                            <li>여분의 바퀴를 가진 자동차</li>
+                                            <li>여러 개의 머리를 가진 동물</li>
+                                            <li>중복된 신체 부위</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6 col-lg-3 mb-4">
+                                <div class="card h-100 border-warning">
+                                    <div class="card-header bg-warning text-dark text-center">
+                                        <h5 class="mb-0"><i class="fas fa-minus-circle"></i> Removal</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <p><strong>정의:</strong> 있어야 할 구성 요소가 누락된 상태.</p>
+                                        <p><strong>예시:</strong></p>
+                                        <ul class="small">
+                                            <li>손가락이 없는 사람</li>
+                                            <li>바퀴가 없는 자동차</li>
+                                            <li>필요한 구성 요소 누락</li>
+                                            <li>불완전한 얼굴 특징</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6 col-lg-3 mb-4">
+                                <div class="card h-100 border-danger">
+                                    <div class="card-header bg-danger text-white text-center">
+                                        <h5 class="mb-0"><i class="fas fa-exclamation-triangle"></i> Distortion</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <p><strong>정의:</strong> 알아볼 수 없이 뒤틀리거나 깨어져 비정상적인 디테일을 가진 물체.</p>
+                                        <p><strong>예시:</strong></p>
+                                        <ul class="small">
+                                            <li>휘어진 얼굴이나 사지</li>
+                                            <li>비틀린 건축 요소</li>
+                                            <li>뒤섞인 물체 부분</li>
+                                            <li>기하학적 이상</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6 col-lg-3 mb-4">
+                                <div class="card h-100 border-success">
+                                    <div class="card-header bg-success text-white text-center">
+                                        <h5 class="mb-0"><i class="fas fa-compress-arrows-alt"></i> Fusion</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <p><strong>정의:</strong> 경계가 불명확하게 함께 융합된 물체.</p>
+                                        <p><strong>예시:</strong></p>
+                                        <ul class="small">
+                                            <li>두 사람이 하나로 융합</li>
+                                            <li>함께 블렌딩된 물체</li>
+                                            <li>모호한 혼합 부분</li>
+                                            <li>구별할 수 없는 요소</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Classification Guidelines -->
+            <section id="classification-guidelines" class="mb-5">
+                <div class="card border-success">
+                    <div class="card-header bg-success text-white">
+                        <h2 class="mb-0">✅ 3. Classification 가이드라인</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h4>Classify 과정:</h4>
+                                <ol>
+                                    <li><strong>전체 이미지를 주의깊게 살펴보세요.</strong></li>
+                                    <li><strong>구조적 artifact를 찾아보세요.</strong></li>
+                                    <li><strong>각 artifact 종류를 고려하세요</strong></li>
+                                    <li><strong>최종 결정:</strong>
+                                        <ul>
+                                            <li><span class="badge bg-success">Has Artifacts</span> - 명확한 구조적 결함이 있을 때</li>
+                                            <li><span class="badge bg-danger">No Artifacts</span> - 구조적 문제가 발견되지 않았을 때</li>
+                                            <li><span class="badge bg-warning">Unsure</span> - 별도 확인이 필요한 불확실할 때</li>
+                                        </ul>
+                                    </li>
+                                </ol>
+                            </div>
+                            <div class="col-md-6">
+                                <h4>주의사항:</h4>
+                                <ul>
+                                    <li><strong>충분히 시간을 들이세요</strong> - 속도보다 정확성</li>
+                                    <li><strong>구조에 집중하세요</strong> - 스타일이나 현실성과 관계 없음</li>
+                                    <li><strong>모든 부분을 확인하세요</strong> - 한 눈에 보이지 않을 때가 많음</li>
+                                    <li><strong>의심스러울 때는</strong> - "Unsure" 옵션 사용</li>
+                                    <li><strong>예시를 참조하세요</strong> - 제공된 사례와 비교</li>
+                                </ul>
+                                
+                                <div class="alert alert-warning mt-3">
+                                    <strong>기억하세요:</strong> 처음에는 괜찮아 보이는 이미지도 artifact을 포함할 수 있습니다. 다음에 특히 주의하세요:
+                                    <ul class="mb-0 mt-2">
+                                        <li>손, 손가락, 신체 부위</li>
+                                        <li>얼굴과 얼굴 특징</li>
+                                        <li>건축 요소</li>
+                                        <li>물체 경계</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Annotation Guidelines -->
+            <section id="annotation-guidelines" class="mb-5">
+                <div class="card border-info">
+                    <div class="card-header bg-info text-white">
+                        <h2 class="mb-0">🎨 4. Annotation 가이드라인</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <h4>Bbox 그리기:</h4>
+                                <ul>
+                                    <li><strong>클릭하고 드래그</strong>하여 박스를 그리세요</li>
+                                    <li><strong>Artifact 주위로</strong> 박스를 만드세요</li>
+                                    <li><strong>각각의 요소 당 하나의 박스</strong></li>
+                                    <li><strong>전체 artifact을</strong> 박스에 포함시키세요</li>
+                                </ul>
+                            </div>
+                            <div class="col-md-4">
+                                <h4>카테고리 선택:</h4>
+                                <ul>
+                                    <li><strong>각 영역의 주요 artifact 종류를 선택</strong>하세요</li>
+                                    <li><strong>정의와 일관되게</strong> 하세요</li>
+                                    <li><strong>모든 박스마다 카테고리가 있어야 합니다</strong></li>
+                                </ul>
+                            </div>
+                            <div class="col-md-4">
+                                <h4>캡션 작성:</h4>
+                                <ul>
+                                    <li><strong>구체적으로</strong> 작성하세요</li>
+                                    <li><strong>무엇이 잘못되었는지 설명</strong>하세요</li>
+                                    <li><strong>간결하게 정보를 제공</strong>하세요</li>
+                                    <li><strong>모든 박스마다 캡션이 있어야 합니다</strong></li>
+                                </ul>
+                            </div>
+                        </div>
+                        
+                    </div>
+                </div>
+            </section>
+
+            <!-- Visual Examples -->
+            <section id="visual-examples" class="mb-5">
+                <div class="card border-primary">
+                    <div class="card-header bg-primary text-white">
+                        <h2 class="mb-0">📸 5. 이미지 예시</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="alert alert-info">
+                            <strong>Artifact가 있는 이미지와 정상 이미지를 구분하기 위해 이 예시들을 주의깊게 보세요.</strong>
+                        </div>
+                        
+                        <!-- Has Artifacts Examples -->
+                        <h3 class="text-success mb-3">✅ Artifact가 있는 이미지</h3>
+                        <div id="has-artifacts-examples" class="row mb-5">
+                            <div class="col-12 text-center">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">예시 로딩 중...</span>
+                                </div>
+                                <p class="mt-2">Artifact 예시 로딩 중...</p>
+                            </div>
+                        </div>
+                        
+                        <!-- No Artifacts Examples -->
+                        <h3 class="text-danger mb-3">❌ Artifact가 없는 이미지</h3>
+                        <div id="no-artifacts-examples" class="row mb-4">
+                            <div class="col-12 text-center">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">예시 로딩 중...</span>
+                                </div>
+                                <p class="mt-2">정상 예시 로딩 중...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Getting Started -->
+            <section id="getting-started" class="mb-5">
+                <div class="card border-primary">
+                    <div class="card-header bg-primary text-white">
+                        <h2 class="mb-0">🚀 6. 시작하기</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="alert alert-success">
+                            <h4>시작할 준비가 되었나요?</h4>
+                            <p class="mb-3">가이드라인을 읽으셨으니, 이제 artifact annotation을 만드는 데 도움을 줄 준비가 되었습니다!</p>
+                            <p class="mb-3">먼저 classification부터 시작하고, artifact가 있다고 분류된 이미지에 대해 annotation을 하세요.</p>
+                            <p class="mb-3">모든 이미지의 classification이 완료되면 annotation 페이지로 안내됩니다.</p>
+                            <p class="mb-3">일부 이미지의 classify가 완료되면 언제든지 어노테이션을 시작하셔도 됩니다.</p>
+                            
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="d-grid gap-2">
+                                        <a href="/classify" class="btn btn-success btn-lg">
+                                            <i class="fas fa-check-circle me-2"></i>Start Classification
+                                        </a>
+                                        <small class="text-muted text-center">분류 시작하기</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="d-grid gap-2">
+                                        <a href="/annotate" class="btn btn-info btn-lg">
+                                            <i class="fas fa-draw-polygon me-2"></i>Start Annotation
+                                        </a>
+                                        <small class="text-muted text-center">Artifact 주위에 박스를 그리고 설명하기</small>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <hr class="my-4">
+                            
+                            <div class="text-center">
+                                <p class="mb-2"><strong>나중에 이 가이드라인을 다시 검토해야 하나요?</strong></p>
+                                <p class="mb-0">네비게이션 메뉴에서 언제든지 접근하거나 이 페이지를 북마크하세요.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </div>
+    </div>
+</div>
+
+<!-- Back to Top Button -->
+<button onclick="window.scrollTo({top: 0, behavior: 'smooth'})" 
+        class="btn btn-primary position-fixed bottom-0 end-0 m-3" 
+        style="z-index: 1000;">
+    <i class="fas fa-arrow-up"></i>
+</button>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 가이드라인 페이지의 예시 로드
+async function loadGuidelinesExamples() {
+    try {
+        const response = await fetch('/api/classification-examples');
+        const data = await response.json();
+        
+        // "아티팩트 있음" 예시 로드
+        const hasContainer = document.getElementById('has-artifacts-examples');
+        hasContainer.innerHTML = '';
+        
+        data.has_artifacts.forEach(example => {
+            const exampleDiv = document.createElement('div');
+            exampleDiv.className = 'col-md-6 col-lg-4 mb-4';
+            exampleDiv.innerHTML = `
+                <div class="card h-100 border-success">
+                    <img src="/examples/images/${example.image_name}" class="card-img-top" 
+                         alt="${example.description}" style="height: 200px; object-fit: contain; background-color: #f8f9fa;">
+                    <div class="card-body">
+                        <h6 class="card-title text-success">${example.artifact_type || '아티팩트'}</h6>
+                        <p class="card-text small mb-2"><strong>${example.explanation}</strong></p>
+                        <p class="card-text small text-muted">${example.description}</p>
+                    </div>
+                </div>
+            `;
+            hasContainer.appendChild(exampleDiv);
+        });
+        
+        // "아티팩트 없음" 예시 로드
+        const noContainer = document.getElementById('no-artifacts-examples');
+        noContainer.innerHTML = '';
+        
+        data.no_artifacts.forEach(example => {
+            const exampleDiv = document.createElement('div');
+            exampleDiv.className = 'col-md-6 col-lg-4 mb-4';
+            exampleDiv.innerHTML = `
+                <div class="card h-100 border-danger">
+                    <img src="/examples/images/${example.image_name}" class="card-img-top" 
+                         alt="${example.description}" style="height: 200px; object-fit: contain; background-color: #f8f9fa;">
+                    <div class="card-body">
+                        <h6 class="card-title text-danger">${example.type}</h6>
+                        <p class="card-text small mb-2"><strong>${example.explanation}</strong></p>
+                        <p class="card-text small text-muted">${example.description}</p>
+                    </div>
+                </div>
+            `;
+            noContainer.appendChild(exampleDiv);
+        });
+        
+    } catch (error) {
+        console.error('가이드라인 예시 로딩 오류:', error);
+        document.getElementById('has-artifacts-examples').innerHTML = 
+            '<div class="col-12 text-center text-danger">아티팩트 예시 로딩 오류</div>';
+        document.getElementById('no-artifacts-examples').innerHTML = 
+            '<div class="col-12 text-center text-danger">정상 예시 로딩 오류</div>';
+    }
+}
+
+// 페이지 로드 시 예시 로드
+document.addEventListener('DOMContentLoaded', function() {
+    loadGuidelinesExamples();
+    
+    // 앵커 링크의 부드러운 스크롤
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
+            e.preventDefault();
+            const target = document.querySelector(this.getAttribute('href'));
+            if (target) {
+                target.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'start'
+                });
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

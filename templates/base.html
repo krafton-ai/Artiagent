@@ -75,9 +75,19 @@
             <span class="navbar-brand mb-0 h1">Image Annotation System</span>
             <div class="navbar-nav flex-row">
                 <a class="nav-link me-3" href="/">Home</a>
-                <a class="nav-link me-3 text-warning fw-bold" href="/guidelines">
-                    <i class="fas fa-book-open me-1"></i>Guidelines
-                </a>
+                <div class="dropdown me-3">
+                    <a class="nav-link dropdown-toggle text-warning fw-bold" href="#" id="guidelinesDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        <i class="fas fa-book-open me-1"></i>Guidelines
+                    </a>
+                    <ul class="dropdown-menu" aria-labelledby="guidelinesDropdown">
+                        <li><a class="dropdown-item" href="/guidelines_eng">
+                            <i class="fas fa-flag-usa me-2"></i>English (ENG)
+                        </a></li>
+                        <li><a class="dropdown-item" href="/guidelines_kor">
+                            <i class="fas fa-flag me-2"></i>Korean (KOR)
+                        </a></li>
+                    </ul>
+                </div>
                 <a class="nav-link me-3" href="/classify">Classify</a>
                 <a class="nav-link me-3" href="/annotate">Annotate</a>
                 <a class="nav-link" href="/admin">Admin</a>
