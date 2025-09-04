@@ -152,6 +152,10 @@ class WorkCoordinator:
                 if "ip_to_users" not in self.progress:
                     self.progress["ip_to_users"] = {}  # ip -> [user_ids]
                 
+                # Add annotation unsure images tracking
+                if "annotation_images_unsure" not in self.progress:
+                    self.progress["annotation_images_unsure"] = []
+                
                 # Migrate assignment format to include timestamps
                 self._migrate_assignment_format()
                 
@@ -166,6 +170,7 @@ class WorkCoordinator:
                     "images_unsure": [],
                     "admin_classification_completed": [],
                     "admin_annotation_completed": [],
+                    "annotation_images_unsure": [],
                     "user_completions": {
                         "classification": {},
                         "annotation": {}
@@ -184,6 +189,7 @@ class WorkCoordinator:
                 "images_unsure": [],
                 "admin_classification_completed": [],
                 "admin_annotation_completed": [],
+                "annotation_images_unsure": [],
                 "user_completions": {
                     "classification": {},
                     "annotation": {}
@@ -371,6 +377,23 @@ class WorkCoordinator:
             
             self.save_progress()
     
+    def mark_annotation_unsure(self, user_id, image_name, user_ip=None):
+        """Mark annotation as unsure for admin review"""
+        with self.lock:
+            # Remove from in-progress
+            if user_id in self.progress["annotation_in_progress"]:
+                del self.progress["annotation_in_progress"][user_id]
+            
+            # Add to annotation unsure list (avoid duplicates)
+            if image_name not in self.progress["annotation_images_unsure"]:
+                self.progress["annotation_images_unsure"].append(image_name)
+                logger.info(f"Marked annotation as unsure for admin review: {image_name}")
+            
+            # Track individual user action (we can track this as a different type)
+            # For now, we won't add it to completed count since it's unsure
+            
+            self.save_progress()
+    
     def get_current_image(self, user_id, task_type):
         """Get currently assigned image for user"""
         if task_type == "classification":
@@ -417,11 +440,12 @@ class WorkCoordinator:
             "images_no_artifacts": len(self.progress["classification_completed"]) - len(self.progress["images_with_artifacts"]) - len(self.progress.get("images_unsure", [])),
             "annotation_completed": len(self.progress["annotation_completed"]),
             "annotation_remaining": len(self.progress["images_with_artifacts"]) - len(self.progress["annotation_completed"]),
+            "annotation_images_unsure": len(self.progress.get("annotation_images_unsure", [])),
             "classification_in_progress": len(self.progress["classification_in_progress"]),
             "annotation_in_progress": len(self.progress["annotation_in_progress"]),
             "admin_classification_completed": len(self.progress.get("admin_classification_completed", [])),
             "admin_annotation_completed": len(self.progress.get("admin_annotation_completed", [])),
-            "admin_annotation_available": admin_annotation_available
+            "admin_annotation_available": admin_annotation_available + len(self.progress.get("annotation_images_unsure", []))
         }
     
     def get_next_admin_classification_image(self, user_id):
@@ -452,9 +476,18 @@ class WorkCoordinator:
             self.save_progress()
     
     def get_next_admin_annotation_image(self, user_id):
-        """Get next image for admin annotation (admin-classified artifact images)"""
+        """Get next image for admin annotation (admin-classified artifact images + unsure annotations)"""
         with self.lock:
-            # Get admin-classified artifact images that need annotation
+            all_admin_annotation_candidates = []
+            
+            # First, get images from annotation_images_unsure (priority for unsure annotations)
+            unsure_images = [
+                img for img in self.progress.get("annotation_images_unsure", [])
+                if img not in self.progress.get("admin_annotation_completed", [])
+            ]
+            all_admin_annotation_candidates.extend(unsure_images)
+            
+            # Then, get admin-classified artifact images that need annotation
             admin_classified_artifacts = []
             
             # Find images that admin classified as having artifacts
@@ -475,18 +508,18 @@ class WorkCoordinator:
                             if admin_classifications:
                                 admin_classified_artifacts.append(img)
                 except Exception as e:
-                    print(f"Error checking admin classifications: {e}")
+                    logger.error(f"Error checking admin classifications: {e}")
             
-            # Filter out already admin-annotated images
-            available_images = [
-                img for img in admin_classified_artifacts
-                if img not in self.progress.get("admin_annotation_completed", [])
-            ]
+            # Add admin-classified artifacts to candidates (avoid duplicates)
+            for img in admin_classified_artifacts:
+                if img not in self.progress.get("admin_annotation_completed", []) and img not in all_admin_annotation_candidates:
+                    all_admin_annotation_candidates.append(img)
             
-            if not available_images:
+            if not all_admin_annotation_candidates:
                 return None
             
-            return available_images[0]
+            # Return the first available image (unsure images have priority)
+            return all_admin_annotation_candidates[0]
     
     def complete_admin_annotation(self, user_id, image_name):
         """Mark admin annotation as complete"""
@@ -496,6 +529,11 @@ class WorkCoordinator:
                 if "admin_annotation_completed" not in self.progress:
                     self.progress["admin_annotation_completed"] = []
                 self.progress["admin_annotation_completed"].append(image_name)
+            
+            # Remove from annotation unsure list if it was there
+            if image_name in self.progress.get("annotation_images_unsure", []):
+                self.progress["annotation_images_unsure"].remove(image_name)
+                logger.info(f"Removed {image_name} from annotation_images_unsure after admin completion")
             
             self.save_progress()
     
@@ -861,6 +899,25 @@ def submit_annotation():
         return jsonify({"success": True})
     else:
         return jsonify({"error": "Failed to save result"}), 500
+
+@app.route('/api/submit-annotation-unsure', methods=['POST'])
+@ensure_session
+@throttle_requests
+def submit_annotation_unsure():
+    """Submit annotation as unsure for admin review"""
+    user_id = session['user_id']
+    
+    data = request.json
+    image_name = data.get('image_name')
+    
+    if not image_name:
+        return jsonify({"error": "Missing image_name"}), 400
+    
+    # Mark as unsure for admin review
+    coordinator.mark_annotation_unsure(user_id, image_name, request.remote_addr)
+    
+    logger.info(f"User {user_id} marked annotation as unsure: {image_name}")
+    return jsonify({"success": True, "message": "Image marked as unsure for admin review"})
 
 @app.route('/api/statistics')
 def get_statistics():

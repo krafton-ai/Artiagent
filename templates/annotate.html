@@ -32,21 +32,25 @@
         <div class="artifact-guide mb-3" style="background-color: #fff3cd; border: 1px solid #ffecb5; padding: 15px;">
             <h4>📖 Artifact Categories</h4>
             <div class="row">
-                <div class="col-md-3 col-6">
+                <div class="col-md-2 col-6">
                     <span class="badge bg-primary">Addition</span>
                     <small class="d-block">Extra/repeated elements</small>
                 </div>
-                <div class="col-md-3 col-6">
+                <div class="col-md-2 col-6">
                     <span class="badge bg-warning">Removal</span>
                     <small class="d-block">Missing elements</small>
                 </div>
-                <div class="col-md-3 col-6">
+                <div class="col-md-2 col-6">
                     <span class="badge bg-danger">Distortion</span>
                     <small class="d-block">Shape abnormalities</small>
                 </div>
-                <div class="col-md-3 col-6">
+                <div class="col-md-2 col-6">
                     <span class="badge bg-success">Fusion</span>
                     <small class="d-block">Merged elements</small>
+                </div>
+                <div class="col-md-4 col-12">
+                    <span class="badge bg-secondary">🤷 Unsure</span>
+                    <small class="d-block">Ambiguous category</small>
                 </div>
             </div>
         </div>
@@ -59,13 +63,17 @@
                     <!-- TODO: Add detailed annotation guidelines here -->
                     <p class="mb-3"><strong>Our task foucses on structural artifacts, including distortions, duplicated or missing parts, and merged objects.</strong></p>
                     <div class="alert alert-warning">
-                        <small>Text distortions, stylistic errors, physical implausibility and other natural image features are not considered artifacts in this task.</small>
+                        <p><small>Text distortions, stylistic errors, physical implausibility and other natural image features are not considered artifacts in this task.</small></p>
+                        <p><small>Check the provided prompts used for the image generation. Images mismatching with the prompt, or artifacts generated due to the prompt are not considered artifacts in this task.</small></p>
+                        <p><small>Only draw bboxes on artifact regions unintended by the prompt.</small></p>
                     </div>
-                    <p class="mb-3"><strong>Take your time and look carefully at all parts of the image.</strong></p>
-                    <div class="alert alert-warning">
-                        <p><small>Images seemingly natural at first glance may contain artifacts. Pay attention to the details and parts highly capable of containing artifacts.</small></p>
-                        <p><small>There may be multiple artifacts in the image, with different types of artifacts in the same image. Annotate all artifacts in the image.</small></p>
-                    </div>
+                                          <p class="mb-3"><strong>Take your time and look carefully at all parts of the image.</strong></p>
+                      <div class="alert alert-warning">
+                          <p><small>Images seemingly natural at first glance may contain artifacts. Pay attention to the details and parts highly capable of containing artifacts.</small></p>
+                          <p><small>There may be multiple artifacts in the image, with different types of artifacts in the same image. Annotate all artifacts in the image.</small></p>
+                          <p><small><strong>For individual bounding boxes:</strong> If you can see something is wrong but can't determine which category (Addition, Removal, Distortion, or Fusion) it belongs to, select <strong>"Unsure"</strong> and focus on describing what you observe in the caption.</small></p>
+                          <p><small><strong>For the entire image:</strong> If still unsure about the whole annotation task, press <strong>Mark as Unsure</strong> button for admin review.</small></p>
+                      </div>
                 </div>
             </div>
         </div>
@@ -174,11 +182,19 @@
             
 
             
-            <!-- Submit button -->
+            <!-- Submit buttons -->
             <div class="mt-3 text-center">
-                <button class="btn btn-success btn-large" onclick="submitAnnotation()">
-                    ✅ Complete Annotation
-                </button>
+                <div class="d-grid gap-2">
+                    <button class="btn btn-success btn-large" onclick="submitAnnotation()">
+                        ✅ Complete Annotation
+                    </button>
+                    <button class="btn btn-warning btn-large" onclick="markAnnotationUnsure()">
+                        🤷 Mark as Unsure (Admin Review)
+                    </button>
+                </div>
+                <small class="text-muted mt-2 d-block">
+                    Use "Unsure" if you're not sure how to annotate the artifacts in this image
+                </small>
             </div>
         </div>
         
@@ -225,38 +241,52 @@
                         <div class="col-12">
                             <h6 class="mb-3">Select Artifact Category:</h6>
                             <div class="row g-2">
-                                <div class="col-md-3">
+                                <div class="col-md-2 col-6">
                                     <input type="radio" class="btn-check" name="artifact-category" id="category-addition" value="addition">
-                                    <label class="btn btn-outline-primary w-100 h-100 d-flex flex-column align-items-center justify-content-center p-3" for="category-addition">
-                                        <i class="fas fa-plus-circle fa-2x mb-2"></i>
+                                    <label class="btn btn-outline-primary w-100 h-100 d-flex flex-column align-items-center justify-content-center p-2" for="category-addition">
+                                        <i class="fas fa-plus-circle fa-lg mb-1"></i>
                                         <strong>Addition</strong>
                                         <small class="text-muted mt-1">Extra elements</small>
                                     </label>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-2 col-6">
                                     <input type="radio" class="btn-check" name="artifact-category" id="category-removal" value="removal">
-                                    <label class="btn btn-outline-warning w-100 h-100 d-flex flex-column align-items-center justify-content-center p-3" for="category-removal">
-                                        <i class="fas fa-minus-circle fa-2x mb-2"></i>
+                                    <label class="btn btn-outline-warning w-100 h-100 d-flex flex-column align-items-center justify-content-center p-2" for="category-removal">
+                                        <i class="fas fa-minus-circle fa-lg mb-1"></i>
                                         <strong>Removal</strong>
                                         <small class="text-muted mt-1">Missing elements</small>
                                     </label>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-2 col-6">
                                     <input type="radio" class="btn-check" name="artifact-category" id="category-distortion" value="distortion">
-                                    <label class="btn btn-outline-danger w-100 h-100 d-flex flex-column align-items-center justify-content-center p-3" for="category-distortion">
-                                        <i class="fas fa-exclamation-triangle fa-2x mb-2"></i>
+                                    <label class="btn btn-outline-danger w-100 h-100 d-flex flex-column align-items-center justify-content-center p-2" for="category-distortion">
+                                        <i class="fas fa-exclamation-triangle fa-lg mb-1"></i>
                                         <strong>Distortion</strong>
                                         <small class="text-muted mt-1">Shape abnormalities</small>
                                     </label>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-2 col-6">
                                     <input type="radio" class="btn-check" name="artifact-category" id="category-fusion" value="fusion">
-                                    <label class="btn btn-outline-success w-100 h-100 d-flex flex-column align-items-center justify-content-center p-3" for="category-fusion">
-                                        <i class="fas fa-compress-arrows-alt fa-2x mb-2"></i>
+                                    <label class="btn btn-outline-success w-100 h-100 d-flex flex-column align-items-center justify-content-center p-2" for="category-fusion">
+                                        <i class="fas fa-compress-arrows-alt fa-lg mb-1"></i>
                                         <strong>Fusion</strong>
                                         <small class="text-muted mt-1">Merged elements</small>
                                     </label>
                                 </div>
+                                <div class="col-md-4 col-12">
+                                    <input type="radio" class="btn-check" name="artifact-category" id="category-unsure" value="unsure">
+                                    <label class="btn btn-outline-secondary w-100 h-100 d-flex flex-column align-items-center justify-content-center p-2" for="category-unsure">
+                                        <i class="fas fa-question-circle fa-lg mb-1"></i>
+                                        <strong>🤷 Unsure</strong>
+                                        <small class="text-muted mt-1">Ambiguous category</small>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="mt-2">
+                                <small class="text-muted">
+                                    💡 <strong>Use "Unsure"</strong> when you can see something is wrong but can't determine which specific category it belongs to. 
+                                    Focus on describing what you observe in the caption below.
+                                </small>
                             </div>
                         </div>
                     </div>
@@ -266,7 +296,10 @@
                             <h6>Detailed Description:</h6>
                             <textarea class="form-control" id="caption-text" rows="4" 
                                       placeholder="Provide a detailed description of this specific artifact..."></textarea>
-                            <div class="form-text">Be specific about what you see: location, appearance, severity, etc.</div>
+                            <div class="form-text">
+                                Be specific about what you see: location, appearance, severity, etc. 
+                                <strong>If you selected "Unsure":</strong> Focus on describing exactly what looks wrong without trying to categorize it.
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -568,6 +601,7 @@ function redrawBoxes() {
         else if (box.category === 'removal') strokeColor = '#ffc107';
         else if (box.category === 'distortion') strokeColor = '#dc3545';
         else if (box.category === 'fusion') strokeColor = '#28a745';
+        else if (box.category === 'unsure') strokeColor = '#6c757d';
         
         ctx.strokeStyle = strokeColor;
         ctx.lineWidth = 2;
@@ -621,7 +655,8 @@ function updateBboxList() {
                 'addition': 'bg-primary',
                 'removal': 'bg-warning',
                 'distortion': 'bg-danger',
-                'fusion': 'bg-success'
+                'fusion': 'bg-success',
+                'unsure': 'bg-secondary'
             };
             const badgeColor = badgeColors[box.category] || 'bg-secondary';
             categoryBadge = `<span class="badge ${badgeColor} me-2">${box.category.toUpperCase()}</span>`;
@@ -1024,6 +1059,97 @@ async function submitAnnotation() {
     }
 }
 
+async function markAnnotationUnsure() {
+    if (!currentImage || requestInProgress) {
+        console.log('Cannot mark as unsure: no image or request in progress');
+        return;
+    }
+    
+    // Confirm action
+    if (!confirm('Are you sure you want to mark this image as unsure for admin review?\n\nThis will skip the current image and load a new one.')) {
+        return;
+    }
+    
+    requestInProgress = true;
+    
+    // Disable both buttons
+    const submitBtn = document.querySelector('.btn-success.btn-large');
+    const unsureBtn = document.querySelector('.btn-warning.btn-large');
+    const originalUnsureText = unsureBtn.textContent;
+    
+    submitBtn.disabled = true;
+    unsureBtn.disabled = true;
+    unsureBtn.textContent = 'Marking as Unsure...';
+    
+    try {
+        console.log(`Marking annotation as unsure: ${currentImage}`);
+        
+        const data = await makeRequest('/api/submit-annotation-unsure', {
+            method: 'POST',
+            body: JSON.stringify({
+                image_name: currentImage
+            })
+        });
+        
+        if (data.success) {
+            console.log('Annotation marked as unsure successfully');
+            
+            // Show success message
+            const successDiv = document.createElement('div');
+            successDiv.className = 'alert alert-success alert-dismissible fade show position-fixed';
+            successDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; max-width: 400px;';
+            successDiv.innerHTML = `
+                <strong>✅ Marked as Unsure</strong><br>
+                Image has been sent for admin review.
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            document.body.appendChild(successDiv);
+            
+            // Auto remove after 5 seconds
+            setTimeout(() => {
+                if (successDiv.parentNode) {
+                    successDiv.parentNode.removeChild(successDiv);
+                }
+            }, 5000);
+            
+            // Clean up current state
+            currentImage = null;
+            bboxes = [];
+            drawingMode = false;
+            document.getElementById('drawing-mode-text').textContent = 'Start Drawing';
+            canvas.style.display = 'none';
+            updateBboxList();
+            
+            // Load next image after a short delay
+            setTimeout(async () => {
+                submitBtn.disabled = false;
+                unsureBtn.disabled = false;
+                unsureBtn.textContent = originalUnsureText;
+                requestInProgress = false;
+                
+                try {
+                    await loadNextImage();
+                } catch (loadError) {
+                    console.error('Error loading next image:', loadError);
+                    showErrorMessage('Failed to load next image. Please try again.');
+                }
+            }, 1000);
+        } else {
+            throw new Error(data.error || 'Unknown server error');
+        }
+        
+    } catch (error) {
+        console.error('Error marking annotation as unsure:', error);
+        showErrorMessage(`Failed to mark as unsure: ${error.message}`);
+        
+        // Re-enable buttons
+        submitBtn.disabled = false;
+        unsureBtn.disabled = false;
+        unsureBtn.textContent = originalUnsureText;
+        requestInProgress = false;
+    }
+}
+
 function loadAnnotationExamples() {
     fetch('/api/examples')
         .then(response => response.json())
@@ -1040,7 +1166,8 @@ function loadAnnotationExamples() {
                     'addition': 'bg-primary',
                     'removal': 'bg-warning', 
                     'distortion': 'bg-danger',
-                    'fusion': 'bg-success'
+                    'fusion': 'bg-success',
+                    'unsure': 'bg-secondary'
                 };
                 const badgeColor = badgeColors[example.artifact_type] || 'bg-secondary';
                 
@@ -1149,6 +1276,7 @@ function drawExampleBoundingBoxes(canvas, img, bboxes) {
         else if (bbox.category === 'removal') strokeColor = '#ffc107';
         else if (bbox.category === 'distortion') strokeColor = '#dc3545';
         else if (bbox.category === 'fusion') strokeColor = '#28a745';
+        else if (bbox.category === 'unsure') strokeColor = '#6c757d';
         
         ctx.strokeStyle = strokeColor;
         ctx.lineWidth = 2;

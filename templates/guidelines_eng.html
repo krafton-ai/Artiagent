@@ -70,7 +70,7 @@
                             <div class="col-md-6">
                                 <h4 class="text-success">✅ Our Focus: Structural Artifacts</h4>
                                 <ul>
-                                    <li><strong>Shape distortions:</strong> Objects with impossible geometry</li>
+                                    <li><strong>Shape distortions:</strong> Objects with impossible geometry or blurry, corrupted structures</li>
                                     <li><strong>Missing parts:</strong> Incomplete objects or body parts</li>
                                     <li><strong>Extra parts:</strong> Duplicated or additional elements</li>
                                     <li><strong>Merged objects:</strong> Things unnaturally fused together</li>
@@ -80,9 +80,9 @@
                                 <h4 class="text-danger">❌ Not Considered Artifacts</h4>
                                 <ul>
                                     <li><strong>Text distortions:</strong> Blurry or incorrect text</li>
-                                    <li><strong>Stylistic errors:</strong> Art style inconsistencies</li>
+                                    <li><strong>Stylistic errors:</strong> Art style inconsistencies (animation or painting style)</li>
                                     <li><strong>Physical implausibility:</strong> Unrealistic but structurally sound scenes</li>
-                                    <li><strong>Prompt misalignment:</strong> Image doesn't match description</li>
+                                    <li><strong>Prompt alignment:</strong> Image doesn't match description / prompt indicates artifact generation</li>
                                 </ul>
                             </div>
                         </div>
@@ -98,7 +98,7 @@
                     </div>
                     <div class="card-body">
                         <div class="row">
-                            <div class="col-md-6 col-lg-3 mb-4">
+                            <div class="col-md-6 col-lg-2 col-sm-6 mb-4">
                                 <div class="card h-100 border-primary">
                                     <div class="card-header bg-primary text-white text-center">
                                         <h5 class="mb-0"><i class="fas fa-plus-circle"></i> Addition</h5>
@@ -116,7 +116,7 @@
                                 </div>
                             </div>
                             
-                            <div class="col-md-6 col-lg-3 mb-4">
+                            <div class="col-md-6 col-lg-2 col-sm-6 mb-4">
                                 <div class="card h-100 border-warning">
                                     <div class="card-header bg-warning text-dark text-center">
                                         <h5 class="mb-0"><i class="fas fa-minus-circle"></i> Removal</h5>
@@ -134,7 +134,7 @@
                                 </div>
                             </div>
                             
-                            <div class="col-md-6 col-lg-3 mb-4">
+                            <div class="col-md-6 col-lg-2 col-sm-6 mb-4">
                                 <div class="card h-100 border-danger">
                                     <div class="card-header bg-danger text-white text-center">
                                         <h5 class="mb-0"><i class="fas fa-exclamation-triangle"></i> Distortion</h5>
@@ -152,7 +152,7 @@
                                 </div>
                             </div>
                             
-                            <div class="col-md-6 col-lg-3 mb-4">
+                            <div class="col-md-6 col-lg-2 col-sm-6 mb-4">
                                 <div class="card h-100 border-success">
                                     <div class="card-header bg-success text-white text-center">
                                         <h5 class="mb-0"><i class="fas fa-compress-arrows-alt"></i> Fusion</h5>
@@ -166,6 +166,27 @@
                                             <li>Ambiguous hybrid parts</li>
                                             <li>Indistinguishable elements</li>
                                         </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-12 col-lg-4 mb-4">
+                                <div class="card h-100 border-secondary">
+                                    <div class="card-header bg-secondary text-white text-center">
+                                        <h5 class="mb-0"><i class="fas fa-question-circle"></i> 🤷 Unsure</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <p><strong>Definition:</strong> When you can see something is wrong but can't determine which specific category it belongs to.</p>
+                                        <p><strong>When to use:</strong></p>
+                                        <ul class="small">
+                                            <li>Artifact is ambiguous between multiple categories</li>
+                                            <li>Defect is visible but unclear in nature</li>
+                                            <li>Complex artifacts with overlapping characteristics</li>
+                                            <li>Focus on describing what you observe</li>
+                                        </ul>
+                                        <div class="alert alert-info mt-2">
+                                            <small><strong>Note:</strong> When using "Unsure", provide a detailed description of what looks wrong without trying to categorize it.</small>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

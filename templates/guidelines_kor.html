@@ -70,7 +70,7 @@
                             <div class="col-md-6">
                                 <h4 class="text-success">✅ 본 연구의 초점: 구조적(Structural) Artifact</h4>
                                 <ul>
-                                    <li><strong>Distortion:</strong> 불가능한 기하학적 구조를 가진 물체</li>
+                                    <li><strong>Distortion:</strong> 불가능한 기하학적 구조를 가진 물체 혹은 흐리고 깨진 구조의 물체</li>
                                     <li><strong>Removal:</strong> 불완전한 물체나 신체 부위</li>
                                     <li><strong>Addition:</strong> 중복되거나 추가된 요소</li>
                                     <li><strong>Fusion:</strong> 부자연스럽게 합쳐진 것들</li>
@@ -80,9 +80,9 @@
                                 <h4 class="text-danger">❌ Artifact로 간주하지 않는 것</h4>
                                 <ul>
                                     <li><strong>텍스트 왜곡:</strong> 흐려지거나 잘못된 텍스트</li>
-                                    <li><strong>스타일 오류:</strong> 이미지 스타일의 비현실성</li>
+                                    <li><strong>스타일 오류:</strong> 이미지 스타일의 비현실성 (애니메이션이나 그림과 같은 이미지의 스타일)</li>
                                     <li><strong>물리적 불가능성:</strong> 비현실적이지만 구조적인 이상이 없는 장면</li>
-                                    <li><strong>프롬프트 불일치:</strong> 설명과 일치하지 않는 이미지</li>
+                                    <li><strong>프롬프트 일치 여부:</strong> 설명과 일치하지 않는 이미지 / 프롬프트가 artifact 생성을 의도하는 경우</li>
                                 </ul>
                             </div>
                         </div>
@@ -98,7 +98,7 @@
                     </div>
                     <div class="card-body">
                         <div class="row">
-                            <div class="col-md-6 col-lg-3 mb-4">
+                            <div class="col-md-6 col-lg-2 col-sm-6 mb-4">
                                 <div class="card h-100 border-primary">
                                     <div class="card-header bg-primary text-white text-center">
                                         <h5 class="mb-0"><i class="fas fa-plus-circle"></i> Addition</h5>
@@ -116,7 +116,7 @@
                                 </div>
                             </div>
                             
-                            <div class="col-md-6 col-lg-3 mb-4">
+                            <div class="col-md-6 col-lg-2 col-sm-6 mb-4">
                                 <div class="card h-100 border-warning">
                                     <div class="card-header bg-warning text-dark text-center">
                                         <h5 class="mb-0"><i class="fas fa-minus-circle"></i> Removal</h5>
@@ -134,7 +134,7 @@
                                 </div>
                             </div>
                             
-                            <div class="col-md-6 col-lg-3 mb-4">
+                            <div class="col-md-6 col-lg-2 col-sm-6 mb-4">
                                 <div class="card h-100 border-danger">
                                     <div class="card-header bg-danger text-white text-center">
                                         <h5 class="mb-0"><i class="fas fa-exclamation-triangle"></i> Distortion</h5>
@@ -152,7 +152,7 @@
                                 </div>
                             </div>
                             
-                            <div class="col-md-6 col-lg-3 mb-4">
+                            <div class="col-md-6 col-lg-2 col-sm-6 mb-4">
                                 <div class="card h-100 border-success">
                                     <div class="card-header bg-success text-white text-center">
                                         <h5 class="mb-0"><i class="fas fa-compress-arrows-alt"></i> Fusion</h5>
@@ -166,6 +166,27 @@
                                             <li>모호한 혼합 부분</li>
                                             <li>구별할 수 없는 요소</li>
                                         </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-12 col-lg-4 mb-4">
+                                <div class="card h-100 border-secondary">
+                                    <div class="card-header bg-secondary text-white text-center">
+                                        <h5 class="mb-0"><i class="fas fa-question-circle"></i> 🤷 확실하지 않음</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <p><strong>정의:</strong> 잘못된 부분을 볼 수 있지만 어떤 특정 범주에 속하는지 결정할 수 없을 때.</p>
+                                        <p><strong>사용할 때:</strong></p>
+                                        <ul class="small">
+                                            <li>여러 범주 간에 애매한 아티팩트</li>
+                                            <li>결함이 보이지만 성격이 불분명함</li>
+                                            <li>특성이 겹치는 복잡한 아티팩트</li>
+                                            <li>관찰한 내용을 설명하는 데 중점</li>
+                                        </ul>
+                                        <div class="alert alert-info mt-2">
+                                            <small><strong>참고:</strong> "확실하지 않음"을 사용할 때는 카테고리화를 시도하지 말고 무엇이 잘못되어 보이는지 자세한 설명을 제공하세요.</small>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
