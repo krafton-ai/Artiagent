@@ -59,7 +59,6 @@ def process_single_image_dir(image_dir, client):
                 real_image=original_with_bbox,
                 artifact_image=artifact_with_bbox,
                 object_name=object_name,
-                artifact_type=artifact_type,
                 money_manager=money_manager
             )
 

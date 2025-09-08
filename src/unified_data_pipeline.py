@@ -35,9 +35,11 @@ import torch
 from PIL import Image
 import logging
 from datetime import datetime
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
 # Import query functions from prompts
-from pipeline.prompts import artifact_description, MoneyManager
+from pipeline.prompts import artifact_description, artifact_explanation, MoneyManager
 from openai import OpenAI
 import lpips
 
@@ -130,7 +132,7 @@ class UnifiedDataPipeline:
         self.experiment_data = {}
         
         # Process matching image directories
-        for exp_id in list(matching_ids)[:100]:
+        for exp_id in list(matching_ids):
             gsam_dir = gsam_image_dirs[exp_id]
             flux_dir = flux_image_dirs[exp_id]
             
@@ -168,14 +170,15 @@ class UnifiedDataPipeline:
         return self.experiment_data
     
     def check_distortion_with_lpips(self, artifact: Dict, artifact_type: str,
-                                    orig_img: np.ndarray, img: np.ndarray, exp_id: str, logger) -> bool: 
+                                    orig_img: np.ndarray, img: np.ndarray, exp_id: str, logger) -> Tuple[bool, float]: 
         """
         Use LPIPS to check if distortion artifact is present.
-        Returns True if distortion is detected (dissimilar enough).
+        Returns tuple of (passed, similarity_score) where passed is True if distortion is detected (dissimilar enough).
         """
         # Set default thresholds
         thresholds = {
-            'similar': 0.9,  # If similarity > 0.8, images are too similar (no distortion)
+            'similar': 0.9,  # If similarity > 0.9, images are too similar (no distortion)
+            'different': 0.5,  # If similarity < 0.5, images are too different (distortion)
         }
 
         def preprocess_for_lpips(np_img):
@@ -196,7 +199,7 @@ class UnifiedDataPipeline:
             return tensor
             
         target_bbox = artifact['target_bbox']
-        orig_bbox = self._scale_bbox_to_image_size(target_bbox, orig_img.shape, img.shape)
+        orig_bbox = self._scale_bbox_to_image_size(target_bbox, orig_img.shape, img.shape) #  //TODO check if this is needed.
 
         device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         orig_crop = preprocess_for_lpips(self._crop_to_bbox(orig_img, orig_bbox)).to(device)
@@ -208,12 +211,12 @@ class UnifiedDataPipeline:
         logger.info(f"LPIPS similarity: {similarity:.4f}")
 
         # If similarity is low enough, distortion is present
-        if similarity < thresholds['similar']:
+        if similarity < thresholds['similar'] and similarity > thresholds['different']:
             passed = True
         else:
             passed = False
 
-        return passed
+        return passed, similarity
     
     def _scale_bbox_to_image_size(self, bbox, target_img_shape, source_img_shape):
         """Scale bounding box coordinates from source image size to target image size."""
@@ -264,6 +267,76 @@ class UnifiedDataPipeline:
         
         return [int(x_min), int(y_min), int(x_max), int(y_max)]
     
+    # def save_lpips_bbox_figure(self, exp_id: str, artifact_img_array: np.ndarray, 
+    #                           distortion_artifacts: List[Dict], similarity_scores: List[float], logger) -> None:
+    #     """
+    #     Save a figure showing bbox regions of distortion artifacts with LPIPS similarity scores as labels.
+        
+    #     Args:
+    #         exp_id: Experiment identifier
+    #         artifact_img_array: The artifact image as numpy array
+    #         distortion_artifacts: List of distortion artifact dictionaries
+    #         similarity_scores: List of corresponding LPIPS similarity scores
+    #         logger: Logger instance
+    #     """
+    #     # Create output directory for LPIPS figures
+    #     lpips_output_dir = self.output_dir / "lpips_figures"
+    #     lpips_output_dir.mkdir(exist_ok=True)
+        
+    #     # Create figure and axis
+    #     fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        
+    #     # Display the artifact image
+    #     ax.imshow(artifact_img_array)
+    #     ax.set_title(f'LPIPS Distortion Analysis - Experiment {exp_id}', fontsize=14, fontweight='bold')
+    #     ax.axis('off')
+        
+    #     # Add bbox rectangles with similarity scores for each distortion artifact
+    #     for i, (artifact, similarity_score) in enumerate(zip(distortion_artifacts, similarity_scores)):
+    #         bbox = artifact['target_bbox']
+    #         xmin, ymin, xmax, ymax = bbox
+            
+    #         # Create rectangle patch
+    #         rect = patches.Rectangle(
+    #             (xmin, ymin), 
+    #             xmax - xmin, 
+    #             ymax - ymin,
+    #             linewidth=3, 
+    #             edgecolor='red', 
+    #             facecolor='none',
+    #             alpha=0.8
+    #         )
+    #         ax.add_patch(rect)
+            
+    #         # Add similarity score label
+    #         kernel_type = artifact.get('distortion_kernel', 'unknown')
+    #         label_text = f'{kernel_type}\nLPIPS: {similarity_score:.3f}'
+            
+    #         # Position label on top of bbox with background
+    #         ax.text(xmin + 5, ymin - 5, label_text, 
+    #                fontsize=12, fontweight='bold', 
+    #                color='white', 
+    #                bbox=dict(boxstyle='round,pad=0.3', facecolor='red', alpha=0.8),
+    #                verticalalignment='bottom')
+        
+    #     # Add legend explaining the visualization
+    #     legend_text = (
+    #         'Red boxes: Distortion artifact regions\n'
+    #         'LPIPS scores: Similarity between original and artifact regions\n'
+    #         'Lower scores = more distortion detected'
+    #     )
+    #     ax.text(0.02, 0.98, legend_text, transform=ax.transAxes, 
+    #            fontsize=10, verticalalignment='top', 
+    #            bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9))
+        
+    #     # Save figure
+    #     output_file = lpips_output_dir / f"lpips_analysis_{exp_id}.png"
+    #     plt.tight_layout()
+    #     plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    #     plt.close()
+        
+    #     logger.info(f"Saved LPIPS bbox figure for experiment {exp_id}: {output_file}")
+    
     def filter_experiment_lpips(self, exp_id: str, logger) -> Dict:
         """
         Phase 1: Filter distortion artifacts in a single experiment using LPIPS.
@@ -289,6 +362,8 @@ class UnifiedDataPipeline:
         
         # Filter only distortion artifacts
         lpips_results = {}
+        distortion_artifacts = []
+        similarity_scores = []
         
         for artifact_idx, artifact in enumerate(metadata['artifacts']):
             artifact_type = artifact['artifact_type']
@@ -296,10 +371,14 @@ class UnifiedDataPipeline:
             if artifact_type == 'distortion':
                 kernel_type = artifact['distortion_kernel']
                 
-                # Apply LPIPS filtering
-                lpips_passed = self.check_distortion_with_lpips(
+                # Apply LPIPS filtering - now returns tuple (passed, similarity_score)
+                lpips_passed, similarity_score = self.check_distortion_with_lpips(
                     artifact, artifact_type, original_img_array, artifact_img_array, exp_id, logger
                 )
+                
+                # Collect distortion artifacts and scores for figure generation
+                distortion_artifacts.append(artifact)
+                similarity_scores.append(similarity_score)
                 
                 logger.info(f"Distortion artifact {artifact_idx} with {kernel_type}: {'PASSED' if lpips_passed else 'FAILED'} (LPIPS)")
                 
@@ -314,6 +393,10 @@ class UnifiedDataPipeline:
             else:
                 # Non-distortion artifacts pass LPIPS phase (will be filtered in Phase 2)
                 lpips_results[artifact_idx] = True
+        
+        # # Generate and save LPIPS bbox figure if there are distortion artifacts
+        # if distortion_artifacts:
+        #     self.save_lpips_bbox_figure(exp_id, artifact_img_array, distortion_artifacts, similarity_scores, logger)
         
         return lpips_results
     
@@ -378,18 +461,68 @@ class UnifiedDataPipeline:
             # Create binary mask for image processing
             binary_mask = target_mask > 0  # True where mask is non-zero
             
-            # Create the three required images for artifact_description
+            # Create the three required images for artifact_description using cropping and resizing
+            # Find bounding box of the target region
+            rows = np.any(binary_mask, axis=1)
+            cols = np.any(binary_mask, axis=0)
+            y_min, y_max = np.where(rows)[0][[0, -1]]
+            x_min, x_max = np.where(cols)[0][[0, -1]]
+            
+            # Crop the original and artifact images to the bounding box
+            original_cropped = original_img_array[y_min:y_max+1, x_min:x_max+1]
+            artifact_cropped = artifact_img_array[y_min:y_max+1, x_min:x_max+1]
+            
+            # Get the longest side of the original image
+            orig_h, orig_w = original_img_array.shape[:2]
+            max_orig_side = max(orig_h, orig_w)
+            
+            # Get dimensions of cropped region
+            crop_h, crop_w = original_cropped.shape[:2]
+            max_crop_side = max(crop_h, crop_w)
+            
+            # Calculate resize ratio
+            resize_ratio = max_orig_side / max_crop_side
+            new_h = int(crop_h * resize_ratio)
+            new_w = int(crop_w * resize_ratio)
+            
+            # Function to convert to PIL for resizing
+            def to_pil_for_resize(img):
+                arr = img
+                if arr.dtype in (np.float32, np.float64):
+                    if arr.max() <= 1.0:
+                        arr = (arr * 255).clip(0, 255)
+                    arr = arr.astype(np.uint8)
+                if arr.ndim == 2:
+                    return Image.fromarray(arr)
+                elif arr.shape[2] == 1:
+                    return Image.fromarray(arr[:, :, 0])
+                elif arr.shape[2] == 3:
+                    return Image.fromarray(arr)
+                elif arr.shape[2] == 4:
+                    return Image.fromarray(arr[:, :, :3])
+                else:
+                    raise ValueError(f"Unexpected image shape: {arr.shape}")
+            
+            # Convert to PIL images for resizing
+            original_pil = to_pil_for_resize(original_cropped)
+            artifact_pil = to_pil_for_resize(artifact_cropped)
+            
+            # Resize
+            original_resized = original_pil.resize((new_w, new_h), Image.LANCZOS)
+            artifact_resized = artifact_pil.resize((new_w, new_h), Image.LANCZOS)
+            
+            # Convert back to numpy arrays
+            target_original_img_array = np.array(original_resized)
+            target_artifact_img_array = np.array(artifact_resized)
+            
+            # Convert back to original data type if needed
+            if original_img_array.dtype in (np.float32, np.float64):
+                target_original_img_array = target_original_img_array.astype(original_img_array.dtype) / 255.0
+                target_artifact_img_array = target_artifact_img_array.astype(original_img_array.dtype) / 255.0
+            
             # 1. Original image with target region masked out (filled with black)
             masked_original_img_array = original_img_array.copy()
             masked_original_img_array[binary_mask] = 0
-            
-            # 2. Original image with only target region visible (everything else black)
-            target_original_img_array = np.zeros_like(original_img_array)
-            target_original_img_array[binary_mask] = original_img_array[binary_mask]
-            
-            # 3. Artifact image with only target region visible (everything else black)
-            target_artifact_img_array = np.zeros_like(artifact_img_array)
-            target_artifact_img_array[binary_mask] = artifact_img_array[binary_mask]
             
             # Create object name description
             entity = artifact['entity']
@@ -419,10 +552,11 @@ class UnifiedDataPipeline:
                     
                     passed = result.has_artifact
                     explanation = result.explanation
+                    label = result.label
                     
                     logger.info(f"{artifact_type} artifact {artifact_idx}: {'PASSED' if passed else 'FAILED'}")
                     logger.info(f"  Explanation: {explanation}")
-
+                    logger.info(f"  Label: {label}")
                 else:  # distortion - already passed LPIPS, just generate explanation
                     kernel_type = artifact['distortion_kernel']
                     
@@ -437,10 +571,12 @@ class UnifiedDataPipeline:
                         thread_money_manager
                     )
                     explanation = result.explanation
+                    label = result.label
                     passed = True  # Already passed LPIPS test
                     
                     logger.info(f"Distortion artifact {artifact_idx} with {kernel_type}: PASSED (pre-filtered by LPIPS)")
                     logger.info(f"  Explanation: {explanation}")
+                    logger.info(f"  Label: {label}")
                 
                 # If this artifact failed, entire experiment fails
                 if not passed:
@@ -454,12 +590,14 @@ class UnifiedDataPipeline:
                         'processed_artifacts': len(processed_artifacts),
                         'metadata': metadata,
                         'artifact_image_path': str(artifact_image),
-                        'explanation_attempt': explanation if 'explanation' in locals() else ""
+                        'explanation_attempt': explanation if 'explanation' in locals() else "",
+                        'label_attempt': label if 'label' in locals() else ""
                     }
                     return False, thread_money_manager.total_cost, None, discarded_data
                 
                 # Add explanation to artifact metadata
                 artifact['explanation'] = explanation
+                artifact['label'] = label
                 processed_artifacts.append(artifact)
                 
             except Exception as e:
@@ -481,11 +619,27 @@ class UnifiedDataPipeline:
         if all_artifacts_passed and processed_artifacts:
             # Update metadata with all processed artifacts
             metadata['artifacts'] = processed_artifacts
+
+            artifact_list = [
+                f"bbox:{artifact['target_bbox']} description:{artifact['explanation']}"
+                for artifact in processed_artifacts
+            ]
+
+            caption = artifact_explanation(
+                thread_client,
+                original_img_array,
+                artifact_img_array,
+                artifact_list,
+                thread_money_manager
+            )
             
+            metadata['caption'] = caption
             results = {
                 'metadata': metadata,
-                'artifact_image': artifact_image
+                'artifact_image': artifact_image,
             }
+
+
             
             with self.results_lock:
                 self.filtered_results[exp_id] = results
@@ -512,7 +666,7 @@ class UnifiedDataPipeline:
         print(f"Saving experiment {exp_id}...")
         
         # Create experiment directory in output
-        exp_output_dir = self.output_dir / f"filtered_{exp_id}"
+        exp_output_dir = self.output_dir / f"{exp_id}"
         exp_output_dir.mkdir(exist_ok=True)
         
         # Get metadata
@@ -535,21 +689,25 @@ class UnifiedDataPipeline:
             print(f"  Copied comparison image: {comparison_image}")
         
         # 4. Create metadata dictionary with explanations
-        metadata_dict = []
+        metadata_dict = {}
+        artifact_list = []
         for artifact in metadata['artifacts']:
             metadata_entry = {
                 "target_bbox": artifact['target_bbox'],
                 "artifact_type": artifact['artifact_type'],
                 "entity": artifact['entity'],
                 "artifact_entity": artifact['fused_entity'] if artifact['artifact_type'] == 'fusion' else artifact['subentity'],
-                "explanation": artifact['explanation']  # Include explanation
+                "explanation": artifact['explanation'],  # Include explanation
+                "label": artifact['label']
             }
             
             # Add distortion kernel if applicable
             if artifact['artifact_type'] == 'distortion':
                 metadata_entry["distortion_kernel"] = artifact['distortion_kernel']
             
-            metadata_dict.append(metadata_entry)
+            artifact_list.append(metadata_entry)
+        metadata_dict['artifacts'] = artifact_list
+        metadata_dict['caption'] = metadata['caption']
         
         # Save JSON file with explanations
         json_file_path = exp_output_dir / "metadata.json"
@@ -612,7 +770,7 @@ class UnifiedDataPipeline:
             
             # List each artifact with its explanation
             for i, artifact in enumerate(results['metadata']['artifacts']):
-                f.write(f"  - Artifact {i+1}: {artifact['artifact_type']} - {artifact['explanation'][:100]}...\n")
+                f.write(f"  - Artifact {i+1}: {artifact['artifact_type']} - {artifact['explanation'][:100]}... {artifact['label']}\n")
             f.write("\n")
     
     def run_pipeline(self):
