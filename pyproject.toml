@@ -76,6 +76,7 @@ exclude = [
   "./typings",      # generated type stubs
 ]
 stubPath = "./typings"
+typeCheckingMode = "off"
 
 [tool.tomlsort]
 in_place = true

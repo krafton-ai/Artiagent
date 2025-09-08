@@ -15,6 +15,12 @@ loki/
 src/train/LLaMA-Factory/data
 src/GroundingDINO/build/
 data/eval_coco_animals/
+src/notebooks/annotations
+*.zip
+src/notebooks/testing*
+
+
+
 # Environment files (contains sensitive data)
 .env
 .env.local
