@@ -425,96 +425,68 @@ class ImageNetDataLoader:
 
 
 class CustomDirectoryDataLoader:
-    """Handler for custom directory structure with images organized in subdirectories"""
+    """Handler for custom directory structure with images directly in a single directory"""
     
     def __init__(self, dataset_path: str):
         """
         Initialize custom directory data loader
         
         Args:
-            dataset_path: Path to root directory containing subdirectories with images
-                         Expected structure: dataset_path/class1/*.jpg, dataset_path/class2/*.jpg, etc.
+            dataset_path: Path to directory containing images directly
+                         Expected structure: dataset_path/*.jpg, dataset_path/*.png, etc.
         """
         self.dataset_path = dataset_path
         
         if not os.path.exists(dataset_path):
             raise ValueError(f"Dataset path does not exist: {dataset_path}")
         
-        # Build image index from subdirectories
+        # Build image index from directory
         self._build_image_index()
         
-        if not self.class_names:
-            raise ValueError(f"No subdirectories with images found in {dataset_path}")
+        if not self.image_paths:
+            raise ValueError(f"No images found in {dataset_path}")
     
     def _build_image_index(self):
-        """Build index of all images organized by class (subdirectory)"""
-        self.image_index = {}
-        self.class_names = []
+        """Build index of all images in the directory"""
+        self.image_paths = []
         
-        # Get all subdirectories
-        subdirs = [d for d in os.listdir(self.dataset_path) 
-                  if os.path.isdir(os.path.join(self.dataset_path, d))]
+        # Support common image formats
+        for ext in ['*.jpg', '*.jpeg', '*.JPG', '*.JPEG', '*.png', '*.PNG', 
+                   '*.bmp', '*.BMP', '*.tiff', '*.TIFF', '*.tif', '*.TIF']:
+            self.image_paths.extend(glob.glob(os.path.join(self.dataset_path, ext)))
         
-        for subdir in subdirs:
-            subdir_path = os.path.join(self.dataset_path, subdir)
-            image_files = []
-            
-            # Support common image formats
-            for ext in ['*.jpg', '*.jpeg', '*.JPG', '*.JPEG', '*.png', '*.PNG', 
-                       '*.bmp', '*.BMP', '*.tiff', '*.TIFF', '*.tif', '*.TIF']:
-                image_files.extend(glob.glob(os.path.join(subdir_path, ext)))
-            
-            # Only include subdirectories that contain images
-            if image_files:
-                self.image_index[subdir] = image_files
-                self.class_names.append(subdir)
-        
-        self.class_names.sort()  # Sort for consistent ordering
+        self.image_paths.sort()  # Sort for consistent ordering
     
-    def get_class_names(self) -> List[str]:
+    def get_image_count(self) -> int:
         """
-        Get all available class names (subdirectory names)
+        Get total number of images in the directory
         
         Returns:
-            List of class names
+            Number of images
         """
-        return self.class_names.copy()
+        return len(self.image_paths)
     
-    def get_class_stats(self) -> Dict[str, int]:
+    def get_all_image_paths(self) -> List[str]:
         """
-        Get statistics about number of images per class
+        Get all image paths in the directory
         
         Returns:
-            Dictionary mapping class names to image counts
+            List of image paths
         """
-        return {class_name: len(images) for class_name, images in self.image_index.items()}
+        return self.image_paths.copy()
     
-    def sample_image_by_class(self, class_names: List[str] = None) -> Tuple[Dict, np.ndarray, str]:
+    def sample_random_image(self) -> Tuple[Dict, np.ndarray]:
         """
-        Sample a random image from specified classes
+        Sample a random image from the directory
         
-        Args:
-            class_names: List of class names to sample from. If None, samples from all classes.
-            
         Returns:
-            Tuple of (image_info, image_array, class_name)
+            Tuple of (image_info, image_array)
         """
-        # Determine classes to sample from
-        if class_names:
-            target_classes = [c for c in class_names if c in self.class_names]
-            if not target_classes:
-                raise ValueError(f"No matching classes found. Available classes: {self.class_names}")
-        else:
-            target_classes = self.class_names
+        if not self.image_paths:
+            raise ValueError("No images available to sample")
         
-        # Sample random class
-        sampled_class = np.random.choice(target_classes)
-        
-        # Sample random image from the class
-        if not self.image_index[sampled_class]:
-            raise ValueError(f"No images found for class {sampled_class}")
-        
-        sampled_image_path = np.random.choice(self.image_index[sampled_class])
+        # Sample random image path
+        sampled_image_path = np.random.choice(self.image_paths)
         
         # Load and preprocess image
         img_array = self._load_and_preprocess_image(sampled_image_path)
@@ -523,33 +495,27 @@ class CustomDirectoryDataLoader:
         img_info = {
             'file_name': os.path.basename(sampled_image_path),
             'file_path': sampled_image_path,
-            'class_name': sampled_class,
             'height': img_array.shape[0],
             'width': img_array.shape[1]
         }
         
-        return img_info, img_array, sampled_class
+        return img_info, img_array
     
-    def sample_images_from_class(self, class_name: str, num_samples: int = 1) -> List[Tuple[Dict, np.ndarray, str]]:
+    def sample_multiple_images(self, num_samples: int = 1) -> List[Tuple[Dict, np.ndarray]]:
         """
-        Sample multiple images from a specific class
+        Sample multiple images from the directory
         
         Args:
-            class_name: Name of the class to sample from
             num_samples: Number of images to sample
             
         Returns:
-            List of tuples (image_info, image_array, class_name)
+            List of tuples (image_info, image_array)
         """
-        if class_name not in self.class_names:
-            raise ValueError(f"Class '{class_name}' not found. Available classes: {self.class_names}")
-        
-        available_images = self.image_index[class_name]
-        if num_samples > len(available_images):
-            raise ValueError(f"Requested {num_samples} samples but only {len(available_images)} images available for class '{class_name}'")
+        if num_samples > len(self.image_paths):
+            raise ValueError(f"Requested {num_samples} samples but only {len(self.image_paths)} images available")
         
         # Sample without replacement
-        sampled_paths = np.random.choice(available_images, size=num_samples, replace=False)
+        sampled_paths = np.random.choice(self.image_paths, size=num_samples, replace=False)
         
         results = []
         for image_path in sampled_paths:
@@ -557,28 +523,12 @@ class CustomDirectoryDataLoader:
             img_info = {
                 'file_name': os.path.basename(image_path),
                 'file_path': image_path,
-                'class_name': class_name,
                 'height': img_array.shape[0],
                 'width': img_array.shape[1]
             }
-            results.append((img_info, img_array, class_name))
+            results.append((img_info, img_array))
         
         return results
-    
-    def get_all_images_from_class(self, class_name: str) -> List[str]:
-        """
-        Get all image paths for a specific class
-        
-        Args:
-            class_name: Name of the class
-            
-        Returns:
-            List of image paths
-        """
-        if class_name not in self.class_names:
-            raise ValueError(f"Class '{class_name}' not found. Available classes: {self.class_names}")
-        
-        return self.image_index[class_name].copy()
     
     def load_image_by_path(self, image_path: str) -> np.ndarray:
         """
@@ -627,41 +577,20 @@ class CustomDirectoryDataLoader:
         
         return img_array
     
-    def create_class_directories(self, output_base_path: str):
+    def load_image_by_info(self, img_info: Dict) -> np.ndarray:
         """
-        Create output directories for each class
+        Load image by image info dictionary
         
         Args:
-            output_base_path: Base directory to create class folders in
-        """
-        for class_name in self.class_names:
-            pathlib.Path(os.path.join(output_base_path, class_name)).mkdir(parents=True, exist_ok=True)
-    
-    def get_random_sample_from_each_class(self) -> List[Tuple[Dict, np.ndarray, str]]:
-        """
-        Get one random sample from each class
-        
-        Returns:
-            List of tuples (image_info, image_array, class_name) for each class
-        """
-        results = []
-        for class_name in self.class_names:
-            img_info, img_array, class_name = self.sample_image_by_class([class_name])
-            results.append((img_info, img_array, class_name))
-        return results
-    
-    def get_image_caption(self, img_info: Dict) -> str:
-        """
-        Get caption for a specific image based on its class name
-        
-        Args:
-            img_info: Image info dictionary containing class_name
+            img_info: Dictionary containing 'file_path' key
             
         Returns:
-            Simple caption string based on class name
+            Preprocessed image array
         """
-        class_name = img_info.get('class_name', 'unknown')
-        return f"A photo of a {class_name}"
+        image_path = img_info.get('file_path')
+        if not image_path:
+            raise ValueError("Image info must contain 'file_path' key")
+        return self._load_and_preprocess_image(image_path)
     
 
 def _get_coco_image_list(
@@ -771,47 +700,33 @@ def _get_custom_image_list(
     
     Args:
         data_loader: Custom directory data loader instance
-        categories: List of categories to process
+        categories: List of categories (ignored for flat directory structure)
         max_images: Maximum number of images to process
         logger: Logger instance
         
     Returns:
         List of image information dictionaries
     """
-    # Get all available class names from the directory structure
-    available_classes = data_loader.get_class_names()
+    # Get all available image paths from the directory
+    all_image_paths = data_loader.get_all_image_paths()
     if logger:
-        logger.info(f"Available classes in custom dataset: {available_classes}")
+        logger.info(f"Found {len(all_image_paths)} images in custom dataset directory")
     
-    # Filter categories to only include those available in the dataset
-    target_classes = [cls for cls in categories if cls in available_classes]
-    if not target_classes:
+    # Limit images if max_images is specified
+    if max_images and max_images < len(all_image_paths):
+        all_image_paths = all_image_paths[:max_images]
         if logger:
-            logger.warning(
-                f"None of the specified categories {categories} found in dataset. "
-                f"Available: {available_classes}"
-            )
-        target_classes = available_classes  # Use all available classes
+            logger.info(f"Limited to first {max_images} images")
     
-    if logger:
-        logger.info(f"Processing classes: {target_classes}")
-    
+    # Create image info list
     image_list = []
-    for class_name in target_classes:
-        image_paths = data_loader.get_all_images_from_class(class_name)
-        for img_path in image_paths:
-            img_info = {
-                'id': hash(img_path) % 1000000,  # Generate unique ID
-                'file_name': os.path.basename(img_path),
-                'file_path': img_path,
-                'class_name': class_name
-            }
-            image_list.append(img_info)
-            
-            if max_images and len(image_list) >= max_images:
-                break
-        if max_images and len(image_list) >= max_images:
-            break
+    for img_path in all_image_paths:
+        img_info = {
+            'id': hash(img_path) % 1000000,  # Generate unique ID
+            'file_name': os.path.basename(img_path),
+            'file_path': img_path
+        }
+        image_list.append(img_info)
     
     return image_list
 

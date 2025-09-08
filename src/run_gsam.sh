@@ -44,10 +44,10 @@ SEED=""
 # IMAGE_PATH="/home/jhpark/image-artifacts/data/eval_coco_animals"
 # IMAGENET_SPLIT="train"
 
-DATASET="coco"
-DATASET_PATH="/data3/jhpark/coco/annotations"
-IMAGE_PATH="/data3/jhpark/coco/train2017"
-IMAGENET_SPLIT="train"
+# DATASET="coco"
+# DATASET_PATH="/data3/jhpark/coco/annotations"
+# IMAGE_PATH="/data3/jhpark/coco/train2017"
+# IMAGENET_SPLIT="train"
 
 # GSAM-specific defaults
 GROUNDING_CONFIG=""
