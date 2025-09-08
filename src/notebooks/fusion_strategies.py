@@ -444,17 +444,17 @@ def strategy_4(loaded_data) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]
                     ny, nx = oy + dy, ox + dx
                     if 0 <= ny < patch_h and 0 <= nx < patch_w and (ny, nx) in foreground_set:
                         band_targets.add((ny, nx))
-    
+
     if not band_targets:
         return [], []
-    
+
     # Choose seeds from overlap_set using farthest-point sampling
     overlap_list = list(overlap_set)
     seeds = _farthest_point_sampling(overlap_list, k_seeds)
     
     if not seeds:
         return [], []
-    
+
     # Partition band into Voronoi regions
     regions = {seed: [] for seed in seeds}
     for patch in band_targets:
@@ -629,7 +629,7 @@ def strategy_5(loaded_data) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]
 
     target_coords_final: List[Tuple[int, int]] = []
     reference_coords_final: List[Tuple[int, int]] = []
-
+    
     # Helper: nearest in non-overlap foreground (exclude overlap as reference)
     def _nearest_non_overlap(p: Tuple[int, int]) -> Tuple[int, int]:
         if not non_overlap_foreground:
@@ -698,5 +698,789 @@ def strategy_5(loaded_data) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]
             for py, px in region_patches:
                 target_coords_final.append((py, px))
                 reference_coords_final.append(_nearest_non_overlap((py, px)))
+
+    return target_coords_final, reference_coords_final
+
+def strategy_6(loaded_data) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    data = loaded_data['step3_data_list'][0]
+    H, W = loaded_data['img_array'].shape[0], loaded_data['img_array'].shape[1]
+
+    patch_size = 16
+    patch_h = H // patch_size
+    patch_w = W // patch_size
+
+    # Build sets
+    A_set = set(tuple(coord) for coord in data['mask_A_patch_coords'])
+    B_set = set(tuple(coord) for coord in data['mask_B_patch_coords'])
+    overlap_set = set(tuple(coord) for coord in data['overlap_patch_coords'])
+    foreground_set = A_set | B_set
+
+    # Non-overlap pools
+    A_only = A_set - overlap_set
+    B_only = B_set - overlap_set
+    non_overlap_foreground = foreground_set - overlap_set
+
+    if not overlap_set:
+        return [], []
+
+    band_R = 2
+    k_seeds = 5
+    rng = random.Random(2025)
+
+    def _manhattan(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def _farthest_point_sampling(points: List[Tuple[int, int]], k: int) -> List[Tuple[int, int]]:
+        if not points or k <= 0:
+            return []
+        pts = list(points)
+        if k >= len(pts):
+            return pts
+        cy = sum(p[0] for p in pts) / len(pts)
+        cx = sum(p[1] for p in pts) / len(pts)
+        start = min(pts, key=lambda p: (p[0] - cy)**2 + (p[1] - cx)**2)
+        seeds = [start]
+        if k <= 1:
+            return seeds
+        min_distances = {p: _manhattan(p, start) for p in pts}
+        for _ in range(1, k):
+            nxt = max(pts, key=lambda p: min_distances[p])
+            seeds.append(nxt)
+            for p in pts:
+                d = _manhattan(p, nxt)
+                if d < min_distances[p]:
+                    min_distances[p] = d
+        return seeds
+
+    # Build target region: band around overlap_set with Manhattan distance ≤ band_R
+    band_targets = set()
+    for oy, ox in overlap_set:
+        for dy in range(-band_R, band_R + 1):
+            for dx in range(-band_R, band_R + 1):
+                if _manhattan((0, 0), (dy, dx)) <= band_R:
+                    ny, nx = oy + dy, ox + dx
+                    if 0 <= ny < patch_h and 0 <= nx < patch_w and (ny, nx) in foreground_set:
+                        band_targets.add((ny, nx))
+
+    if not band_targets:
+        return [], []
+
+    # Seeds chosen from the overlap (centers) to partition the band
+    seeds = _farthest_point_sampling(list(overlap_set), k_seeds)
+    if not seeds:
+        return [], []
+
+    # Voronoi partition of the band
+    regions = {seed: [] for seed in seeds}
+    for patch in band_targets:
+        nearest_seed = min(seeds, key=lambda s: _manhattan(patch, s))
+        regions[nearest_seed].append(patch)
+
+    # Candidate offsets in increasing L1 radius (1..4)
+    candidate_offsets = []
+    for l1_dist in range(1, 5):
+        for dy in range(-l1_dist, l1_dist + 1):
+            for dx in range(-l1_dist, l1_dist + 1):
+                if _manhattan((0, 0), (dy, dx)) == l1_dist:
+                    candidate_offsets.append((dy, dx))
+
+    target_coords_final: List[Tuple[int, int]] = []
+    reference_coords_final: List[Tuple[int, int]] = []
+    
+    # Helper: nearest in non-overlap foreground (exclude overlap as reference)
+    def _nearest_non_overlap(p: Tuple[int, int]) -> Tuple[int, int]:
+        if not non_overlap_foreground:
+            return p  # last resort
+        return min(non_overlap_foreground, key=lambda q: _manhattan(p, q))
+
+    for seed in seeds:
+        region_patches = regions[seed]
+        if not region_patches:
+            continue
+
+        # --- Primary attempt: a single offset that maps the entire region
+        #     into A_only OR entirely into B_only (i.e., never overlap).
+        valid_offset = None
+        for dy, dx in candidate_offsets:
+            shifted = [(py + dy, px + dx) for (py, px) in region_patches]
+            # bounds
+            if not all(0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted):
+                continue
+            shifted_set = set(shifted)
+            if shifted_set.issubset(A_only) or shifted_set.issubset(B_only):
+                valid_offset = (dy, dx)
+                break
+
+        if valid_offset is not None:
+            dy, dx = valid_offset
+            for py, px in region_patches:
+                target_coords_final.append((py, px))
+                reference_coords_final.append((py + dy, px + dx))
+            continue
+
+        # --- Fallback: choose the offset that maps the MAX number of patches
+        #     into non-overlap (any entity, but NOT overlap), apply to those;
+        #     for the remainder, map to nearest non-overlap patch.
+        best_offset = None
+        best_mapped_count = -1
+        best_mapped_mask = None  # list[bool] parallel to region_patches
+
+        for dy, dx in candidate_offsets:
+            shifted = [(py + dy, px + dx) for (py, px) in region_patches]
+            # bounds mask
+            in_bounds = [0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted]
+            # non-overlap mask (also implies foreground)
+            non_overlap_mask = [
+                in_bounds[i] and (shifted[i] in non_overlap_foreground)
+                for i in range(len(shifted))
+            ]
+            mapped_count = sum(non_overlap_mask)
+            if mapped_count > best_mapped_count:
+                best_mapped_count = mapped_count
+                best_offset = (dy, dx)
+                best_mapped_mask = non_overlap_mask
+
+        if best_offset is not None and best_mapped_count > 0:
+            dy, dx = best_offset
+            for i, (py, px) in enumerate(region_patches):
+                target_coords_final.append((py, px))
+                if best_mapped_mask[i]:  # pyright: ignore[reportOptionalSubscript]
+                    # Use offset-mapped non-overlap reference
+                    reference_coords_final.append((py + dy, px + dx))
+                else:
+                    # Fill with nearest non-overlap reference (never overlap)
+                    reference_coords_final.append(_nearest_non_overlap((py, px)))
+        else:
+            # Nothing could be offset into non-overlap → all via nearest non-overlap
+            for py, px in region_patches:
+                target_coords_final.append((py, px))
+                reference_coords_final.append(_nearest_non_overlap((py, px)))
+
+    # --- Symmetric augmentation: add reversed mappings (ref -> target)
+    # Avoid duplicate target patches.
+    existing_targets = set(target_coords_final)
+    original_pairs = list(zip(target_coords_final, reference_coords_final))
+    for tgt, ref in original_pairs:
+        if ref not in existing_targets:
+            target_coords_final.append(ref)
+            reference_coords_final.append(tgt)
+            existing_targets.add(ref)
+    num_new_targets = len(target_coords_final) - len(original_pairs)
+    ratio_new_targets = num_new_targets / len(target_coords_final) if target_coords_final else 0
+    print(f"Ratio of newly added targets: {ratio_new_targets:.4f}")
+
+    return target_coords_final, reference_coords_final
+
+def strategy_7(loaded_data) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    data = loaded_data['step3_data_list'][0]
+    H, W = loaded_data['img_array'].shape[0], loaded_data['img_array'].shape[1]
+
+    patch_size = 16
+    patch_h = H // patch_size
+    patch_w = W // patch_size
+
+    # Build sets
+    A_set = set(tuple(coord) for coord in data['mask_A_patch_coords'])
+    B_set = set(tuple(coord) for coord in data['mask_B_patch_coords'])
+    overlap_set = set(tuple(coord) for coord in data['overlap_patch_coords'])
+    foreground_set = A_set | B_set
+
+    # Non-overlap pools
+    A_only = A_set - overlap_set
+    B_only = B_set - overlap_set
+    non_overlap_foreground = foreground_set - overlap_set
+
+    if not overlap_set:
+        return [], []
+
+    band_R = 2
+    k_seeds = 5
+    rng = random.Random(2025)
+
+    def _manhattan(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def _farthest_point_sampling(points: List[Tuple[int, int]], k: int) -> List[Tuple[int, int]]:
+        if not points or k <= 0:
+            return []
+        pts = list(points)
+        if k >= len(pts):
+            return pts
+        cy = sum(p[0] for p in pts) / len(pts)
+        cx = sum(p[1] for p in pts) / len(pts)
+        start = min(pts, key=lambda p: (p[0] - cy)**2 + (p[1] - cx)**2)
+        seeds = [start]
+        if k <= 1:
+            return seeds
+        min_distances = {p: _manhattan(p, start) for p in pts}
+        for _ in range(1, k):
+            nxt = max(pts, key=lambda p: min_distances[p])
+            seeds.append(nxt)
+            for p in pts:
+                d = _manhattan(p, nxt)
+                if d < min_distances[p]:
+                    min_distances[p] = d
+        return seeds
+
+    # Build target region: band around overlap_set with Manhattan distance ≤ band_R
+    band_targets = set()
+    for oy, ox in overlap_set:
+        for dy in range(-band_R, band_R + 1):
+            for dx in range(-band_R, band_R + 1):
+                if _manhattan((0, 0), (dy, dx)) <= band_R:
+                    ny, nx = oy + dy, ox + dx
+                    if 0 <= ny < patch_h and 0 <= nx < patch_w and (ny, nx) in foreground_set:
+                        band_targets.add((ny, nx))
+
+    if not band_targets:
+        return [], []
+
+    # Seeds chosen from the overlap (centers) to partition the band
+    seeds = _farthest_point_sampling(list(band_targets), k_seeds)
+    if not seeds:
+        return [], []
+
+    # Determine which entity each seed is closer to
+    def _get_seed_entity(seed: Tuple[int, int]) -> str:
+        if not A_only and not B_only:
+            return 'neutral'
+        
+        dist_to_A = min([_manhattan(seed, a) for a in A_only]) if A_only else float('inf')
+        dist_to_B = min([_manhattan(seed, b) for b in B_only]) if B_only else float('inf')
+        
+        if dist_to_A < dist_to_B:
+            return 'A'
+        elif dist_to_B < dist_to_A:
+            return 'B'
+        else:
+            return 'neutral'
+
+    seed_entities = {seed: _get_seed_entity(seed) for seed in seeds}
+
+    # Voronoi partition of the band
+    regions = {seed: [] for seed in seeds}
+    for patch in band_targets:
+        nearest_seed = min(seeds, key=lambda s: _manhattan(patch, s))
+        regions[nearest_seed].append(patch)
+
+    # Candidate offsets in increasing L1 radius (1..4)
+    candidate_offsets = []
+    for l1_dist in range(1, 5):
+        for dy in range(-l1_dist, l1_dist + 1):
+            for dx in range(-l1_dist, l1_dist + 1):
+                if _manhattan((0, 0), (dy, dx)) == l1_dist:
+                    candidate_offsets.append((dy, dx))
+
+    target_coords_final: List[Tuple[int, int]] = []
+    reference_coords_final: List[Tuple[int, int]] = []
+
+    # Helper: nearest in non-overlap foreground (exclude overlap as reference)
+    def _nearest_non_overlap(p: Tuple[int, int]) -> Tuple[int, int]:
+        if not non_overlap_foreground:
+            return p  # last resort
+        return min(non_overlap_foreground, key=lambda q: _manhattan(p, q))
+
+    # Helper: nearest in opposite entity
+    def _nearest_opposite_entity(p: Tuple[int, int], seed_entity: str) -> Tuple[int, int]:
+        if seed_entity == 'A' and B_only:
+            return min(B_only, key=lambda q: _manhattan(p, q))
+        elif seed_entity == 'B' and A_only:
+            return min(A_only, key=lambda q: _manhattan(p, q))
+        else:
+            # Fallback to any non-overlap
+            return _nearest_non_overlap(p)
+
+    for seed in seeds:
+        region_patches = regions[seed]
+        if not region_patches:
+            continue
+
+        seed_entity = seed_entities[seed]
+        
+        # Determine target entity for references based on seed entity
+        if seed_entity == 'A':
+            target_entity_set = B_only
+        elif seed_entity == 'B':
+            target_entity_set = A_only
+        else:
+            # Neutral case - use either entity
+            target_entity_set = non_overlap_foreground
+
+        # --- Primary attempt: a single offset that maps the entire region
+        #     into the opposite entity only AND doesn't overlap with target patches
+        valid_offset = None
+        for dy, dx in candidate_offsets:
+            shifted = [(py + dy, px + dx) for (py, px) in region_patches]
+            # bounds
+            if not all(0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted):
+                continue
+            shifted_set = set(shifted)
+            # Check that shifted patches are in target entity AND don't overlap with any target patches
+            if shifted_set.issubset(target_entity_set) and not shifted_set.intersection(band_targets):
+                valid_offset = (dy, dx)
+                break
+
+        if valid_offset is not None:
+            dy, dx = valid_offset
+            for py, px in region_patches:
+                target_coords_final.append((py, px))
+                reference_coords_final.append((py + dy, px + dx))
+            continue
+
+        # --- Fallback: choose the offset that maps the MAX number of patches
+        #     into the opposite entity without overlapping target patches
+        best_offset = None
+        best_mapped_count = -1
+        best_mapped_mask = None  # list[bool] parallel to region_patches
+
+        for dy, dx in candidate_offsets:
+            shifted = [(py + dy, px + dx) for (py, px) in region_patches]
+            # bounds mask
+            in_bounds = [0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted]
+            # opposite entity mask AND not in target patches
+            opposite_entity_mask = [
+                in_bounds[i] and (shifted[i] in target_entity_set) and (shifted[i] not in band_targets)
+                for i in range(len(shifted))
+            ]
+            mapped_count = sum(opposite_entity_mask)
+            if mapped_count > best_mapped_count:
+                best_mapped_count = mapped_count
+                best_offset = (dy, dx)
+                best_mapped_mask = opposite_entity_mask
+
+        if best_offset is not None and best_mapped_count > 0:
+            dy, dx = best_offset
+            for i, (py, px) in enumerate(region_patches):
+                target_coords_final.append((py, px))
+                if best_mapped_mask[i]:  # pyright: ignore[reportOptionalSubscript]
+                    # Use offset-mapped opposite entity reference
+                    reference_coords_final.append((py + dy, px + dx))
+                else:
+                    # Fill with nearest opposite entity reference
+                    nearest = _nearest_opposite_entity((py, px), seed_entity)
+                    # Make sure the nearest reference isn't in the target set
+                    attempts = 0
+                    candidates = list(target_entity_set - band_targets)
+                    while nearest in band_targets and attempts < 5 and candidates:
+                        # Try to find another reference not in target set
+                        nearest = min(candidates, key=lambda q: _manhattan((py, px), q))
+                        candidates.remove(nearest)
+                        attempts += 1
+                    reference_coords_final.append(nearest)
+        else:
+            # Nothing could be offset into opposite entity → all via nearest opposite entity
+            for py, px in region_patches:
+                target_coords_final.append((py, px))
+                nearest = _nearest_opposite_entity((py, px), seed_entity)
+                # Make sure the nearest reference isn't in the target set
+                attempts = 0
+                candidates = list(target_entity_set - band_targets)
+                while nearest in band_targets and attempts < 5 and candidates:
+                    # Try to find another reference not in target set
+                    nearest = min(candidates, key=lambda q: _manhattan((py, px), q))
+                    candidates.remove(nearest)
+                    attempts += 1
+                reference_coords_final.append(nearest)
+
+    return target_coords_final, reference_coords_final
+
+def strategy_8(loaded_data) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    data = loaded_data['step3_data_list'][0]
+    H, W = loaded_data['img_array'].shape[0], loaded_data['img_array'].shape[1]
+
+    patch_size = 16
+    patch_h = H // patch_size
+    patch_w = W // patch_size
+
+    # Build sets
+    A_set = set(tuple(coord) for coord in data['mask_A_patch_coords'])
+    B_set = set(tuple(coord) for coord in data['mask_B_patch_coords'])
+    overlap_set = set(tuple(coord) for coord in data['overlap_patch_coords'])
+    foreground_set = A_set | B_set
+
+    # Non-overlap pools
+    A_only = A_set - overlap_set
+    B_only = B_set - overlap_set
+    non_overlap_foreground = foreground_set - overlap_set
+
+    if not overlap_set:
+        return [], []
+
+    band_R = 2
+    k_seeds = 5
+    rng = random.Random(2025)
+
+    def _manhattan(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def _farthest_point_sampling(points: List[Tuple[int, int]], k: int) -> List[Tuple[int, int]]:
+        if not points or k <= 0:
+            return []
+        pts = list(points)
+        if k >= len(pts):
+            return pts
+        cy = sum(p[0] for p in pts) / len(pts)
+        cx = sum(p[1] for p in pts) / len(pts)
+        start = min(pts, key=lambda p: (p[0] - cy)**2 + (p[1] - cx)**2)
+        seeds = [start]
+        if k <= 1:
+            return seeds
+        min_distances = {p: _manhattan(p, start) for p in pts}
+        for _ in range(1, k):
+            nxt = max(pts, key=lambda p: min_distances[p])
+            seeds.append(nxt)
+            for p in pts:
+                d = _manhattan(p, nxt)
+                if d < min_distances[p]:
+                    min_distances[p] = d
+        return seeds
+
+    # Build target region: band around overlap_set with Manhattan distance ≤ band_R
+    band_targets = set()
+    for oy, ox in overlap_set:
+        for dy in range(-band_R, band_R + 1):
+            for dx in range(-band_R, band_R + 1):
+                if _manhattan((0, 0), (dy, dx)) <= band_R:
+                    ny, nx = oy + dy, ox + dx
+                    if 0 <= ny < patch_h and 0 <= nx < patch_w and (ny, nx) in foreground_set:
+                        band_targets.add((ny, nx))
+
+    if not band_targets:
+        return [], []
+
+    # Seeds chosen from the overlap (centers) to partition the band
+    seeds = _farthest_point_sampling(list(overlap_set), k_seeds)
+    if not seeds:
+        return [], []
+
+    # Voronoi partition of the band
+    regions = {seed: [] for seed in seeds}
+    for patch in band_targets:
+        nearest_seed = min(seeds, key=lambda s: _manhattan(patch, s))
+        regions[nearest_seed].append(patch)
+
+    # Candidate offsets in increasing L1 radius (1..4)
+    candidate_offsets = []
+    for l1_dist in range(1, 5):
+        for dy in range(-l1_dist, l1_dist + 1):
+            for dx in range(-l1_dist, l1_dist + 1):
+                if _manhattan((0, 0), (dy, dx)) == l1_dist:
+                    candidate_offsets.append((dy, dx))
+
+    target_coords_final: List[Tuple[int, int]] = []
+    reference_coords_final: List[Tuple[int, int]] = []
+    
+    # Helper: nearest in non-overlap foreground (exclude overlap as reference)
+    def _nearest_non_overlap(p: Tuple[int, int]) -> Tuple[int, int]:
+        if not non_overlap_foreground:
+            return p  # last resort
+        return min(non_overlap_foreground, key=lambda q: _manhattan(p, q))
+
+    for seed in seeds:
+        region_patches = regions[seed]
+        if not region_patches:
+            continue
+
+        # --- Primary attempt: a single offset that maps the entire region
+        #     into A_only OR entirely into B_only (i.e., never overlap).
+        valid_offset = None
+        for dy, dx in candidate_offsets:
+            shifted = [(py + dy, px + dx) for (py, px) in region_patches]
+            # bounds check
+            if not all(0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted):
+                continue
+            shifted_set = set(shifted)
+            
+            # NEW: Check if shifted_set overlaps with band_targets - skip if it does
+            if shifted_set & band_targets:
+                continue
+                
+            # Check if shifted_set is entirely in A_only or B_only
+            if shifted_set.issubset(A_only) or shifted_set.issubset(B_only):
+                valid_offset = (dy, dx)
+                break
+
+        if valid_offset is not None:
+            dy, dx = valid_offset
+            for py, px in region_patches:
+                target_coords_final.append((py, px))
+                reference_coords_final.append((py + dy, px + dx))
+            continue
+
+        # --- Fallback: choose the offset that maps the MAX number of patches
+        #     into non-overlap (any entity, but NOT overlap), apply to those;
+        #     for the remainder, map to nearest non-overlap patch.
+        best_offset = None
+        best_mapped_count = -1
+        best_mapped_mask = None  # list[bool] parallel to region_patches
+
+        for dy, dx in candidate_offsets:
+            shifted = [(py + dy, px + dx) for (py, px) in region_patches]
+            # bounds mask
+            in_bounds = [0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted]
+            # non-overlap mask (also implies foreground)
+            non_overlap_mask = [
+                in_bounds[i] and (shifted[i] in non_overlap_foreground)
+                for i in range(len(shifted))
+            ]
+            mapped_count = sum(non_overlap_mask)
+            if mapped_count > best_mapped_count:
+                best_mapped_count = mapped_count
+                best_offset = (dy, dx)
+                best_mapped_mask = non_overlap_mask
+
+        if best_offset is not None and best_mapped_count > 0:
+            dy, dx = best_offset
+            for i, (py, px) in enumerate(region_patches):
+                target_coords_final.append((py, px))
+                if best_mapped_mask[i]:  # pyright: ignore[reportOptionalSubscript]
+                    # Use offset-mapped non-overlap reference
+                    reference_coords_final.append((py + dy, px + dx))
+                else:
+                    # Fill with nearest non-overlap reference (never overlap)
+                    reference_coords_final.append(_nearest_non_overlap((py, px)))
+        else:
+            # Nothing could be offset into non-overlap → all via nearest non-overlap
+            for py, px in region_patches:
+                target_coords_final.append((py, px))
+                reference_coords_final.append(_nearest_non_overlap((py, px)))
+
+    # --- Symmetric augmentation: add reversed mappings (ref -> target)
+    # Avoid duplicate target patches.
+    existing_targets = set(target_coords_final)
+    original_pairs = list(zip(target_coords_final, reference_coords_final))
+    for tgt, ref in original_pairs:
+        if ref not in existing_targets:
+            target_coords_final.append(ref)
+            reference_coords_final.append(tgt)
+            existing_targets.add(ref)
+    num_new_targets = len(target_coords_final) - len(original_pairs)
+    ratio_new_targets = num_new_targets / len(target_coords_final) if target_coords_final else 0
+    print(f"Ratio of newly added targets: {ratio_new_targets:.4f}")
+
+    return target_coords_final, reference_coords_final
+def strategy_9(loaded_data) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    data = loaded_data['step3_data_list'][0]
+    H, W = loaded_data['img_array'].shape[0], loaded_data['img_array'].shape[1]
+
+    patch_size = 16
+    patch_h = H // patch_size
+    patch_w = W // patch_size
+
+    # Build sets
+    A_set = set(tuple(coord) for coord in data['mask_A_patch_coords'])
+    B_set = set(tuple(coord) for coord in data['mask_B_patch_coords'])
+    overlap_set = set(tuple(coord) for coord in data['overlap_patch_coords'])
+    foreground_set = A_set | B_set
+
+    # Non-overlap pools
+    A_only = A_set - overlap_set
+    B_only = B_set - overlap_set
+    non_overlap_foreground = foreground_set - overlap_set
+
+    if not overlap_set:
+        return [], []
+
+    band_R = 1
+    k_seeds = 5
+    rng = random.Random(2025)
+
+    def _manhattan(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def _farthest_point_sampling(points: List[Tuple[int, int]], k: int) -> List[Tuple[int, int]]:
+        if not points or k <= 0:
+            return []
+        pts = list(points)
+        if k >= len(pts):
+            return pts
+        cy = sum(p[0] for p in pts) / len(pts)
+        cx = sum(p[1] for p in pts) / len(pts)
+        start = min(pts, key=lambda p: (p[0] - cy)**2 + (p[1] - cx)**2)
+        seeds = [start]
+        if k <= 1:
+            return seeds
+        min_distances = {p: _manhattan(p, start) for p in pts}
+        for _ in range(1, k):
+            nxt = max(pts, key=lambda p: min_distances[p])
+            seeds.append(nxt)
+            for p in pts:
+                d = _manhattan(p, nxt)
+                if d < min_distances[p]:
+                    min_distances[p] = d
+        return seeds
+
+    # Build target region: band around overlap_set with Manhattan distance ≤ band_R
+    band_targets = set()
+    for oy, ox in overlap_set:
+        for dy in range(-band_R, band_R + 1):
+            for dx in range(-band_R, band_R + 1):
+                if _manhattan((0, 0), (dy, dx)) <= band_R:
+                    ny, nx = oy + dy, ox + dx
+                    if 0 <= ny < patch_h and 0 <= nx < patch_w and (ny, nx) in foreground_set:
+                        band_targets.add((ny, nx))
+
+    if not band_targets:
+        return [], []
+
+    # Seeds chosen from the overlap (centers) to partition the band
+    seeds = _farthest_point_sampling(list(band_targets), k_seeds)
+    if not seeds:
+        return [], []
+
+    # Determine which entity each seed is closer to
+    def _get_seed_entity(seed: Tuple[int, int]) -> str:
+        if not A_only and not B_only:
+            return 'neutral'
+        
+        dist_to_A = min([_manhattan(seed, a) for a in A_only]) if A_only else float('inf')
+        dist_to_B = min([_manhattan(seed, b) for b in B_only]) if B_only else float('inf')
+        
+        if dist_to_A < dist_to_B:
+            return 'A'
+        elif dist_to_B < dist_to_A:
+            return 'B'
+        else:
+            return 'neutral'
+
+    seed_entities = {seed: _get_seed_entity(seed) for seed in seeds}
+
+    # Voronoi partition of the band
+    regions = {seed: [] for seed in seeds}
+    for patch in band_targets:
+        nearest_seed = min(seeds, key=lambda s: _manhattan(patch, s))
+        regions[nearest_seed].append(patch)
+
+    # Candidate offsets in increasing L1 radius (1..4)
+    candidate_offsets = []
+    for l1_dist in range(1, 5):
+        for dy in range(-l1_dist, l1_dist + 1):
+            for dx in range(-l1_dist, l1_dist + 1):
+                if _manhattan((0, 0), (dy, dx)) == l1_dist:
+                    candidate_offsets.append((dy, dx))
+
+    target_coords_final: List[Tuple[int, int]] = []
+    reference_coords_final: List[Tuple[int, int]] = []
+
+    # Helper: nearest in non-overlap foreground (exclude overlap as reference)
+    def _nearest_non_overlap(p: Tuple[int, int]) -> Tuple[int, int]:
+        if not non_overlap_foreground:
+            return p  # last resort
+        return min(non_overlap_foreground, key=lambda q: _manhattan(p, q))
+
+    # Helper: nearest in opposite entity
+    def _nearest_opposite_entity(p: Tuple[int, int], seed_entity: str) -> Tuple[int, int]:
+        if seed_entity == 'A' and B_only:
+            return min(B_only, key=lambda q: _manhattan(p, q))
+        elif seed_entity == 'B' and A_only:
+            return min(A_only, key=lambda q: _manhattan(p, q))
+        else:
+            # Fallback to any non-overlap
+            return _nearest_non_overlap(p)
+
+    for seed in seeds:
+        region_patches = regions[seed]
+        if not region_patches:
+            continue
+
+        seed_entity = seed_entities[seed]
+        
+        # Determine target entity for references based on seed entity
+        if seed_entity == 'A':
+            target_entity_set = B_only
+        elif seed_entity == 'B':
+            target_entity_set = A_only
+        else:
+            # Neutral case - use either entity
+            target_entity_set = non_overlap_foreground
+
+        # --- Primary attempt: a single offset that maps the entire region
+        #     into the opposite entity only AND doesn't overlap with target patches
+        valid_offset = None
+        for dy, dx in candidate_offsets:
+            shifted = [(py + dy, px + dx) for (py, px) in region_patches]
+            # bounds
+            if not all(0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted):
+                continue
+            shifted_set = set(shifted)
+            # Check that shifted patches are in target entity AND don't overlap with any target patches
+            if shifted_set.issubset(target_entity_set) and not shifted_set.intersection(band_targets):
+                valid_offset = (dy, dx)
+                break
+
+        if valid_offset is not None:
+            dy, dx = valid_offset
+            for py, px in region_patches:
+                target_coords_final.append((py, px))
+                reference_coords_final.append((py + dy, px + dx))
+            continue
+
+        # --- Fallback: choose the offset that maps the MAX number of patches
+        #     into the opposite entity without overlapping target patches
+        best_offset = None
+        best_mapped_count = -1
+        best_mapped_mask = None  # list[bool] parallel to region_patches
+
+        for dy, dx in candidate_offsets:
+            shifted = [(py + dy, px + dx) for (py, px) in region_patches]
+            # bounds mask
+            in_bounds = [0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted]
+            # opposite entity mask AND not in target patches
+            opposite_entity_mask = [
+                in_bounds[i] and (shifted[i] in target_entity_set) and (shifted[i] not in band_targets)
+                for i in range(len(shifted))
+            ]
+            mapped_count = sum(opposite_entity_mask)
+            if mapped_count > best_mapped_count:
+                best_mapped_count = mapped_count
+                best_offset = (dy, dx)
+                best_mapped_mask = opposite_entity_mask
+
+        if best_offset is not None and best_mapped_count > 0:
+            dy, dx = best_offset
+            for i, (py, px) in enumerate(region_patches):
+                target_coords_final.append((py, px))
+                if best_mapped_mask[i]:  # pyright: ignore[reportOptionalSubscript]
+                    # Use offset-mapped opposite entity reference
+                    reference_coords_final.append((py + dy, px + dx))
+                else:
+                    # Fill with nearest opposite entity reference
+                    nearest = _nearest_opposite_entity((py, px), seed_entity)
+                    # Make sure the nearest reference isn't in the target set
+                    attempts = 0
+                    candidates = list(target_entity_set - band_targets)
+                    while nearest in band_targets and attempts < 5 and candidates:
+                        # Try to find another reference not in target set
+                        nearest = min(candidates, key=lambda q: _manhattan((py, px), q))
+                        candidates.remove(nearest)
+                        attempts += 1
+                    reference_coords_final.append(nearest)
+        else:
+            # Nothing could be offset into opposite entity → all via nearest opposite entity
+            for py, px in region_patches:
+                target_coords_final.append((py, px))
+                nearest = _nearest_opposite_entity((py, px), seed_entity)
+                # Make sure the nearest reference isn't in the target set
+                attempts = 0
+                candidates = list(target_entity_set - band_targets)
+                while nearest in band_targets and attempts < 5 and candidates:
+                    # Try to find another reference not in target set
+                    nearest = min(candidates, key=lambda q: _manhattan((py, px), q))
+                    candidates.remove(nearest)
+                    attempts += 1
+                reference_coords_final.append(nearest)
+
+    # --- Symmetric augmentation: add reversed mappings (ref -> target)
+    # Avoid duplicate target patches.
+    existing_targets = set(target_coords_final)
+    original_pairs = list(zip(target_coords_final, reference_coords_final))
+    for tgt, ref in original_pairs:
+        if ref not in existing_targets:
+            target_coords_final.append(ref)
+            reference_coords_final.append(tgt)
+            existing_targets.add(ref)
+    num_new_targets = len(target_coords_final) - len(original_pairs)
+    ratio_new_targets = num_new_targets / len(target_coords_final) if target_coords_final else 0
+    print(f"Ratio of newly added targets: {ratio_new_targets:.4f}")
 
     return target_coords_final, reference_coords_final
