@@ -339,7 +339,7 @@ def create_artifact_annotations(
     # Handle random distortion kernel sampling
     if artifact_type == 'distortion':
         if config['random_distortion']:
-            available_kernels = ['none', 'shuffle', 'jitter', 'strip']
+            available_kernels = ['none', 'jitter', 'strip']
             distortion_kernel = random.choice(available_kernels)
             logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
         else:

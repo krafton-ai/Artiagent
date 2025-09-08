@@ -117,8 +117,9 @@ class Flux(nn.Module):
                     target_ids = artifact_data['target_patch_indices'].copy()
                     inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
                     # Accumulate IDs
-                    accumulated_target_ids.extend(target_ids)
-                    accumulated_ref_ids.extend(ref_ids)
+                    if info['inject']:
+                        accumulated_target_ids.extend(target_ids)
+                        accumulated_ref_ids.extend(ref_ids)
                 elif artifact_data['artifact_type'] == 'removal' and info['removal']:
                     ref_ids = artifact_data['reference_patch_indices'].copy()
                     target_ids = artifact_data['target_patch_indices'].copy()
@@ -128,8 +129,9 @@ class Flux(nn.Module):
                     )
                     inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
                     # Accumulate IDs (after target_ids modification)
-                    accumulated_target_ids.extend(target_ids)
-                    accumulated_ref_ids.extend(ref_ids)
+                    if info['inject']:
+                        accumulated_target_ids.extend(target_ids)
+                        accumulated_ref_ids.extend(ref_ids)
                 elif artifact_data['artifact_type'] == 'distortion' and info['distortion']:
                     ref_ids = artifact_data['reference_patch_indices'].copy()
                     target_ids = artifact_data['target_patch_indices'].copy()
@@ -140,16 +142,18 @@ class Flux(nn.Module):
                     # Ensure target_ids and ref_ids are different for distortion
                     inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
                     # Accumulate IDs (after any ref_ids modification)
-                    accumulated_target_ids.extend(target_ids)
-                    accumulated_ref_ids.extend(ref_ids)
+                    if info['inject']:
+                        accumulated_target_ids.extend(target_ids)
+                        accumulated_ref_ids.extend(ref_ids)
                 elif artifact_data['artifact_type'] == 'fusion' and info['fusion']:
                     ref_ids = artifact_data['reference_patch_indices'].copy()
                     target_ids = artifact_data['target_patch_indices'].copy()
                     # np.random.shuffle(ref_ids)
                     inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
                     # Accumulate IDs
-                    accumulated_target_ids.extend(target_ids)
-                    accumulated_ref_ids.extend(ref_ids)
+                    if info['inject']:
+                        accumulated_target_ids.extend(target_ids)
+                        accumulated_ref_ids.extend(ref_ids)
 
 
             info['patch_ids'] = accumulated_target_ids

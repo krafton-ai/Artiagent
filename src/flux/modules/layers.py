@@ -251,7 +251,6 @@ class SingleStreamBlock(nn.Module):
 
         # Save the features in the memory
 
-
         if info['inject'] and info['id'] > 19:
             feature_name = str(info['t']) + '_' + str(info['second_order']) + '_' + str(info['id']) + '_' + info['type'] + '_' + 'V'
             if info['inverse']:
@@ -262,10 +261,11 @@ class SingleStreamBlock(nn.Module):
                 mask[info['patch_ids']] = False
                 mask[:512] = False
                 keep_indices = mask.nonzero(as_tuple=True)[0]
-
-                backup = info['feature'][feature_name]
-                v[:, :, keep_indices, :] = backup[:, :, keep_indices, :]
-                v[:, :, info['patch_ids'], :] = v[:, :, info['patch_ref_ids'], :]
+                if info['inject']:
+                    backup = info['feature'][feature_name]
+                    v[:, :, keep_indices, :] = backup[:, :, keep_indices, :]
+                    if len(info['patch_ref_ids']) != 0:
+                        v[:, :, info['patch_ids'], :] = v[:, :, info['patch_ref_ids'], :]
 
         if info['inverse']:
             attn = attention(q, k, v, pe)

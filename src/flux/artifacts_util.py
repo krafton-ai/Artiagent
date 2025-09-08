@@ -366,7 +366,7 @@ def sample_closest_patch_ind(h, w, patch_indices, reference_patch_indices, patch
             # Calculate distances only to reference patch coordinates
             distances = np.abs(reference_coords[:, 0] - y) + np.abs(reference_coords[:, 1] - x)
             inv_d = 1.0 / (distances + 1e-8)
-            inv_d = np.pow(inv_d, 10)
+            inv_d = np.pow(inv_d, 2)
             p_weight = inv_d / np.sum(inv_d)
             idx = np.random.choice(len(distances), p=p_weight)
             closest_coord = tuple(reference_coords[idx])
