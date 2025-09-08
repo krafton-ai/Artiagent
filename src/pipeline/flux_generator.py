@@ -159,7 +159,10 @@ class FluxGenerator:
         artifact_data: Dict,
         source_img: Union[np.ndarray, str],
         output_dir: str = None,
-        pe_step: Optional[float] = None,
+        pe_step_addition: Optional[int] = None,
+        pe_step_removal: Optional[int] = None,
+        pe_step_distortion: Optional[int] = None,
+        pe_step_fusion: Optional[int] = None,
         inject_step: Optional[int] = None,
     ):
         """
@@ -185,7 +188,6 @@ class FluxGenerator:
         flux_args.artifact_data = artifact_data
         flux_args.source_img = source_img
         flux_args.output_dir = output_dir
-        flux_args.pe_step = pe_step if pe_step is not None else self.config.pe_step
         flux_args.inject_step = inject_step if inject_step is not None else self.config.inject_step
         torch_device = torch.device(self.device)
 
@@ -221,10 +223,22 @@ class FluxGenerator:
         info['inject_step'] = flux_args.inject_step
         info['attn_mask_step'] = flux_args.attn_mask_step
         info['alpha'] = flux_args.alpha
-        info['pe_step_distortion'] = flux_args.pe_step_distortion
-        info['pe_step_removal'] = flux_args.pe_step_removal
-        info['pe_step_addition'] = flux_args.pe_step_addition
-        info['pe_step_fusion'] = flux_args.pe_step_fusion
+        if pe_step_distortion is not None:
+            info['pe_step_distortion'] = pe_step_distortion
+        else:
+            info['pe_step_distortion'] = flux_args.pe_step_distortion
+        if pe_step_removal is not None:
+            info['pe_step_removal'] = pe_step_removal
+        else:
+            info['pe_step_removal'] = flux_args.pe_step_removal
+        if pe_step_addition is not None:
+            info['pe_step_addition'] = pe_step_addition
+        else:
+            info['pe_step_addition'] = flux_args.pe_step_addition
+        if pe_step_fusion is not None:
+            info['pe_step_fusion'] = pe_step_fusion
+        else:
+            info['pe_step_fusion'] = flux_args.pe_step_fusion
         info['artifact_data'] = flux_args.artifact_data
         info['guidance'] = flux_args.guidance
         if not os.path.exists(flux_args.feature_path):

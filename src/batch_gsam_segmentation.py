@@ -339,7 +339,7 @@ def create_artifact_annotations(
     # Handle random distortion kernel sampling
     if artifact_type == 'distortion':
         if config['random_distortion']:
-            available_kernels = ['none', 'shuffle','jitter', 'swirl', 'voronoi', 'coarse', 'strip']
+            available_kernels = ['none', 'shuffle', 'jitter', 'strip']
             distortion_kernel = random.choice(available_kernels)
             logger.info(f"  Randomly selected distortion kernel: {distortion_kernel}")
         else:
@@ -408,7 +408,7 @@ def create_fusion_artifact_annotations(
     img_filename: str,
 
 ) -> Dict[str, Any]:
-    target_patches, reference_patches, fused_entity, coord_dict = InstanceProcessor.create_fusion_artifact_patches(
+    target_patches, reference_patches, fused_entity = InstanceProcessor.create_fusion_artifact_patches(
         entity_prediction,
         entity_predictions,
         predictions,
@@ -444,7 +444,6 @@ def create_fusion_artifact_annotations(
         'target_mask': target_mask,
         'reference_mask': reference_mask,
         'distortion_kernel': None,
-        'coord_dict': coord_dict
     }
 
     return result_dict
