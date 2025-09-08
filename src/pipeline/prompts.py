@@ -31,14 +31,16 @@ def encode_image_to_base64(image):
 IN_CONTEXT_EXAMPLES = {
     "addition": {
         "positive": {
-            "explanation": " The zebra has an extra ear on the middle of its head.",
+            "explanation": "zebras have two ears, but as the target region contains an extra ear on the middle of its head, the zebra now has three ears, it is not naturally possible.",
+            "label": "The zebra has an extra ear on the middle of its head.",
             "object_name": "an ear of zebra",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/original_target.png')),
             "artifact_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/positive/artifact_target.png'))
         },
         "negative": {
-            "explanation": "This is Case-A; the original image already had an ear of a cat in the image, while the artifact image did not duplicate it.",
+            "explanation": "Even though the artifact image has an manipulated version of the ear, the new ear has replaced the original one, which means that the artifact image does not have an artifact.",
+            "label": "",
             "object_name": "an ear of a cat",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/negative/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/addition/negative/original_target.png')),
@@ -48,6 +50,7 @@ IN_CONTEXT_EXAMPLES = {
     "removal": {
         "positive": {
             "explanation": "The bird is missing its tail, where the bird should have a tail.",
+            "label": "The bird is missing its tail.",
             "object_name": "a tail of a bird",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/positive/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/removal/positive/original_target.png')),
@@ -63,7 +66,8 @@ IN_CONTEXT_EXAMPLES = {
     },
     "distortion": {
         "positive": {
-            "explanation": "The face of the person is distorted, as the facial features are not defined well.",
+            "explanation": "The facial features of the person are not defined well. The eyes and nose are not clearly visible.",
+            "label": "The face of the person is distorted.",
             "object_name": "a hand of a person",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/distortion/positive/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/distortion/positive/original_target.png')),
@@ -72,7 +76,8 @@ IN_CONTEXT_EXAMPLES = {
     },
     "fusion": {
         "positive": {
-            "explanation": "The heads of two cats are merged into one.",
+            "explanation": "The boundary between the two cats is not visible and the head of the black cat seams to be merged into the white cat.",
+            "label": "The heads of two cats are merged into one.",
             "object_name": "a cat and a cat",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/positive/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/positive/original_target.png')),
@@ -80,6 +85,7 @@ IN_CONTEXT_EXAMPLES = {
         },
         "negative": {
             "explanation": "Although the boundary of the two elephant has been manipulated, the boundary between the two elephants is still visible in the artifact image.",
+            "label": "",
             "object_name": "an elephant and a baby elephant",
             "original_masked": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/negative/original_masked.png')),
             "original_target": encode_image_to_base64(Image.open('pipeline/in_context_exps/fusion/negative/original_target.png')),
@@ -106,6 +112,7 @@ class ArtifactExplanationResponse(BaseModel):
 class ArtifactDescriptionResponse(BaseModel):
     has_artifact: bool
     explanation: str
+    label: str
     
 def get_entity_subentities(client, image, money_manager=None):
     base64_image = encode_image_to_base64(image)
@@ -321,7 +328,8 @@ def artifact_description(client, masked_original_image, target_original_image, t
     
     Return your analysis in the following format:
     "has_artifact": true/false (whether the artifact is successfully present, always true for distortion)
-    "explanation": "Detailed description of what looks wrong in the region (empty string if no artifact)"
+    "explanation": "Detailed description of what looks wrong in the region, without reasoning about the artifact type or how the artifact is created."
+    "label": "Brief description of the artifact (empty string if no artifact)"
     
     Important: 
     - Focus on visible evidence in the target region
@@ -350,7 +358,7 @@ def artifact_description(client, masked_original_image, target_original_image, t
                     {
                         "role": "assistant",
                         "content": [
-                            {"type": "output_text", "text": f'{{"has_artifact": true, "explanation": "{IN_CONTEXT_EXAMPLES["distortion"]["positive"]["explanation"]}"}}'}
+                            {"type": "output_text", "text": f'{{"has_artifact": true, "explanation": "{IN_CONTEXT_EXAMPLES["distortion"]["positive"]["explanation"]}", "label": "{IN_CONTEXT_EXAMPLES["distortion"]["positive"]["label"]}"}}'}
                         ]
                     },
                     {
@@ -384,7 +392,7 @@ def artifact_description(client, masked_original_image, target_original_image, t
                     {
                         "role": "assistant",
                         "content": [
-                            {"type": "output_text", "text": f'{{"has_artifact": true, "explanation": "{IN_CONTEXT_EXAMPLES[artifact_type]["positive"]["explanation"]}"}}'}
+                            {"type": "output_text", "text": f'{{"has_artifact": true, "explanation": "{IN_CONTEXT_EXAMPLES[artifact_type]["positive"]["explanation"]}", "label": "{IN_CONTEXT_EXAMPLES[artifact_type]["positive"]["label"]}"}}'}
                         ]
                     },
                     {
@@ -399,7 +407,7 @@ def artifact_description(client, masked_original_image, target_original_image, t
                     {
                         "role": "assistant",
                         "content": [
-                            {"type": "output_text", "text": f'{{"has_artifact": false, "explanation": ""}}'}
+                            {"type": "output_text", "text": f'{{"has_artifact": false, "explanation": "{IN_CONTEXT_EXAMPLES[artifact_type]["negative"]["explanation"]}", "label": ""}}'}
                         ]
                     },
                     {
@@ -702,94 +710,87 @@ Strict rules:
         print(f"Error in artifact explanation from triplet ({artifact_type}): {e}")
         return {"explanation": ""}
 
-def artifact_explanation(client, real_image, artifact_image, object_name, artifact_type, money_manager=None):
+def artifact_explanation(
+    client,
+    real_image,
+    artifact_image,
+    artifact_list: Optional[List[str]] = None,
+    money_manager=None,
+):
     """
-    Generate natural language explanation of visual artifacts using OpenAI Vision API
-    
-    Args:
-        client: OpenAI client
-        real_image: Original image as numpy array with region visualized where artifact will be injected
-        artifact_image: Modified image with artifact as numpy array with region visualized where artifact was injected
-        object_name: Name of the object where artifact is applied
-        artifact_type: Type of artifact ('addition', 'removal', 'distortion', 'fusion')
-        money_manager: MoneyManager instance for cost tracking (optional)
-        
-    Returns:
-        dict: Contains 'explanation' string and 'success' boolean
+    Generate a holistic explanation of why the artifact image is an artifact, using
+    the provided list of injected artifact annotations.
+
+    - Reads all entries in `artifact_list` with the form: "[xmin, xmax, ymin, ymax] <artifact description>".
+    - Produces a concise, human-friendly explanation that leverages commonsense/anatomy
+      (e.g., zebras normally have four legs) without mentioning coordinates.
+
+    Returns a dict: {"success": bool, "explanation": str, "error": optional str}
     """
-    # Encode both images to base64
-    base64_real_image = encode_image_to_base64(real_image)
-    base64_artifact_image = encode_image_to_base64(artifact_image)
-    
-    # Create artifact-type-specific guidance (without explicitly mentioning the type)
-    if artifact_type == 'addition':
-        focus_guidance = "Pay attention to any duplicated parts, unnatural growths, or extra elements that conflict with normal anatomy or structure."
-    elif artifact_type == 'removal':
-        focus_guidance = "Pay attention to missing structure, unnatural gaps, smoothed-over areas, or anatomical discontinuity where something appears to be absent."
-    elif artifact_type == 'distortion':
-        focus_guidance = "Pay attention to warped shapes, unnatural geometry, irregular textures, or visual blending errors that make the structure appear broken or malformed."
-    elif artifact_type == 'fusion':
-        focus_guidance = "Pay attention to regions where two distinct parts or entities appear unnaturally merged together, with blurred boundaries, overlapped textures, or structural entanglement that makes separation implausible."
+
+    # Encode images
+    artifact_b64 = encode_image_to_base64(artifact_image)
+
+    # Prepare artifact list text
+    if artifact_list and isinstance(artifact_list, list) and len(artifact_list) > 0:
+        cleaned_items = []
+        for item in artifact_list:
+            try:
+                cleaned_items.append(re.sub(r"\s+", " ", str(item)).strip())
+            except Exception:
+                cleaned_items.append(str(item))
+        artifact_items_text = "\n\n".join(f"- {c}" for c in cleaned_items)
     else:
-        focus_guidance = "Identify any visual abnormalities, unnatural features, or elements that appear incorrect or implausible."
-    
-    prompt = f"""
-You are given two images:
+        artifact_items_text = "(none provided)"
 
-- **Image A**: A real, original image, with a region visualized as red bounding box where the artifact is going to be injected.
-- **Image B**: A modified version of the same scene, with a region visualized as green bounding box where the artifact is injected.
+    system_prompt = f"""
+You are an image artifact analyst. You will be given an image with artifacts and a list of injected artifact annotations, in the format of bbox:<(xmin, ymin, xmax, ymax)> description:<description of the artifact in that bbox region>.
 
-Here is the structured context:
-- **Object Name**: {object_name}
-
-Your task is to:
-1. Examine the highlighted region in the **given image** (Image B).
-2. Use your understanding of how the specified object should normally appear to identify abnormalities.
-3. Write a natural language explanation describing what appears visually wrong or unnatural in the highlighted region.
-
-**Do not mention or refer to the original image, the artifact type, or the image source explicitly.**
-Base your explanation only on what is visible in the given image.
-
-Focus your reasoning based on the artifact type (without stating it):
-
-{focus_guidance}
-
-Respond naturally and precisely, describing only what is visibly incorrect in the given image within the highlighted region.
+Your job: Read ALL artifact annotations and write a single, holistic explanation the explanation of the anomalies in the image.
+Guidance:
+- Do NOT mention coordinates or the term "bbox". Use the annotations only to understand what is wrong.
+- Use commonsense knowledge about typical anatomy/structure (e.g., zebras normally have four legs).
+- If multiple issues appear, summarize the combined effect coherently rather than listing them mechanically.
+- Keep it concise (2-3 sentences) and easy to understand. Avoid making concluding sentences. Just focus on explaining the abnormality.
 """
+
+    user_content = [
+        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{artifact_b64}"},
+        {
+            "type": "input_text",
+            "text": (
+                "Injected artifact annotations (use for reasoning; do not mention coordinates):\n"
+                f"{artifact_items_text}"
+            ),
+        },
+    ]
 
     try:
         response = client.responses.parse(
             model="gpt-4o",
             input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt},
-                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64_real_image}"},
-                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64_artifact_image}"}
-                    ]
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
             ],
             temperature=0.2,
-            text_format=ArtifactExplanationResponse
+            text_format=ArtifactExplanationResponse,
         )
-        
-        # Track costs with money manager
+
         if money_manager:
             money_manager(response)
-        
-        return {
-            "success": True,
-            "explanation": response.output_parsed.explanation
-        }
-            
+
+        explanation = (
+            response.output_parsed.explanation
+            if response and hasattr(response, "output_parsed") and response.output_parsed
+            else ""
+        )
+        explanation = explanation.strip()
+        return explanation
+
     except Exception as e:
-        print(f"Error in artifact explanation: {e}")
-        return {
-            "success": False,
-            "explanation": "",
-            "error": f"API error: {str(e)}"
-        }
+        print(f"Error in artifact_explanation: {e}")
+        return None
+
         
 class MoneyManager:
     def __init__(self, model: str = "gpt-3.5-turbo-0613"):
