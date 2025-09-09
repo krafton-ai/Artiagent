@@ -388,10 +388,10 @@ class InstanceProcessor:
                             band_targets.add((ny, nx))
 
         if not band_targets:
-            return [], [] # type: ignore
+            return [], []
 
         # Seeds chosen from the overlap (centers) to partition the band
-        seeds = _farthest_point_sampling(list(overlap_set), k_seeds)
+        seeds = _farthest_point_sampling(list(band_targets), k_seeds)
         if not seeds:
             return [], []
 
@@ -462,7 +462,7 @@ class InstanceProcessor:
                 target_entity_set = non_overlap_foreground
 
             # --- Primary attempt: a single offset that maps the entire region
-            #     into the opposite entity only
+            #     into the opposite entity only AND doesn't overlap with target patches
             valid_offset = None
             for dy, dx in candidate_offsets:
                 shifted = [(py + dy, px + dx) for (py, px) in region_patches]
@@ -470,7 +470,8 @@ class InstanceProcessor:
                 if not all(0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted):
                     continue
                 shifted_set = set(shifted)
-                if shifted_set.issubset(target_entity_set):
+                # Check that shifted patches are in target entity AND don't overlap with any target patches
+                if shifted_set.issubset(target_entity_set) and not shifted_set.intersection(band_targets):
                     valid_offset = (dy, dx)
                     break
 
@@ -482,8 +483,7 @@ class InstanceProcessor:
                 continue
 
             # --- Fallback: choose the offset that maps the MAX number of patches
-            #     into the opposite entity, apply to those;
-            #     for the remainder, map to nearest opposite entity patch.
+            #     into the opposite entity without overlapping target patches
             best_offset = None
             best_mapped_count = -1
             best_mapped_mask = None  # list[bool] parallel to region_patches
@@ -492,9 +492,9 @@ class InstanceProcessor:
                 shifted = [(py + dy, px + dx) for (py, px) in region_patches]
                 # bounds mask
                 in_bounds = [0 <= ny < patch_h and 0 <= nx < patch_w for ny, nx in shifted]
-                # opposite entity mask
+                # opposite entity mask AND not in target patches
                 opposite_entity_mask = [
-                    in_bounds[i] and (shifted[i] in target_entity_set)
+                    in_bounds[i] and (shifted[i] in target_entity_set) and (shifted[i] not in band_targets)
                     for i in range(len(shifted))
                 ]
                 mapped_count = sum(opposite_entity_mask)
@@ -507,19 +507,38 @@ class InstanceProcessor:
                 dy, dx = best_offset
                 for i, (py, px) in enumerate(region_patches):
                     target_coords_final.append((py, px))
-                    if best_mapped_mask[i]:
+                    if best_mapped_mask[i]:  # pyright: ignore[reportOptionalSubscript]
                         # Use offset-mapped opposite entity reference
                         reference_coords_final.append((py + dy, px + dx))
                     else:
                         # Fill with nearest opposite entity reference
-                        reference_coords_final.append(_nearest_opposite_entity((py, px), seed_entity))
+                        nearest = _nearest_opposite_entity((py, px), seed_entity)
+                        # Make sure the nearest reference isn't in the target set
+                        attempts = 0
+                        candidates = list(target_entity_set - band_targets)
+                        while nearest in band_targets and attempts < 5 and candidates:
+                            # Try to find another reference not in target set
+                            nearest = min(candidates, key=lambda q: _manhattan((py, px), q))
+                            candidates.remove(nearest)
+                            attempts += 1
+                        reference_coords_final.append(nearest)
             else:
                 # Nothing could be offset into opposite entity → all via nearest opposite entity
                 for py, px in region_patches:
                     target_coords_final.append((py, px))
-                    reference_coords_final.append(_nearest_opposite_entity((py, px), seed_entity))
+                    nearest = _nearest_opposite_entity((py, px), seed_entity)
+                    # Make sure the nearest reference isn't in the target set
+                    attempts = 0
+                    candidates = list(target_entity_set - band_targets)
+                    while nearest in band_targets and attempts < 5 and candidates:
+                        # Try to find another reference not in target set
+                        nearest = min(candidates, key=lambda q: _manhattan((py, px), q))
+                        candidates.remove(nearest)
+                        attempts += 1
+                    reference_coords_final.append(nearest)
 
-        return target_coords_final, reference_coords_final, entity_B_prediction['entity'] # pyright: ignore[reportReturnType]
+        return target_coords_final, reference_coords_final, entity_B_prediction['entity']
+        # return target_coords_final, reference_coords_final, entity_B_prediction['entity'] # pyright: ignore[reportReturnType]
     
     @staticmethod
     def map_coords_to_patch_indices(artifact_type: str, target_patches: List[Tuple[int, int]], reference_patches: List[Tuple[int, int]],
