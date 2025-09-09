@@ -8,6 +8,7 @@ import torch
 from PIL import Image
 import torchvision
 import supervision as sv
+from flux.artifacts_util import mask_to_patch_coords
 
 # Add GroundingDINO and SAM to path
 sys.path.append(os.path.join(os.getcwd(), 'GroundingDINO'))
@@ -201,6 +202,14 @@ class GSAMDetector:
         
         for sub_idx in subentity_indices:
             sub_mask = torch.from_numpy(detections.mask[sub_idx])
+            sub_mask_patch_coords = mask_to_patch_coords(sub_mask, patch_size=16)
+            # If the mask_patch_coords has length of 1 for either width or height, discard this subentity
+            if len(sub_mask_patch_coords) > 0:
+                ys, xs = zip(*sub_mask_patch_coords)
+                if (max(xs) - min(xs) + 1) == 1 or (max(ys) - min(ys) + 1) == 1:
+                    print(f"Discarded subentity '{vocab[detections.class_id[sub_idx]]}' - mask is only 1 patch wide or high")
+                    continue
+
             
             subentity_name = vocab[detections.class_id[sub_idx]]
             best_containment_ratio = 0.0

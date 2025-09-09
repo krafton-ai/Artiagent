@@ -132,7 +132,7 @@ class InstanceProcessor:
 
         if artifact_type == 'addition':
             offset, prob_map, metadata = InstanceProcessor.generate_addition_probability_map(prediction, predictions, entity_predictions, mask_patch_coords, img_array.shape, patch_size=patch_size, alpha=2.0, max_entity_overlap=0.7, distance_penalty_weight=0.05)
-            InstanceProcessor.visualize_addition_probability_map(img_array, prob_map, prediction, metadata, patch_size=patch_size, output_dir=output_dir, img_filename=img_filename)
+            # InstanceProcessor.visualize_addition_probability_map(img_array, prob_map, prediction, metadata, patch_size=patch_size, output_dir=output_dir, img_filename=img_filename)
 
             offset_x, offset_y = offset
             shift_x_patches = int(offset_x / patch_size)
