@@ -202,7 +202,7 @@ class GSAMDetector:
         
         for sub_idx in subentity_indices:
             sub_mask = torch.from_numpy(detections.mask[sub_idx])
-            sub_mask_patch_coords = mask_to_patch_coords(sub_mask, patch_size=16)
+            sub_mask_patch_coords = mask_to_patch_coords(sub_mask.numpy(), patch_size=16)
             # If the mask_patch_coords has length of 1 for either width or height, discard this subentity
             if len(sub_mask_patch_coords) > 0:
                 ys, xs = zip(*sub_mask_patch_coords)

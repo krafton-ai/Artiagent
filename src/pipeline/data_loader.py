@@ -1,13 +1,53 @@
 import os
 import numpy as np
 from pycocotools.coco import COCO
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 import pathlib
 import json
 import glob
 from PIL import Image
 import logging
 from typing import Any
+
+
+def preprocess_image_for_flux(image_path_or_pil: Union[str, Image.Image]) -> np.ndarray:
+    """
+    Shared image preprocessing function for flux model compatibility
+    
+    Args:
+        image_path_or_pil: Either a file path to image or PIL Image object
+        
+    Returns:
+        Image array with dimensions adjusted to be divisible by 16
+    """
+    # Load image with PIL if path provided
+    if isinstance(image_path_or_pil, str):
+        img = Image.open(image_path_or_pil)
+    else:
+        img = image_path_or_pil
+        
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    
+    # Rescale if shortest side is less than 480
+    width, height = img.size
+    if min(width, height) < 480:
+        scale_factor = 480 / min(width, height)
+        new_width = int(width * scale_factor)
+        new_height = int(height * scale_factor)
+        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    img_array = np.array(img)
+    
+    # Ensure dimensions are divisible by 16 for flux model compatibility
+    shape = img_array.shape
+    new_h = shape[0] if shape[0] % 16 == 0 else shape[0] - shape[0] % 16
+    new_w = shape[1] if shape[1] % 16 == 0 else shape[1] - shape[1] % 16
+    
+    # Crop image to new dimensions
+    img_array = img_array[:new_h, :new_w, :]
+    
+    return img_array
 
 
 class COCODataLoader:
@@ -71,30 +111,9 @@ class COCODataLoader:
         # Load image info and array
         img_info = self.coco_class.loadImgs(sampled_id)[0]
         
-        # Load image with PIL
+        # Load and preprocess image
         img_path = os.path.join(self.image_path, img_info['file_name'])
-        img = Image.open(img_path)
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        
-        # Rescale if shortest side is less than 480
-        width, height = img.size
-        if min(width, height) < 480:
-            scale_factor = 480 / min(width, height)
-            new_width = int(width * scale_factor)
-            new_height = int(height * scale_factor)
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        img_array = np.array(img)
-        
-        # Apply the same preprocessing as used for flux model
-        # Ensure dimensions are divisible by 16 for correct input to the flux model
-        shape = img_array.shape
-        new_h = shape[0] if shape[0] % 16 == 0 else shape[0] - shape[0] % 16
-        new_w = shape[1] if shape[1] % 16 == 0 else shape[1] - shape[1] % 16
-        
-        # Crop image to new dimensions
-        img_array = img_array[:new_h, :new_w, :]
+        img_array = preprocess_image_for_flux(img_path)
         
         # Get caption
         ann_ids = self.coco_cap.getAnnIds(imgIds=img_info['id'])
@@ -140,32 +159,7 @@ class COCODataLoader:
             Image array with dimensions adjusted to be divisible by 16
         """
         img_path = os.path.join(self.image_path, img_info['file_name'])
-        
-        # Load image with PIL
-        img = Image.open(img_path)
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        
-        # Rescale if shortest side is less than 480
-        width, height = img.size
-        if min(width, height) < 480:
-            scale_factor = 480 / min(width, height)
-            new_width = int(width * scale_factor)
-            new_height = int(height * scale_factor)
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        img_array = np.array(img)
-        
-        # Apply the same preprocessing as used for flux model
-        # Ensure dimensions are divisible by 16 for correct input to the flux model
-        shape = img_array.shape
-        new_h = shape[0] if shape[0] % 16 == 0 else shape[0] - shape[0] % 16
-        new_w = shape[1] if shape[1] % 16 == 0 else shape[1] - shape[1] % 16
-        
-        # Crop image to new dimensions
-        img_array = img_array[:new_h, :new_w, :]
-        
-        return img_array
+        return preprocess_image_for_flux(img_path)
     
     def get_image_caption(self, img_info: Dict) -> str:
         """
@@ -355,30 +349,7 @@ class ImageNetDataLoader:
         Returns:
             Image array with dimensions adjusted to be divisible by 16
         """
-        # Load image with PIL
-        img = Image.open(image_path)
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        
-        # Rescale if shortest side is less than 480
-        width, height = img.size
-        if min(width, height) < 480:
-            scale_factor = 480 / min(width, height)
-            new_width = int(width * scale_factor)
-            new_height = int(height * scale_factor)
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        img_array = np.array(img)
-        
-        # Ensure dimensions are divisible by 16 for flux model compatibility
-        shape = img_array.shape
-        new_h = shape[0] if shape[0] % 16 == 0 else shape[0] - shape[0] % 16
-        new_w = shape[1] if shape[1] % 16 == 0 else shape[1] - shape[1] % 16
-        
-        # Crop image to new dimensions
-        img_array = img_array[:new_h, :new_w, :]
-        
-        return img_array
+        return preprocess_image_for_flux(image_path)
     
     def get_images_by_synset(self, synset: str) -> List[str]:
         """
@@ -552,30 +523,7 @@ class CustomDirectoryDataLoader:
         Returns:
             Image array with dimensions adjusted to be divisible by 16
         """
-        # Load image with PIL
-        img = Image.open(image_path)
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        
-        # Rescale if shortest side is less than 480
-        width, height = img.size
-        if min(width, height) < 480:
-            scale_factor = 480 / min(width, height)
-            new_width = int(width * scale_factor)
-            new_height = int(height * scale_factor)
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        img_array = np.array(img)
-        
-        # Ensure dimensions are divisible by 16 for flux model compatibility
-        shape = img_array.shape
-        new_h = shape[0] if shape[0] % 16 == 0 else shape[0] - shape[0] % 16
-        new_w = shape[1] if shape[1] % 16 == 0 else shape[1] - shape[1] % 16
-        
-        # Crop image to new dimensions
-        img_array = img_array[:new_h, :new_w, :]
-        
-        return img_array
+        return preprocess_image_for_flux(image_path)
     
     def load_image_by_info(self, img_info: Dict) -> np.ndarray:
         """
