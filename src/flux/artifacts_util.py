@@ -374,6 +374,62 @@ def sample_closest_patch_ind(h, w, patch_indices, reference_patch_indices, patch
     
     return result
 
+
+
+def get_closest_patch_coords(target_coords, reference_coords):
+    """
+    Map each target coordinate to its closest reference coordinate.
+    
+    Args:
+        target_coords: List of (y, x) coordinates that need to be mapped
+        reference_coords: List of (y, x) coordinates to use as reference/candidates
+    
+    Returns:
+        List of closest reference coordinates for each target coordinate
+    """
+    target_coords = np.array(target_coords)
+    reference_coords = np.array(reference_coords)
+    
+    result = []
+    for ty, tx in target_coords:
+        # Calculate Manhattan distances to all reference coordinates
+        distances = np.abs(reference_coords[:, 0] - ty) + np.abs(reference_coords[:, 1] - tx)
+        min_idx = np.argmin(distances)
+        closest_coord = tuple(reference_coords[min_idx])
+        result.append(closest_coord)
+    
+    return result
+
+
+def get_closest_patch_inds(h, w, target_patch_indices, reference_patch_indices, txt_len=512):
+    """
+    Map each target patch index to the closest reference patch index using Manhattan distance.
+    
+    Args:
+        h, w: Patch grid dimensions (not used directly but kept for API symmetry)
+        target_patch_indices: List of patch indices to map
+        reference_patch_indices: List of candidate reference patch indices
+        txt_len: Text length offset used in index<->coord conversions
+    
+    Returns:
+        List of closest reference patch indices corresponding to each target patch index
+    """
+    if len(target_patch_indices) == 0 or len(reference_patch_indices) == 0:
+        return []
+
+    # Convert indices to (y, x) coordinates
+    target_coords = np.array([patch_ind_to_coor(ind, w, txt_len) for ind in target_patch_indices])
+    reference_coords = np.array([patch_ind_to_coor(ind, w, txt_len) for ind in reference_patch_indices])
+
+    result = []
+    for ty, tx in target_coords:
+        distances = np.abs(reference_coords[:, 0] - ty) + np.abs(reference_coords[:, 1] - tx)
+        min_idx = int(np.argmin(distances))
+        result.append(reference_patch_indices[min_idx])
+
+    return result
+
+
 def visualize_mask_patches(mask, patch_size=16, txt_len=512, filename="mask_patches_visualization.png", show_grid=True):
     """
     Visualize the patches retrieved from a mask using mask_to_patch_indices.

@@ -10,7 +10,7 @@ from flux.modules.layers import (DoubleStreamBlock, EmbedND, LastLayer,
 
 
 from .artifacts_util import (
-    shuffle_pe, sample_closest_patch_ind,  # Legacy functions
+    shuffle_pe, sample_closest_patch_ind, get_closest_patch_coords, get_closest_patch_inds # Legacy functions
 )
 
 
@@ -123,10 +123,6 @@ class Flux(nn.Module):
                 elif artifact_data['artifact_type'] == 'removal' and info['removal']:
                     ref_ids = artifact_data['reference_patch_indices'].copy()
                     target_ids = artifact_data['target_patch_indices'].copy()
-                    ref_ids = sample_closest_patch_ind(
-                        info['patch_h'], info['patch_w'], target_ids, ref_ids,
-                        patch_size=16, txt_len=512
-                    )
                     inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
                     # Accumulate IDs (after target_ids modification)
                     if info['inject']:
@@ -154,7 +150,6 @@ class Flux(nn.Module):
                     if info['inject']:
                         accumulated_target_ids.extend(target_ids)
                         accumulated_ref_ids.extend(ref_ids)
-
 
             info['patch_ids'] = accumulated_target_ids
             info['patch_ref_ids'] = accumulated_ref_ids 

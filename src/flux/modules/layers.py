@@ -270,7 +270,7 @@ class SingleStreamBlock(nn.Module):
         if info['inverse']:
             attn = attention(q, k, v, pe)
         else:
-            attn = attention(q, k, v, pe=pe)
+            attn = attention(q, k, v, pe)
 
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
