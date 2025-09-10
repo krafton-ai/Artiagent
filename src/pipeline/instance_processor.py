@@ -5,7 +5,7 @@ import os
 from typing import List, Dict, Tuple, Optional, Union
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from flux.artifacts_util import bbox_to_patch_coords, patch_coor_to_ind, mask_to_patch_indices, patch_indices_to_coords, mask_to_patch_coords
+from flux.artifacts_util import bbox_to_patch_coords, patch_coor_to_ind, mask_to_patch_indices, patch_indices_to_coords, mask_to_patch_coords, get_closest_patch_coords 
 
 
 class InstanceProcessor:
@@ -193,9 +193,8 @@ class InstanceProcessor:
                 filtered_surrounding_patches = non_intersecting_patches
             if len(filtered_surrounding_patches) == 0:
                 raise ValueError("No valid surrounding patches found")
-            
+            reference_patches = get_closest_patch_coords(mask_patch_coords, filtered_surrounding_patches)
             target_patches = mask_patch_coords
-            reference_patches = filtered_surrounding_patches           
 
         elif artifact_type == 'distortion':
             target_patches = mask_patch_coords
@@ -1545,7 +1544,7 @@ class InstanceProcessor:
             # Convert entity mask to patch-aligned version for consistent calculations
             entity_mask_patch = InstanceProcessor._align_mask_to_patches(best_entity['mask'].astype(np.uint8), patch_size)
             
-            # IoU with entity (positive contribution) - exclude reference mask area
+            # IoU with entity (negative contribution) - exclude reference mask area
             entity_mask_excluding_ref = entity_mask_patch & (~ref_mask_patch)
             entity_intersection = np.sum(target_mask & (entity_mask_excluding_ref > 0))
             entity_area = np.sum(entity_mask_excluding_ref > 0)
