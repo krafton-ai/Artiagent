@@ -17,7 +17,7 @@ chunk_name="chunk_01"
 export CUDA_VISIBLE_DEVICES=2
 # Your command here
 conda activate gsam
-./run_gsam.sh custom --dataset custom --dataset-path $parent_dir/$data_dir/$chunk_name --max-images 10 --output-dir $output_dir/$data_dir/$chunk_name
+./run_gsam.sh custom --dataset custom --dataset-path $parent_dir/$data_dir/$chunk_name --max-images 1000 --output-dir $output_dir/$data_dir/$chunk_name
 conda activate rf-solver
 ./run_flux.sh  $output_dir/$data_dir/$chunk_name --output-dir $output_dir/$data_dir/$chunk_name
 conda activate gsam
