@@ -137,10 +137,10 @@ class Evaluation:
     
     def __init__(self):
         """Initialize evaluation metrics."""
-        # if SentenceTransformer is not None:
-        #     self.css_model = SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L6-v2')
-        # else:
-        self.css_model = None
+        if SentenceTransformer is not None:
+            self.css_model = SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L6-v2')
+        else:
+            self.css_model = None
             
         if rouge_scorer is not None:
             self.rouge_scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
@@ -604,202 +604,6 @@ class Evaluation:
             'f1': f1
         }
 
-    @staticmethod
-    def _extract_bboxes_from_heatmap(
-        heatmap: np.ndarray, 
-        threshold: float = 0.3, 
-        min_region_area: int = 10,
-        image_width: int = 512,
-        image_height: int = 512
-    ) -> List[List[float]]:
-        """
-        Extract bounding boxes from heatmap connected components.
-        
-        Args:
-            heatmap: Input heatmap array
-            threshold: Threshold for binarizing heatmap
-            min_region_area: Minimum area for keeping a region
-            image_width: Width to scale bboxes to
-            image_height: Height to scale bboxes to
-            
-        Returns:
-            List of bounding boxes in [x1, y1, x2, y2] format
-        """
-        if heatmap is None:
-            return []
-            
-        try:
-            # Normalize heatmap to 2D
-            if len(heatmap.shape) == 4:
-                heatmap = heatmap[0, 0]
-            elif len(heatmap.shape) == 3:
-                heatmap = heatmap[:, :, 0]
-            
-            # Binarize heatmap
-            binary_map = (heatmap > threshold).astype(np.uint8)
-            
-            # Extract connected components
-            regions = Evaluation._connected_components(binary_map)
-            
-            # Filter small regions
-            regions = [r for r in regions if np.sum(r) >= min_region_area]
-            
-            bboxes = []
-            h, w = binary_map.shape
-            
-            for region in regions:
-                # Find bounding box of the region
-                coords = np.where(region > 0)
-                if len(coords[0]) == 0:
-                    continue
-                    
-                y_min, y_max = np.min(coords[0]), np.max(coords[0])
-                x_min, x_max = np.min(coords[1]), np.max(coords[1])
-                
-                # Scale to image coordinates
-                x1 = (x_min / w) * image_width
-                y1 = (y_min / h) * image_height
-                x2 = (x_max / w) * image_width
-                y2 = (y_max / h) * image_height
-                
-                bboxes.append([x1, y1, x2, y2])
-            
-            return bboxes
-            
-        except Exception:
-            return []
-
-    @staticmethod
-    def _compute_heatmap_f1(
-        pred_heatmap: np.ndarray,
-        gt_data: List[Any],
-        use_polygons: bool = False,
-        iou_threshold: float = 0.5,
-        heatmap_threshold: float = 0.3,
-        min_region_area: int = 10,
-        image_width: int = 512,
-        image_height: int = 512
-    ) -> Dict[str, float]:
-        """
-        Compute F1 score for heatmap predictions against ground truth annotations.
-        
-        Args:
-            pred_heatmap: Predicted heatmap
-            gt_data: Ground truth bboxes or polygons
-            use_polygons: Whether GT data contains polygons
-            iou_threshold: IoU threshold for TP matching
-            heatmap_threshold: Threshold for binarizing heatmap
-            min_region_area: Minimum area for heatmap regions
-            image_width: Image width for scaling
-            image_height: Image height for scaling
-            
-        Returns:
-            Dictionary with F1 metrics
-        """
-        # Extract bounding boxes from heatmap regions
-        pred_bboxes = Evaluation._extract_bboxes_from_heatmap(
-            pred_heatmap, heatmap_threshold, min_region_area, image_width, image_height
-        )
-        
-        # Use existing F1 computation
-        return Evaluation._compute_localization_f1(
-            gt_data, pred_bboxes, use_polygons, iou_threshold
-        )
-
-    @staticmethod  
-    def _compute_heatmap_to_heatmap_f1(
-        pred_heatmap: np.ndarray,
-        gt_heatmap: np.ndarray,
-        iou_threshold: float = 0.5,
-        threshold_pred: float = 0.3,
-        threshold_gt: float = 0.3,
-        min_region_area: int = 10
-    ) -> Dict[str, float]:
-        """
-        Compute F1 score between two heatmaps using connected components.
-        
-        Args:
-            pred_heatmap: Predicted heatmap
-            gt_heatmap: Ground truth heatmap
-            iou_threshold: IoU threshold for TP matching
-            threshold_pred: Threshold for pred heatmap binarization
-            threshold_gt: Threshold for GT heatmap binarization
-            min_region_area: Minimum area for regions
-            
-        Returns:
-            Dictionary with F1 metrics
-        """
-        try:
-            # Normalize shapes to 2D
-            if len(pred_heatmap.shape) == 4:
-                pred_heatmap = pred_heatmap[0, 0]
-            elif len(pred_heatmap.shape) == 3:
-                pred_heatmap = pred_heatmap[:, :, 0]
-            if len(gt_heatmap.shape) == 4:
-                gt_heatmap = gt_heatmap[0, 0]
-            elif len(gt_heatmap.shape) == 3:
-                gt_heatmap = gt_heatmap[:, :, 0]
-
-            # Extract regions from both heatmaps
-            pred_bin = (pred_heatmap > threshold_pred).astype(np.uint8)
-            gt_bin = (gt_heatmap > threshold_gt).astype(np.uint8)
-
-            pred_regions = [r for r in Evaluation._connected_components(pred_bin) if np.sum(r) >= min_region_area]
-            gt_regions = [r for r in Evaluation._connected_components(gt_bin) if np.sum(r) >= min_region_area]
-
-            if not gt_regions and not pred_regions:
-                return {'tp': 0, 'fp': 0, 'fn': 0, 'precision': 1.0, 'recall': 1.0, 'f1': 1.0}
-            if not gt_regions:
-                return {'tp': 0, 'fp': len(pred_regions), 'fn': 0, 'precision': 0.0, 'recall': 1.0, 'f1': 0.0}
-            if not pred_regions:
-                return {'tp': 0, 'fp': 0, 'fn': len(gt_regions), 'precision': 1.0, 'recall': 0.0, 'f1': 0.0}
-
-            # Compute IoU matrix between GT and predicted regions
-            iou_matrix = np.zeros((len(gt_regions), len(pred_regions)))
-            for i, gt_region in enumerate(gt_regions):
-                for j, pred_region in enumerate(pred_regions):
-                    iou_matrix[i, j] = Evaluation._mask_iou(gt_region, pred_region)
-
-            # Greedy matching
-            matched_predictions = set()
-            tp = 0
-            
-            for gt_idx in range(len(gt_regions)):
-                best_iou = 0.0
-                best_pred_idx = -1
-                
-                for pred_idx in range(len(pred_regions)):
-                    if pred_idx in matched_predictions:
-                        continue
-                        
-                    iou = iou_matrix[gt_idx, pred_idx]
-                    if iou >= iou_threshold and iou > best_iou:
-                        best_iou = iou
-                        best_pred_idx = pred_idx
-                
-                if best_pred_idx != -1:
-                    matched_predictions.add(best_pred_idx)
-                    tp += 1
-
-            fp = len(pred_regions) - len(matched_predictions)
-            fn = len(gt_regions) - tp
-            
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-            
-            return {
-                'tp': tp,
-                'fp': fp,
-                'fn': fn, 
-                'precision': precision,
-                'recall': recall,
-                'f1': f1
-            }
-            
-        except Exception:
-            return {'tp': 0, 'fp': 0, 'fn': 0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
-
     def _css_score(self, s1: str, s2: str) -> float:
         """
         Compute cosine similarity score between two text strings.
@@ -920,7 +724,7 @@ class Evaluation:
             has_gt_artifacts, has_pred_artifacts
         """
         img_w, img_h = (image_size if image_size is not None else (512, 512))
-        
+        print(result)
         # Initialize variables for all paths
         stats = {
             'binary_success': False,
@@ -956,7 +760,10 @@ class Evaluation:
                                   stats: Dict, img_w: int, img_h: int) -> Dict[str, Any]:
         """Handle binary classification evaluation."""
         # Binary evaluation expects True/False response from the model
-        predicted_artifacts = result.get('prediction', False)
+        if isinstance(result, bool):
+            predicted_artifacts = result
+        else:
+            predicted_artifacts = result.get('prediction', False)
         
         # Determine ground truth based on dataset
         if dataset_type == 'synartifact':
@@ -997,7 +804,10 @@ class Evaluation:
         # Extract prediction data
         result_bbox_list = []
         if len(result) > 0:
-            result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
+            if isinstance(result[0], List):
+                result_bbox_list = result
+            else:
+                result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
 
         # Determine prediction type and data
         pred_type = None

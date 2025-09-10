@@ -51,6 +51,9 @@ class MoneyManager:
         elif self.model == "gpt-4":
             self.input_cost = 0.03
             self.output_cost = 0.06
+        elif self.model == "gpt-5":
+            self.input_cost = 1.25 / 1000
+            self.output_cost = 10 / 1000
         elif self.model == "text-embedding-ada-002":
             self.input_cost = 0.0001
             self.output_cost = 0.0
@@ -195,12 +198,25 @@ class QwenEval:
         self.use_finetuned = config.get('use_finetuned', False)
         
         # Load model and processor
-        self._load_model()
+        self._load_model(config['finetune_mode'])
         
-    def _load_model(self):
+    def _load_model(self, config: str):
         """Load the Qwen2.5-VL model and processor."""
         if self.use_finetuned:
-            model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/sft_artifacts_gpt"
+            model_names = {'1k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k",
+                        '3k_all': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k",
+                        '3k_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary",
+                        '3k_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc",
+                        '3k_exp': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary",
+                        '3k_reasoned_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_bin",
+                        '3k_reasoned_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_loc"}
+            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/sft_artifacts_gpt"
+            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k"
+            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k"
+            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary"
+            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc"
+            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_exp"
+            model_name = model_names[config]
             # config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer.padding_side = "left"
@@ -340,7 +356,7 @@ class QwenEval:
 
 class InternEval:
     """
-    Wrapper class for Qwen2.5-VL model evaluation.
+    Wrapper class for InternVL3 / InternVL3.5 model evaluation.
     
     This class provides a unified interface for running inference
     on images to detect and describe artifacts.
@@ -362,8 +378,8 @@ class InternEval:
         
     def _load_model(self):
         """Load the InternVL2 / InternVL3 model and processor."""
-        # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/OpenGVLab/InternVL2-8B"
-        model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/OpenGVLab/InternVL3-8B"
+        # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/OpenGVLab/InternVL3-8B"
+        model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/OpenGVLab/InternVL3_5-8B"
         
         self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, use_flash_attn=True).eval().cuda()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, use_fast=False)
@@ -411,9 +427,6 @@ class InternEval:
         """
         if not images:
             return []
-
-        if prompt is None:
-            prompt = create_prompt('legion')
 
         results = []
         # Process images individually for now (batch processing can be complex with InternVL)
@@ -501,7 +514,8 @@ class GPTEval:
         
         # Load model and processor
         self._init_client()
-        self.money_manager = MoneyManager(model="gpt-4o")
+        # self.money_manager = MoneyManager(model="gpt-4o")
+        self.money_manager = MoneyManager(model="gpt-5")
 
     def _init_client(self):
         """Initialize openai client with API key"""
@@ -545,8 +559,22 @@ class GPTEval:
         base64_image = self._encode_image_to_base64(image)
 
         try:
+            # response = self.client.chat.completions.create(
+            #     model="gpt-4o",
+            #     messages=[
+            #         {
+            #             "role": "user",
+            #             "content": [
+            #                 {"type": "text", "text": prompt},
+            #                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+            #             ]
+            #         }
+            #     ],
+            #     max_tokens=1000,
+            #     temperature=0.2
+            # )
             response = self.client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5",
                 messages=[
                     {
                         "role": "user",
@@ -555,9 +583,7 @@ class GPTEval:
                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                         ]
                     }
-                ],
-                max_tokens=1000,
-                temperature=0.2
+                ]
             )
 
             if self.money_manager:
@@ -1084,3 +1110,53 @@ class DiffEval:
     def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
         return [self.inference(img) for img in images]
    
+class LegionEval:
+    """
+    LEGION artifact detector wrapper.
+    Outputs segmentation map under key 'segmap'.
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
+        self._load_model()
+
+    def _get_segformer(self, path_or_hub, out_channels=1):
+        # load a pretrained Segformer model
+        self.preprocessor = SegformerImageProcessor.from_pretrained(path_or_hub)
+        model = SegformerForSemanticSegmentation.from_pretrained(path_or_hub)
+        # change the number of output channels
+        model.decode_head.classifier = torch.nn.Conv2d(model.decode_head.classifier.in_channels, out_channels, kernel_size=1)
+        return model
+
+    def _load_model(self) -> None:
+        base_dir = "/home/jovyan/image-artifacts/baselines/LEGION"
+        ckpt = os.path.join(base_dir, "checkpoints", "ad_pytorch_model.bin")
+        self.model = self._get_segformer("nvidia/mit-b5", out_channels=1)
+        self.model.load_state_dict(torch.load(ckpt))
+        self.model.to(self.device)
+        self.model.eval()
+
+    def inference(self, image: Image.Image) -> Dict[str, Any]:
+        if self.model is None:
+            return {"segmap": None, "error": "legion_model_not_loaded"}
+        with torch.no_grad():
+            image = transforms.ToTensor()(image).to(self.device)
+            x = self.preprocessor(image, return_tensors='pt',do_rescale=False)['pixel_values'].to(self.device)
+            pred = self.model(x)
+            pred = torch.nn.functional.interpolate(
+                pred.logits, size=x.shape[-2:], mode="bilinear", align_corners=False
+            )
+            out = torch.sigmoid(pred)
+        if isinstance(out, torch.Tensor):
+            out_np = out.detach().cpu().numpy()
+        else:
+            out_np = np.array(out)
+        if out_np.ndim == 2:
+            out_np = out_np[None, None, ...]
+        elif out_np.ndim == 3:
+            out_np = out_np[None, ...]
+        return {"segmap": out_np}
+
+    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        return [self.inference(img) for img in images]
