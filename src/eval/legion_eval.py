@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from PIL import Image  # type: ignore
 from pathlib import Path
 
-from models import QwenEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval
+from models import QwenEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval, LegionEval
 from legion_eval_utils import Evaluation, parse_json, create_prompt
 
 def extract_bboxes(text: str) -> List[List[int]]:
@@ -285,6 +285,8 @@ def create_model(config: Dict):
         return PalEval(config)
     elif model_type == 'diff':
         return DiffEval(config)
+    elif model_type == 'legion':
+        return LegionEval(config)
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -303,7 +305,7 @@ def unified_inference(model, image: Image.Image, prompt: str) -> Dict[str, Any]:
     """
     try:
         # Handle models that only take image (no prompt)
-        if isinstance(model, (PalEval, DiffEval)):
+        if isinstance(model, (PalEval, DiffEval, LegionEval)):
             result = model.inference(image)
         else:
             # Models that take both image and prompt
@@ -353,7 +355,7 @@ def unified_batch_inference(model, images: List[Image.Image], prompt: str) -> Li
     """
     try:
         # Handle models that only take images (no prompt)
-        if isinstance(model, (PalEval, DiffEval)):
+        if isinstance(model, (PalEval, DiffEval, LegionEval)):
             if hasattr(model, 'inference_batch'):
                 results = model.inference_batch(images)
             else:
@@ -860,7 +862,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Evaluate VLM/MLLM models on artifact detection tasks'
     )
-    parser.add_argument('--model', type=str, choices=['qwen', 'intern', 'gpt', 'gemini', 'pal', 'diff'], 
+    parser.add_argument('--model', type=str, choices=['qwen', 'intern', 'gpt', 'gemini', 'pal', 'diff', 'legion'], 
                        default='qwen', help='Model type to evaluate (default: qwen)')
     parser.add_argument('--dataset', type=str, 
                        choices=['synthscars', 'synartifact', 'loki', 'richhf'], 
@@ -883,7 +885,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=1,
                        help='Batched inference size (default: 1)')
     parser.add_argument('--finetune-mode', type=str, 
-                       choices=['1k', '3k_all', '3k_bin', '3k_loc', '3k_exp', '3k_reasoned_bin', '3k_reasoned_loc'])
+                       choices=['1k', '3k_all', '3k_bin', '3k_loc', '3k_exp', '3k_reasoned_bin', '3k_reasoned_loc', '8k'])
           
                        
     args = parser.parse_args()

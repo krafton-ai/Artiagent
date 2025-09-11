@@ -25,6 +25,20 @@ from google.oauth2 import service_account
 from google import genai
 from google.genai import types
 
+# imports for LEGION - TODO
+try:
+    import cv2
+    import bleach
+    from transformers import CLIPImageProcessor
+
+    from model.Legion import LegionForCausalLM
+    from model.llava import conversation as conversation_lib
+    from model.llava.mm_utils import tokenizer_image_token
+    from model.SAM.utils.transforms import ResizeLongestSide
+    from tools.utils import DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
+    from eval.utils import grounding_image_ecoder_preprocess
+except:
+    print("LEGION model import failure, running w/o LEGION")
 
 class MoneyManager:
     def __init__(self, model: str = "gpt-3.5-turbo-0613"):
@@ -207,9 +221,10 @@ class QwenEval:
                         '3k_all': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k",
                         '3k_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary",
                         '3k_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc",
-                        '3k_exp': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary",
+                        '3k_exp': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_exp",
                         '3k_reasoned_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_bin",
-                        '3k_reasoned_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_loc"}
+                        '3k_reasoned_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_loc",
+                        '8k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_8k"}
             # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/sft_artifacts_gpt"
             # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k"
             # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k"
@@ -1110,7 +1125,7 @@ class DiffEval:
     def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
         return [self.inference(img) for img in images]
    
-class LegionEval:
+class LegionEval:   # TODO : load / generate results properly with LEGION
     """
     LEGION artifact detector wrapper.
     Outputs segmentation map under key 'segmap'.
@@ -1119,6 +1134,7 @@ class LegionEval:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.instruction = 'Please provide a detailed analysis of artifacts in this photo, considering physical artifacts (e.g., optical display issues, violations of physical laws, and spatial/perspective errors), structural artifacts (e.g., deformed objects, asymmetry, or distorted text), and distortion artifacts (e.g., color/texture distortion, noise/blur, artistic style errors, and material misrepresentation). Output with interleaved segmentation masks for the corresponding parts of the answer.'
         self._load_model()
 
     def _get_segformer(self, path_or_hub, out_channels=1):
@@ -1130,33 +1146,114 @@ class LegionEval:
         return model
 
     def _load_model(self) -> None:
-        base_dir = "/home/jovyan/image-artifacts/baselines/LEGION"
+        # Initialize tokenizer and model
+        base_dir = "/home/jovyan/image-artifacts/baselines/LEGION"  # TODO : modify /path/to/legion
         ckpt = os.path.join(base_dir, "checkpoints", "ad_pytorch_model.bin")
-        self.model = self._get_segformer("nvidia/mit-b5", out_channels=1)
-        self.model.load_state_dict(torch.load(ckpt))
-        self.model.to(self.device)
+
+        self.tokenizer = AutoTokenizer.from_pretrained(ckpt, cache_dir=None,
+                                                  model_max_length=args.model_max_length, padding_side="right",
+                                                  use_fast=False)
+        self.tokenizer.pad_token = tokenizer.unk_token
+        seg_token_idx = tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
+        torch_dtype = torch.bfloat16  # By default, using bf16
+        kwargs = {"torch_dtype": torch_dtype}
+
+        self.model = LegionForCausalLM.from_pretrained(ckpt, low_cpu_mem_usage=True,
+                                             seg_token_idx=seg_token_idx, **kwargs)
+        
+        # Update model config
+        self.model.config.eos_token_id = self.tokenizer.eos_token_id
+        self.model.config.bos_token_id = self.tokenizer.bos_token_id
+        self.model.config.pad_token_id = self.tokenizer.pad_token_id
+
+        # Initialize Global Image Encoder (CLIP)
+        self.model.get_model().initialize_vision_modules(self.model.get_model().config)
+        vision_tower = self.model.get_model().get_vision_tower()
+        vision_tower.to(dtype=torch_dtype)
+
+        # Transfer the model to GPU : TODO - select device
+        self.model = model.bfloat16().cuda()  # Replace with model = model.float().cuda() for 32 bit inference
+        vision_tower = self.model.get_model().get_vision_tower()
+        vision_tower.to(device=self.device)
+
+        # Initialize Image Processor for GLobal Image Encoder (CLIP)
+        self.clip_image_processor = CLIPImageProcessor.from_pretrained(self.model.config.vision_tower)
+        self.transform = ResizeLongestSide(args.image_size)
+
         self.model.eval()
+
+    def _legion_inference(self, image_np, args):
+        # Filter out special chars
+        instructions = bleach.clean(self.instruction)
+        instructions = instructions.replace('&lt;', '<').replace('&gt;', '>')
+
+        # Prepare prompt for model Inference
+        conv = conversation_lib.conv_templates[args.conv_type].copy()
+        conv.messages = []
+        begin_str = f"""The {DEFAULT_IMAGE_TOKEN} provides an overview of the picture.\n"""
+        prompt = begin_str + instructions
+        if args.use_mm_start_end:
+            replace_token = (DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN)
+            prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, replace_token)
+        conv.append_message(conv.roles[0], prompt)
+        conv.append_message(conv.roles[1], "")
+        prompt = conv.get_prompt()
+
+        image_np = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+        original_size_list = [image_np.shape[:2]]
+        image_clip = (self.clip_image_processor.preprocess(image_np, return_tensors="pt")["pixel_values"][0].unsqueeze(0).cuda())
+        image_clip = image_clip.bfloat16()  # Precision is bf16 by default
+
+        # Preprocess the image (Grounding image encoder)
+        image = self.transform.apply_image(image_np)
+        # image = image_np
+        resize_list = [image.shape[:2]]
+        image = (
+            grounding_image_ecoder_preprocess(torch.from_numpy(image).permute(2, 0, 1).contiguous()).unsqueeze(0).cuda())
+        image = image.bfloat16()  # Precision is bf16 by default
+
+        # Prepare inputs for inference
+        input_ids = tokenizer_image_token(prompt, tokenizer, return_tensors="pt")
+        input_ids = input_ids.unsqueeze(0).cuda()
+        bboxes = None  # No box/region is input in GCG task
+
+        # Generate output
+        output_ids, pred_masks = self.model.evaluate(image_clip, image, input_ids, resize_list, original_size_list,
+                                                max_tokens_new=512, bboxes=bboxes)
+        output_ids = output_ids[0][output_ids[0] != IMAGE_TOKEN_INDEX]
+
+        # Post-processing
+        text_output = self.tokenizer.decode(output_ids, skip_special_tokens=False)
+        text_output = text_output.replace("\n", "").replace("  ", " ")
+        text_output = text_output.split("ASSISTANT: ")[-1]
+
+        cleaned_str = re.sub(r'<.*?>', '', text_output)
+
+        pattern = re.compile(r'<p>(.*?)<\/p>')
+        phrases = pattern.findall(text_output)
+        phrases = [p.strip() for p in phrases]
+
+        # Remove the [SEG] token
+        cleaned_str = cleaned_str.replace('[SEG]', '')
+
+        # Strip unnecessary spaces
+        cleaned_str = ' '.join(cleaned_str.split()).strip("'")
+        cleaned_str = cleaned_str.strip()
+        return cleaned_str, pred_masks, phrases  
 
     def inference(self, image: Image.Image) -> Dict[str, Any]:
         if self.model is None:
-            return {"segmap": None, "error": "legion_model_not_loaded"}
-        with torch.no_grad():
-            image = transforms.ToTensor()(image).to(self.device)
-            x = self.preprocessor(image, return_tensors='pt',do_rescale=False)['pixel_values'].to(self.device)
-            pred = self.model(x)
-            pred = torch.nn.functional.interpolate(
-                pred.logits, size=x.shape[-2:], mode="bilinear", align_corners=False
-            )
-            out = torch.sigmoid(pred)
-        if isinstance(out, torch.Tensor):
-            out_np = out.detach().cpu().numpy()
+            return {"segmap": None, "explanation": None, "error": "legion_model_not_loaded"}
         else:
-            out_np = np.array(out)
-        if out_np.ndim == 2:
-            out_np = out_np[None, None, ...]
-        elif out_np.ndim == 3:
-            out_np = out_np[None, ...]
-        return {"segmap": out_np}
+
+            # Generate output
+            result_caption, pred_masks, phrases = self._legion_inference(image.astype(np.uint8), args)  # GLaMM Inference
+
+            pred_masks_tensor = pred_masks[0].cpu()
+            binary_pred_masks = pred_masks_tensor > 0
+            pred_mask = torch.any(binary_pred_masks, dim=0).int()
+
+            return {"segmap": pred_mask, "explanation": result_caption}
 
     def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
         return [self.inference(img) for img in images]
