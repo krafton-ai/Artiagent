@@ -1243,7 +1243,7 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
 
     def inference(self, image: Image.Image) -> Dict[str, Any]:
         if self.model is None:
-            return {"segmap": None, "explanation": None, "error": "legion_model_not_loaded"}
+            return {"heatmap": None, "explanation": None, "error": "legion_model_not_loaded"}
         else:
 
             # Generate output
@@ -1253,7 +1253,7 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
             binary_pred_masks = pred_masks_tensor > 0
             pred_mask = torch.any(binary_pred_masks, dim=0).int()
 
-            return {"segmap": pred_mask, "explanation": result_caption}
+            return {"heatmap": pred_mask, "explanation": result_caption}
 
     def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
         return [self.inference(img) for img in images]
