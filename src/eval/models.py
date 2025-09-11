@@ -1151,7 +1151,7 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
         ckpt = os.path.join(base_dir, "checkpoints", "ad_pytorch_model.bin")
 
         self.tokenizer = AutoTokenizer.from_pretrained(ckpt, cache_dir=None,
-                                                  model_max_length=args.model_max_length, padding_side="right",
+                                                  model_max_length=512, padding_side="right",
                                                   use_fast=False)
         self.tokenizer.pad_token = tokenizer.unk_token
         seg_token_idx = tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
@@ -1178,21 +1178,23 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
 
         # Initialize Image Processor for GLobal Image Encoder (CLIP)
         self.clip_image_processor = CLIPImageProcessor.from_pretrained(self.model.config.vision_tower)
-        self.transform = ResizeLongestSide(args.image_size)
+        self.transform = ResizeLongestSide(1024)
 
         self.model.eval()
 
-    def _legion_inference(self, image_np, args):
+    def _legion_inference(self, image_np):
         # Filter out special chars
         instructions = bleach.clean(self.instruction)
         instructions = instructions.replace('&lt;', '<').replace('&gt;', '>')
 
+        use_mm_start_end = True
+
         # Prepare prompt for model Inference
-        conv = conversation_lib.conv_templates[args.conv_type].copy()
+        conv = conversation_lib.conv_templates['llava_v1'].copy()
         conv.messages = []
         begin_str = f"""The {DEFAULT_IMAGE_TOKEN} provides an overview of the picture.\n"""
         prompt = begin_str + instructions
-        if args.use_mm_start_end:
+        if use_mm_start_end:
             replace_token = (DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN)
             prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, replace_token)
         conv.append_message(conv.roles[0], prompt)
@@ -1245,9 +1247,8 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
         if self.model is None:
             return {"heatmap": None, "explanation": None, "error": "legion_model_not_loaded"}
         else:
-
             # Generate output
-            result_caption, pred_masks, phrases = self._legion_inference(image.astype(np.uint8), args)  # GLaMM Inference
+            result_caption, pred_masks, phrases = self._legion_inference(image.astype(np.uint8))  # GLaMM Inference
 
             pred_masks_tensor = pred_masks[0].cpu()
             binary_pred_masks = pred_masks_tensor > 0
