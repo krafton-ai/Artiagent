@@ -10,15 +10,87 @@ import sys
 import json
 import argparse
 import logging
+import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from PIL import Image  # type: ignore
 from pathlib import Path
 
-from models import QwenEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval
+from models import QwenEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval, LegionEval
 from legion_eval_utils import Evaluation, parse_json, create_prompt
 
-def setup_logging(output_dir: str, dataset_type: str) -> logging.Logger:
+def extract_bboxes(text: str) -> List[List[int]]:
+    """
+    Extracts all 4-number bounding boxes that appear in the form:
+        [x1, y1, x2, y2]: <optional description>
+    Returns a list of [x1, y1, x2, y2]. If none are found, returns [].
+    """
+    # Matches a bracketed list of four integers (allowing spaces) immediately followed by a colon.
+    # Supports negative numbers just in case: -?\d+
+    pattern = re.compile(
+        r'\[\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\]\s*:',
+        flags=re.UNICODE
+    )
+
+    bboxes = []
+    for x1, y1, x2, y2 in pattern.findall(text):
+        bboxes.append([int(x1), int(y1), int(x2), int(y2)])
+    return bboxes
+
+
+def process_finetuned_output(raw_output: str, eval_type: str) -> Dict[str, Any]:
+    """
+    Process finetuned model output and format it according to the evaluation type.
+    
+    Args:
+        raw_output: Raw text output from the finetuned model
+        eval_type: Type of evaluation ('binary', 'localization', 'explanation')
+        
+    Returns:
+        Dictionary formatted for the specific evaluation type
+    """
+    # Check if the model says there are no artifacts
+    if "there are no artifacts in the image" in raw_output.lower():
+        if eval_type == 'binary':
+            return {'prediction': False}
+        elif eval_type == 'localization':
+            return []
+        elif eval_type == 'explanation':
+            return {"explanation": raw_output}
+    
+    # Extract bounding boxes from the output
+    bboxes = extract_bboxes(raw_output)
+    
+    # Process based on evaluation type
+    if eval_type == 'binary':
+        # If there are bboxes, there are artifacts
+        return {'prediction': len(bboxes) > 0}
+    
+    elif eval_type == 'localization':
+        # Format bboxes for localization evaluation
+        bbox_list = []
+        for bbox in bboxes:
+            bbox_list.append({"bbox_2d": bbox})
+        return bbox_list
+    
+    elif eval_type == 'explanation':
+        # Extract explanation text (everything before the bbox list starts)
+        # Find the first occurrence of a bbox pattern to split the text
+        bbox_pattern = re.compile(r'\[\s*-?\d+\s*,\s*-?\d+\s*,\s*-?\d+\s*,\s*-?\d+\s*\]\s*:')
+        match = bbox_pattern.search(raw_output)
+        
+        if match:
+            explanation_text = raw_output[:match.start()].strip()
+        else:
+            explanation_text = raw_output.strip()
+            
+        return {"explanation": explanation_text}
+    
+    # Fallback to raw output
+    return {"raw_response": raw_output}
+
+
+def setup_logging(output_dir: str, dataset_type: str, model: str, use_finetuned: bool, eval_type: str, finetune_mode: str) -> logging.Logger:
     """
     Setup logging configuration with file and console handlers.
     
@@ -33,7 +105,16 @@ def setup_logging(output_dir: str, dataset_type: str) -> logging.Logger:
     log_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = log_dir / f'artifact_eval_{dataset_type}_{timestamp}.log'
+    if use_finetuned:
+        if eval_type == 'localization':
+            log_file = log_dir / f'artifact_eval_{dataset_type}_{model}_finetuned_legion_{finetune_mode}.log'
+        else:
+            log_file = log_dir / f'artifact_eval_{dataset_type}_{model}_finetuned_{eval_type}_{finetune_mode}.log'
+    else:
+        if eval_type == 'localization':
+            log_file = log_dir / f'artifact_eval_{dataset_type}_{model}_legion_{timestamp}.log'
+        else:
+            log_file = log_dir / f'artifact_eval_{dataset_type}_{model}_{eval_type}_{timestamp}.log'
     
     # Clear any existing handlers
     for handler in logging.root.handlers[:]:
@@ -204,6 +285,8 @@ def create_model(config: Dict):
         return PalEval(config)
     elif model_type == 'diff':
         return DiffEval(config)
+    elif model_type == 'legion':
+        return LegionEval(config)
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -222,7 +305,7 @@ def unified_inference(model, image: Image.Image, prompt: str) -> Dict[str, Any]:
     """
     try:
         # Handle models that only take image (no prompt)
-        if isinstance(model, (PalEval, DiffEval)):
+        if isinstance(model, (PalEval, DiffEval, LegionEval)):
             result = model.inference(image)
         else:
             # Models that take both image and prompt
@@ -272,7 +355,7 @@ def unified_batch_inference(model, images: List[Image.Image], prompt: str) -> Li
     """
     try:
         # Handle models that only take images (no prompt)
-        if isinstance(model, (PalEval, DiffEval)):
+        if isinstance(model, (PalEval, DiffEval, LegionEval)):
             if hasattr(model, 'inference_batch'):
                 results = model.inference_batch(images)
             else:
@@ -310,22 +393,30 @@ def unified_batch_inference(model, images: List[Image.Image], prompt: str) -> Li
         return [{"error": "batch_inference_exception", "raw_response": "", "exception": str(e)} for _ in images]
 
 
-def extract_prediction_result(unified_result: Dict[str, Any]) -> Dict[str, Any]:
+def extract_prediction_result(unified_result: Dict[str, Any], use_finetuned: bool = False, eval_type: str = 'explanation') -> Dict[str, Any]:
     """
     Extract the final prediction from unified inference result for evaluation.
     
     Args:
         unified_result: Result from unified_inference or unified_batch_inference
+        use_finetuned: Whether to use finetuned model output processing
+        eval_type: Type of evaluation ('binary', 'localization', 'explanation')
         
     Returns:
         Dictionary suitable for evaluation
     """
     # If there's an error, return empty result with error info
     if "error" in unified_result:
-        return {
-            "error": unified_result["error"],
-            "raw_response": unified_result.get("raw_response", "")
-        }
+        # Handle finetuned model outputs with special processing
+        if use_finetuned:
+            raw_response = unified_result.get("raw_response", "")
+            if raw_response:
+                return process_finetuned_output(raw_response, eval_type)
+        else:
+            return {
+                "error": unified_result["error"],
+                "raw_response": unified_result.get("raw_response", "")
+            }
     
     # If there's a heatmap (PAL/DiffDoctor models), return it
     if "heatmap" in unified_result:
@@ -396,7 +487,7 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             unified_output = unified_inference(model, image, prompt)
             print(f"Unified output: {unified_output}")
             
-            prediction = extract_prediction_result(unified_output)
+            prediction = extract_prediction_result(unified_output, config['use_finetuned'], eval_type)
             print(f"Extracted prediction: {prediction}")
             # Evaluate results
             stats = evaluator.generate_statistics(
@@ -599,7 +690,7 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
         try:
             # Use unified batch inference
             batch_unified_results = unified_batch_inference(model, batch_images, prompt)
-            batch_results = [extract_prediction_result(result) for result in batch_unified_results]
+            batch_results = [extract_prediction_result(result, config['use_finetuned'], eval_type) for result in batch_unified_results]
         except RuntimeError as e:
             if "out of memory" in str(e).lower() and len(batch_images) > 1:
                 logger.warning("OOM during batched inference. Falling back to per-sample inference for this batch.")
@@ -609,7 +700,7 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
                 for img in batch_images:
                     try:
                         unified_result = unified_inference(model, img, prompt)
-                        batch_results.append(extract_prediction_result(unified_result))
+                        batch_results.append(extract_prediction_result(unified_result, config['use_finetuned'], eval_type))
                     except Exception as inner_e:
                         logger.error(f"Per-sample inference failed: {inner_e}")
                         batch_results.append({
@@ -771,7 +862,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Evaluate VLM/MLLM models on artifact detection tasks'
     )
-    parser.add_argument('--model', type=str, choices=['qwen', 'intern', 'gpt', 'gemini', 'pal', 'diff'], 
+    parser.add_argument('--model', type=str, choices=['qwen', 'intern', 'gpt', 'gemini', 'pal', 'diff', 'legion'], 
                        default='qwen', help='Model type to evaluate (default: qwen)')
     parser.add_argument('--dataset', type=str, 
                        choices=['synthscars', 'synartifact', 'loki', 'richhf'], 
@@ -793,6 +884,9 @@ def main():
                        help='Custom base directory for dataset')
     parser.add_argument('--batch-size', type=int, default=1,
                        help='Batched inference size (default: 1)')
+    parser.add_argument('--finetune-mode', type=str, 
+                       choices=['1k', '3k_all', '3k_bin', '3k_loc', '3k_exp', '3k_reasoned_bin', '3k_reasoned_loc', '8k'])
+          
                        
     args = parser.parse_args()
     
@@ -819,11 +913,12 @@ def main():
         'log_dir': args.log_dir,
         'use_finetuned': args.use_finetuned,
         'device': args.device,
-        'batch_size': args.batch_size
+        'batch_size': args.batch_size,
+        'finetune_mode': args.finetune_mode
     }
     
     # Setup logging
-    logger = setup_logging(args.log_dir, args.dataset)
+    logger = setup_logging(args.log_dir, args.dataset, args.model, args.use_finetuned, args.type, args.finetune_mode)
     
     logger.info(f"🚀 Starting evaluation for {args.dataset.upper()} dataset")
     logger.info(f"🤖 Model: {args.model}")
@@ -844,8 +939,17 @@ def main():
         output_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_file = output_dir / f"results_{args.dataset}_{args.model}_{timestamp}.json"
-        
+        if args.use_finetuned:
+            if args.type == 'localization':
+                results_file = output_dir / f"results_{args.dataset}_{args.model}_finetuned_legion_{args.finetune_mode}.json"
+            else:
+                results_file = output_dir / f"results_{args.dataset}_{args.model}_finetuned_{args.type}_{args.finetune_mode}.json"
+        else:
+            if args.type == 'localization':
+                results_file = output_dir / f"results_{args.dataset}_{args.model}_legion_{timestamp}.json"
+            else:
+                results_file = output_dir / f"results_{args.dataset}_{args.model}_{args.type}_{timestamp}.json"
+
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
         
