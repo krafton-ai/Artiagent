@@ -13,7 +13,7 @@ from PIL import Image
 
 # FLUX imports
 import flux
-from flux.sampling import denoise, denoise_first_order, get_schedule, prepare, unpack
+from flux.sampling import denoise, denoise_first_order, denoise_fireflow, get_schedule, prepare, unpack
 from flux.util import (configs, embed_watermark, load_ae, load_clip,
                         load_flow_model, load_t5)
 from flux.math import get_attn_mask
@@ -164,6 +164,8 @@ class FluxGenerator:
         pe_step_distortion: Optional[int] = None,
         pe_step_fusion: Optional[int] = None,
         inject_step: Optional[int] = None,
+        num_steps: Optional[int] = None,
+        use_fireflow: bool = False,
     ):
         """
         Sample the flux model with artifact injection supporting arbitrary shapes.
@@ -190,7 +192,9 @@ class FluxGenerator:
         flux_args.output_dir = output_dir
         flux_args.inject_step = inject_step if inject_step is not None else self.config.inject_step
         torch_device = torch.device(self.device)
-
+        if num_steps is not None:
+            flux_args.num_steps = num_steps
+            
         init_image = None
         init_image = self.load_image(flux_args.source_img)
         
@@ -266,8 +270,9 @@ class FluxGenerator:
         
         # Choose denoising function based on configuration
         # RF solver (denoise) is more accurate but slower than first-order denoising
-        denoise_func = denoise if self.config.use_rf_solver else denoise_first_order
-        
+        # denoise_func = denoise_fireflow if use_fireflow else denoise_first_order
+        # denoise_func = denoise_fireflow
+        denoise_func = denoise_fireflow
         # inversion initial noise
         z, info = denoise_func(self.model, **inp, timesteps=timesteps, guidance=1, inverse=True, info=info, percentage_of_steps=flux_args.percentage_of_steps)
         inp_target["img"] = z

@@ -185,10 +185,7 @@ class DoubleStreamBlock(nn.Module):
         k = torch.cat((txt_k, img_k), dim=2)
         v = torch.cat((txt_v, img_v), dim=2)
 
-        if info['inverse']:
-            attn = attention(q, k, v, pe)
-        else:
-            attn = attention(q, k, v, pe=pe,) 
+        attn = attention(q, k, v, pe=pe)
 
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
         img = img + img_mod1.gate * self.img_attn.proj(img_attn)
@@ -261,17 +258,13 @@ class SingleStreamBlock(nn.Module):
                 mask[info['patch_ids']] = False
                 mask[:512] = False
                 keep_indices = mask.nonzero(as_tuple=True)[0]
-                if info['inject']:
+                if feature_name in info['feature']:
                     backup = info['feature'][feature_name]
                     v[:, :, keep_indices, :] = backup[:, :, keep_indices, :]
                     if len(info['patch_ref_ids']) != 0:
                         v[:, :, info['patch_ids'], :] = v[:, :, info['patch_ref_ids'], :]
 
-        if info['inverse']:
-            attn = attention(q, k, v, pe)
-        else:
-            attn = attention(q, k, v, pe)
-
+        attn = attention(q, k, v, pe=pe)
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
         return x + mod.gate * output, info

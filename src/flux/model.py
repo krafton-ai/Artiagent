@@ -123,6 +123,7 @@ class Flux(nn.Module):
                 elif artifact_data['artifact_type'] == 'removal' and info['removal']:
                     ref_ids = artifact_data['reference_patch_indices'].copy()
                     target_ids = artifact_data['target_patch_indices'].copy()
+                    # ref_ids = get_closest_patch_inds(info['patch_h'], info['patch_w'], target_ids, ref_ids)
                     inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
                     # Accumulate IDs (after target_ids modification)
                     if info['inject']:
