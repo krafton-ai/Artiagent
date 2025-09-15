@@ -18,6 +18,8 @@ from pathlib import Path
 
 from models import QwenEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval, LegionEval
 from eval_utils import Evaluation, parse_json, create_prompt
+import legion_eval_utils
+import wsol_eval_utils
 
 def extract_bboxes(text: str) -> List[List[int]]:
     """
@@ -50,7 +52,7 @@ def process_finetuned_output(raw_output: str, eval_type: str) -> Dict[str, Any]:
         Dictionary formatted for the specific evaluation type
     """
     # Check if the model says there are no artifacts
-    if "there are no artifacts in the image" in raw_output.lower() in raw_output.lower():
+    if "there are no artifacts in the image" in raw_output.lower():
         if eval_type == 'binary':
             return {'prediction': False}
         elif eval_type == 'localization':
@@ -58,6 +60,10 @@ def process_finetuned_output(raw_output: str, eval_type: str) -> Dict[str, Any]:
         elif eval_type == 'explanation':
             return {"explanation": raw_output}
     
+    if "true" in raw_output.lower():
+        if eval_type == 'binary':
+            return{'prediction': True}
+            
     # Extract bounding boxes from the output
     bboxes = extract_bboxes(raw_output)
     
@@ -456,6 +462,10 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
     model = create_model(config)
     data_iterator = DatasetIterator(config)
     evaluator = Evaluation()
+    
+    # Create additional evaluators for comprehensive localization evaluation
+    legion_evaluator = legion_eval_utils.Evaluation()
+    wsol_evaluator = wsol_eval_utils.Evaluation()
 
     if config.get('model_type') == 'pal' and isinstance(model, PalEval):
         memory_info = model.get_gpu_memory_info()
@@ -501,6 +511,19 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             stats = evaluator.generate_statistics(
                 dataset_type, eval_type, json_data, prediction, image_size=image.size
             )
+            
+            # For localization evaluation, also run LEGION and WSOL methods
+            if eval_type == 'localization':
+                legion_stats = legion_evaluator.generate_statistics(
+                    dataset_type, eval_type, json_data, prediction, image_size=image.size
+                )
+                wsol_stats = wsol_evaluator.generate_statistics(
+                    dataset_type, eval_type, json_data, prediction, image_size=image.size
+                )
+                
+                # Merge stats with prefixes to distinguish evaluation methods
+                stats.update({f'legion_{k}': v for k, v in legion_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
+                stats.update({f'wsol_{k}': v for k, v in wsol_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
             if eval_type == 'binary':
                 sample_result = {
                     'image_path': str(image_path),
@@ -517,6 +540,7 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             elif eval_type == 'localization':
                 sample_result = {
                     'image_path': str(image_path),
+                    # Standard evaluation metrics
                     'iou': stats['iou'],
                     'loc_tp': stats['loc_tp'],
                     'loc_fp': stats['loc_fp'],
@@ -524,6 +548,16 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
                     'loc_precision': stats['loc_precision'],
                     'loc_recall': stats['loc_recall'],
                     'loc_f1': stats['loc_f1'],
+                    # LEGION evaluation metrics
+                    'legion_iou': stats.get('legion_iou'),
+                    'legion_miou': stats.get('legion_miou'),
+                    'legion_iou_foreground': stats.get('legion_iou_foreground'),
+                    'legion_iou_background': stats.get('legion_iou_background'),
+                    'legion_pixel_f1': stats.get('legion_pixel_f1'),
+                    'legion_pixel_precision': stats.get('legion_pixel_precision'),
+                    'legion_pixel_recall': stats.get('legion_pixel_recall'),
+                    # WSOL evaluation metrics
+                    'wsol_iou': stats.get('wsol_iou'),
                     'prediction': prediction
                 }
                 if sample_result.get('iou', None) is None:
@@ -585,6 +619,20 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             total_loc_tp = sum(r.get('loc_tp', 0) for r in valid_loc_results if r.get('loc_tp') is not None)
             total_loc_fp = sum(r.get('loc_fp', 0) for r in valid_loc_results if r.get('loc_fp') is not None)
             total_loc_fn = sum(r.get('loc_fn', 0) for r in valid_loc_results if r.get('loc_fn') is not None)
+            
+            # LEGION evaluation metrics
+            legion_valid_results = [r for r in valid_loc_results if r.get('legion_iou') is not None]
+            legion_mean_iou = sum(r.get('legion_iou', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_miou = sum(r.get('legion_miou', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_iou_fg = sum(r.get('legion_iou_foreground', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_iou_bg = sum(r.get('legion_iou_background', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_pixel_f1 = sum(r.get('legion_pixel_f1', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_pixel_precision = sum(r.get('legion_pixel_precision', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_pixel_recall = sum(r.get('legion_pixel_recall', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            
+            # WSOL evaluation metrics
+            wsol_valid_results = [r for r in valid_loc_results if r.get('wsol_iou') is not None]
+            wsol_mean_iou = sum(r.get('wsol_iou', 0.0) for r in wsol_valid_results) / len(wsol_valid_results) if wsol_valid_results else 0.0
         elif eval_type == 'explanation':
             mean_rouge_l = sum(r.get('rouge_l', 0.0) for _, r in results.items()) / total_samples
             mean_css = sum(r.get('css', 0.0) for _, r in results.items()) / total_samples
@@ -609,9 +657,15 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info("")
         elif eval_type == 'localization':
             valid_samples = len(valid_loc_results)
-            logger.info(f"Threshold-independent Mean IoU: {mean_iou:.3f}")
+            logger.info("=" * 80)
+            logger.info("COMPREHENSIVE LOCALIZATION EVALUATION RESULTS")
+            logger.info("=" * 80)
+            logger.info(f"Valid samples (positive samples): {valid_samples}")
             logger.info("")
-            logger.info("LOCALIZATION F1 METRICS:")
+            
+            # Standard evaluation results
+            logger.info("📊 STANDARD EVALUATION (Threshold-Independent Bbox Metrics):")
+            logger.info(f"  Mean IoU: {mean_iou:.3f}")
             logger.info(f"  Mean F1: {mean_loc_f1:.3f}")
             logger.info(f"  Mean Precision: {mean_loc_precision:.3f}")
             logger.info(f"  Mean Recall: {mean_loc_recall:.3f}")
@@ -624,7 +678,26 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info(f"  Global Precision: {global_precision:.3f}")
             logger.info(f"  Global Recall: {global_recall:.3f}")
             logger.info(f"  Global F1: {global_f1:.3f}")
-            logger.info(f"Valid samples (positive samples): {valid_samples}")
+            logger.info("")
+            
+            # LEGION evaluation results
+            legion_samples = len(legion_valid_results)
+            logger.info("🎯 LEGION EVALUATION (Pixel-Level Segmentation Metrics):")
+            logger.info(f"  Valid samples: {legion_samples}")
+            logger.info(f"  Mean IoU (Legacy): {legion_mean_iou:.3f}")
+            logger.info(f"  Mean IoU (mIoU): {legion_mean_miou:.3f}")
+            logger.info(f"    - Foreground IoU: {legion_mean_iou_fg:.3f}")
+            logger.info(f"    - Background IoU: {legion_mean_iou_bg:.3f}")
+            logger.info(f"  Pixel F1 Score: {legion_mean_pixel_f1:.3f}")
+            logger.info(f"  Pixel Precision: {legion_mean_pixel_precision:.3f}")
+            logger.info(f"  Pixel Recall: {legion_mean_pixel_recall:.3f}")
+            logger.info("")
+            
+            # WSOL evaluation results
+            wsol_samples = len(wsol_valid_results)
+            logger.info("🔄 WSOL EVALUATION (Threshold-Independent IoU):")
+            logger.info(f"  Valid samples: {wsol_samples}")
+            logger.info(f"  Mean IoU: {wsol_mean_iou:.3f}")
             logger.info("")
         elif eval_type == 'explanation':
             logger.info(f"Mean ROUGE-L (all samples): {mean_rouge_l:.3f}")
@@ -677,6 +750,10 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
     model = create_model(config)
     data_iterator = DatasetIterator(config)
     evaluator = Evaluation()
+    
+    # Create additional evaluators for comprehensive localization evaluation
+    legion_evaluator = legion_eval_utils.Evaluation()
+    wsol_evaluator = wsol_eval_utils.Evaluation()
 
     if config.get('model_type') == 'pal' and isinstance(model, PalEval):
         memory_info = model.get_gpu_memory_info()
@@ -758,6 +835,19 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
                 stats = evaluator.generate_statistics(
                     dataset_type, eval_type, json_data, result, image_size=image.size
                 )
+                
+                # For localization evaluation, also run LEGION and WSOL methods
+                if eval_type == 'localization':
+                    legion_stats = legion_evaluator.generate_statistics(
+                        dataset_type, eval_type, json_data, result, image_size=image.size
+                    )
+                    wsol_stats = wsol_evaluator.generate_statistics(
+                        dataset_type, eval_type, json_data, result, image_size=image.size
+                    )
+                    
+                    # Merge stats with prefixes to distinguish evaluation methods
+                    stats.update({f'legion_{k}': v for k, v in legion_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
+                    stats.update({f'wsol_{k}': v for k, v in wsol_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
                 if eval_type == 'binary':
                     sample_result = {
                         'image_path': str(image_path),
@@ -774,6 +864,7 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
                 elif eval_type == 'localization':
                     sample_result = {
                         'image_path': str(image_path),
+                        # Standard evaluation metrics
                         'iou': stats['iou'],
                         'loc_tp': stats['loc_tp'],
                         'loc_fp': stats['loc_fp'],
@@ -781,6 +872,16 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
                         'loc_precision': stats['loc_precision'],
                         'loc_recall': stats['loc_recall'],
                         'loc_f1': stats['loc_f1'],
+                        # LEGION evaluation metrics
+                        'legion_iou': stats.get('legion_iou'),
+                        'legion_miou': stats.get('legion_miou'),
+                        'legion_iou_foreground': stats.get('legion_iou_foreground'),
+                        'legion_iou_background': stats.get('legion_iou_background'),
+                        'legion_pixel_f1': stats.get('legion_pixel_f1'),
+                        'legion_pixel_precision': stats.get('legion_pixel_precision'),
+                        'legion_pixel_recall': stats.get('legion_pixel_recall'),
+                        # WSOL evaluation metrics
+                        'wsol_iou': stats.get('wsol_iou'),
                         'prediction': result
                     }
                     if sample_result.get('iou', None) is None:
@@ -848,6 +949,20 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             total_loc_tp = sum(r.get('loc_tp', 0) for r in valid_loc_results if r.get('loc_tp') is not None)
             total_loc_fp = sum(r.get('loc_fp', 0) for r in valid_loc_results if r.get('loc_fp') is not None)
             total_loc_fn = sum(r.get('loc_fn', 0) for r in valid_loc_results if r.get('loc_fn') is not None)
+            
+            # LEGION evaluation metrics
+            legion_valid_results = [r for r in valid_loc_results if r.get('legion_iou') is not None]
+            legion_mean_iou = sum(r.get('legion_iou', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_miou = sum(r.get('legion_miou', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_iou_fg = sum(r.get('legion_iou_foreground', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_iou_bg = sum(r.get('legion_iou_background', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_pixel_f1 = sum(r.get('legion_pixel_f1', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_pixel_precision = sum(r.get('legion_pixel_precision', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            legion_mean_pixel_recall = sum(r.get('legion_pixel_recall', 0.0) for r in legion_valid_results) / len(legion_valid_results) if legion_valid_results else 0.0
+            
+            # WSOL evaluation metrics
+            wsol_valid_results = [r for r in valid_loc_results if r.get('wsol_iou') is not None]
+            wsol_mean_iou = sum(r.get('wsol_iou', 0.0) for r in wsol_valid_results) / len(wsol_valid_results) if wsol_valid_results else 0.0
         elif eval_type == 'explanation':
             mean_rouge_l = sum(r.get('rouge_l', 0.0) for _, r in results.items()) / total_samples
             mean_css = sum(r.get('css', 0.0) for _, r in results.items()) / total_samples
@@ -872,9 +987,15 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info("")
         elif eval_type == 'localization':
             valid_samples = len(valid_loc_results)
-            logger.info(f"Threshold-independent Mean IoU: {mean_iou:.3f}")
+            logger.info("=" * 80)
+            logger.info("COMPREHENSIVE LOCALIZATION EVALUATION RESULTS")
+            logger.info("=" * 80)
+            logger.info(f"Valid samples (positive samples): {valid_samples}")
             logger.info("")
-            logger.info("LOCALIZATION F1 METRICS:")
+            
+            # Standard evaluation results
+            logger.info("📊 STANDARD EVALUATION (Threshold-Independent Bbox Metrics):")
+            logger.info(f"  Mean IoU: {mean_iou:.3f}")
             logger.info(f"  Mean F1: {mean_loc_f1:.3f}")
             logger.info(f"  Mean Precision: {mean_loc_precision:.3f}")
             logger.info(f"  Mean Recall: {mean_loc_recall:.3f}")
@@ -887,7 +1008,26 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info(f"  Global Precision: {global_precision:.3f}")
             logger.info(f"  Global Recall: {global_recall:.3f}")
             logger.info(f"  Global F1: {global_f1:.3f}")
-            logger.info(f"Valid samples (positive samples): {valid_samples}")
+            logger.info("")
+            
+            # LEGION evaluation results
+            legion_samples = len(legion_valid_results)
+            logger.info("🎯 LEGION EVALUATION (Pixel-Level Segmentation Metrics):")
+            logger.info(f"  Valid samples: {legion_samples}")
+            logger.info(f"  Mean IoU (Legacy): {legion_mean_iou:.3f}")
+            logger.info(f"  Mean IoU (mIoU): {legion_mean_miou:.3f}")
+            logger.info(f"    - Foreground IoU: {legion_mean_iou_fg:.3f}")
+            logger.info(f"    - Background IoU: {legion_mean_iou_bg:.3f}")
+            logger.info(f"  Pixel F1 Score: {legion_mean_pixel_f1:.3f}")
+            logger.info(f"  Pixel Precision: {legion_mean_pixel_precision:.3f}")
+            logger.info(f"  Pixel Recall: {legion_mean_pixel_recall:.3f}")
+            logger.info("")
+            
+            # WSOL evaluation results
+            wsol_samples = len(wsol_valid_results)
+            logger.info("🔄 WSOL EVALUATION (Threshold-Independent IoU):")
+            logger.info(f"  Valid samples: {wsol_samples}")
+            logger.info(f"  Mean IoU: {wsol_mean_iou:.3f}")
             logger.info("")
         elif eval_type == 'explanation':
             logger.info(f"Mean ROUGE-L (all samples): {mean_rouge_l:.3f}")
