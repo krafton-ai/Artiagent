@@ -1100,6 +1100,35 @@ class Evaluation:
                 )
             except Exception:
                 stats['iou'] = 0.0
+
+        elif dataset_type == 'ours':
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+            
+            if has_gt_artifacts:
+                # Only compute localization metrics for positive samples (samples with artifacts)
+                ground_bbox_list = json_data['bboxes']
+                
+                if ground_bbox_list:
+                    if len(ground_bbox_list) > 1:
+                        # Multiple GT bboxes - use bbox_list for optimal matching
+                        gt_type = 'bbox_list'
+                        iou = self._compute_threshold_independent_iou(
+                            pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
+                        )
+                        stats['iou'] = iou
+                    else:
+                        # Single GT bbox
+                        gt_type = 'bbox'
+                        iou = self._compute_threshold_independent_iou(
+                            pred_data, ground_bbox_list[0], pred_type, gt_type, img_w, img_h
+                        )
+                        stats['iou'] = iou
+                else:
+                    stats['iou'] = 0.0
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark IoU as None so it can be filtered out during aggregation
+                stats['iou'] = None
         
         return stats
     

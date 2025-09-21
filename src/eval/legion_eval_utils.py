@@ -597,7 +597,46 @@ class Evaluation:
             
             # Keep legacy IoU for backward compatibility
             stats['iou'] = pixel_metrics['iou_foreground']
-        
+
+        elif dataset_type == 'ours':
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+
+            if has_gt_artifacts:
+                ground_bbox_list = json_data['bboxes']
+                
+                gt_mask = self._convert_to_binary_mask(ground_bbox_list, 'bbox_list', img_w, img_h)
+            
+                # Convert predictions to binary mask
+                if pred_heatmap is not None:
+                    pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+                elif result_bbox_list:
+                    pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
+                else:
+                    pred_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            
+                # Compute pixel-level metrics
+                pixel_metrics = self._compute_pixel_level_metrics(pred_mask, gt_mask)
+                stats.update(pixel_metrics)
+
+                # Keep legacy IoU for backward compatibility
+                stats['iou'] = pixel_metrics['iou_foreground']
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark these metrics as None so they can be filtered out during aggregation
+                stats.update({
+                    'iou': None,
+                    'miou': None,
+                    'iou_foreground': None,
+                    'iou_background': None,
+                    'pixel_f1': None,
+                    'pixel_precision': None,
+                    'pixel_recall': None,
+                    'tp_pixels': None,
+                    'tn_pixels': None,
+                    'fp_pixels': None,
+                    'fn_pixels': None
+                })
+
         return stats
     
     def _handle_explanation_evaluation(self, dataset_type: str, json_data: Dict, result: Dict, 

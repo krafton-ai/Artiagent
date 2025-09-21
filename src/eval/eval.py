@@ -166,6 +166,8 @@ class DatasetIterator:
             self._load_loki()
         elif self.dataset_type == "richhf":
             self._load_richhf()
+        elif self.dataset_type == "ours":
+            self._load_ours()
         else:
             raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
             
@@ -246,6 +248,11 @@ class DatasetIterator:
             json_data = sample
             image_path = self.base_dir / json_data["filename"]
             return json_data, image_path
+
+        elif self.dataset_type == "ours":
+            json_data = sample
+            image_path = f"{self.base_dir}/images/{json_data['id']}.png"
+            return json_data, image_path
         # Should not reach here
         raise RuntimeError("Unsupported dataset type in _process_sample")
     
@@ -272,6 +279,12 @@ class DatasetIterator:
     def _load_richhf(self):
         """Load RichHF-18K dataset from TFRecord file."""
         json_path = os.path.join(self.base_dir, "test.json")
+        with open(json_path, "r") as f:
+            self.data = json.load(f)
+    
+    def _load_ours(self):
+        """Load custom eval dataset"""
+        json_path = self.base_dir / "metadata.json"
         with open(json_path, "r") as f:
             self.data = json.load(f)
 
@@ -538,36 +551,65 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
                     f"Prediction: {prediction}"
                 )
             elif eval_type == 'localization':
-                sample_result = {
-                    'image_path': str(image_path),
-                    # Standard evaluation metrics
-                    'iou': stats['iou'],
-                    'loc_tp': stats['loc_tp'],
-                    'loc_fp': stats['loc_fp'],
-                    'loc_fn': stats['loc_fn'],
-                    'loc_precision': stats['loc_precision'],
-                    'loc_recall': stats['loc_recall'],
-                    'loc_f1': stats['loc_f1'],
-                    # LEGION evaluation metrics
-                    'legion_iou': stats.get('legion_iou'),
-                    'legion_miou': stats.get('legion_miou'),
-                    'legion_iou_foreground': stats.get('legion_iou_foreground'),
-                    'legion_iou_background': stats.get('legion_iou_background'),
-                    'legion_pixel_f1': stats.get('legion_pixel_f1'),
-                    'legion_pixel_precision': stats.get('legion_pixel_precision'),
-                    'legion_pixel_recall': stats.get('legion_pixel_recall'),
-                    # WSOL evaluation metrics
-                    'wsol_iou': stats.get('wsol_iou'),
-                    'prediction': prediction
-                }
-                if sample_result.get('iou', None) is None:
-                    logger.info(f"Sample {i + 1} - Skipped (negative sample)")
+                if dataset_type == 'synartifact':
+                    has_gt_artifacts = bool(json_data.get('Artifacts annotation', []))
+                elif dataset_type == 'ours':
+                    has_gt_artifacts = json_data.get('has_artifacts', False)
                 else:
+                    has_gt_artifacts = True
+                if has_gt_artifacts:
+                    sample_result = {
+                        'image_path': str(image_path),
+                        # Standard evaluation metrics
+                        'iou': stats['iou'],
+                        'loc_tp': stats['loc_tp'],
+                        'loc_fp': stats['loc_fp'],
+                        'loc_fn': stats['loc_fn'],
+                        'loc_precision': stats['loc_precision'],
+                        'loc_recall': stats['loc_recall'],
+                        'loc_f1': stats['loc_f1'],
+                        # LEGION evaluation metrics
+                        'legion_iou': stats.get('legion_iou'),
+                        'legion_miou': stats.get('legion_miou'),
+                        'legion_iou_foreground': stats.get('legion_iou_foreground'),
+                        'legion_iou_background': stats.get('legion_iou_background'),
+                        'legion_pixel_f1': stats.get('legion_pixel_f1'),
+                        'legion_pixel_precision': stats.get('legion_pixel_precision'),
+                        'legion_pixel_recall': stats.get('legion_pixel_recall'),
+                        # WSOL evaluation metrics
+                        'wsol_iou': stats.get('wsol_iou'),
+                        'prediction': prediction
+                    }
                     logger.info(
                         f"Sample {i + 1} - IoU: {sample_result['iou']:.3f}, "
                         f"F1: {sample_result['loc_f1']:.3f} (P: {sample_result['loc_precision']:.3f}, "
                         f"R: {sample_result['loc_recall']:.3f}, TP/FP/FN: {sample_result['loc_tp']}/{sample_result['loc_fp']}/{sample_result['loc_fn']})"
                     )
+                else:
+                    sample_result = {
+                        'image_path': str(image_path),
+                        # Standard evaluation metrics
+                        'iou': None,
+                        'loc_tp': None,
+                        'loc_fp': None,
+                        'loc_fn': None,
+                        'loc_precision': None,
+                        'loc_recall': None,
+                        'loc_f1': None,
+                        # LEGION evaluation metrics
+                        'legion_iou': None,
+                        'legion_miou': None,
+                        'legion_iou_foreground': None,
+                        'legion_iou_background': None,
+                        'legion_pixel_f1': None,
+                        'legion_pixel_precision': None,
+                        'legion_pixel_recall': None,
+                        # WSOL evaluation metrics
+                        'wsol_iou': None,
+                        'prediction': prediction
+                    }
+                    logger.info(f"Sample {i + 1} - Skipped (negative sample)")
+                    
             elif eval_type == 'explanation':
                 sample_result = {
                     'image_path': str(image_path),
@@ -1059,8 +1101,8 @@ def main():
     parser.add_argument('--model', type=str, choices=['qwen', 'intern', 'gpt', 'gemini', 'pal', 'diff', 'legion'], 
                        default='qwen', help='Model type to evaluate (default: qwen)')
     parser.add_argument('--dataset', type=str, 
-                       choices=['synthscars', 'synartifact', 'loki', 'richhf'], 
-                       default='loki', help='Dataset to evaluate on (default: loki)')
+                       choices=['synthscars', 'synartifact', 'loki', 'richhf', 'ours'], 
+                       default='ours', help='Dataset to evaluate on (default: ours)')
     parser.add_argument('--type', type=str,
                        choices=['binary', 'localization', 'explanation'],
                        default='explanation', help='Evaluation type (default: explanation)')
@@ -1083,7 +1125,7 @@ def main():
     parser.add_argument('--gpu-devices', type=str, nargs='+', default=None,
                        help='Specify GPU devices to use (e.g., 0 1 or cuda:0 cuda:1)')
     parser.add_argument('--finetune-mode', type=str, 
-                       choices=['1k', '3k_all', '3k_bin', '3k_loc', '3k_exp', '3k_reasoned_bin', '3k_reasoned_loc', '8k'])
+                       choices=['4epoch', '1e-6', '5e-6', '5e-5', '1e-4', '5e-4', '1epoch_open', 'all_open', 'shuf', 'sep', 'sep_shuf', 'new_prompt_sep', 'new_prompt_check', 'new_prompt_sep_reasoned', 've_warmup'])
                        
     args = parser.parse_args()
     
@@ -1093,7 +1135,8 @@ def main():
             'synthscars': "/home/jovyan/image-artifacts/data/SynthScars/test",
             'synartifact': "/home/jovyan/image-artifacts/data/SynArtifact/data",
             'loki': "/home/jovyan/image-artifacts/data/loki",
-            'richhf': "/home/jovyan/image-artifacts/data/richhf-18k"
+            'richhf': "/home/jovyan/image-artifacts/data/richhf-18k",
+            'ours': "/home/jovyan/image-artifacts/data/eval"
         }
         base_dir = dataset_paths.get(args.dataset)
         if base_dir is None:
