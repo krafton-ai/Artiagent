@@ -251,7 +251,7 @@ class DatasetIterator:
 
         elif self.dataset_type == "ours":
             json_data = sample
-            image_path = f"{self.base_dir}/images/{json_data['id']}.png"
+            image_path = self.base_dir / f"images/{json_data['id']}.png"
             return json_data, image_path
         # Should not reach here
         raise RuntimeError("Unsupported dataset type in _process_sample")
