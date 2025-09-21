@@ -29,6 +29,7 @@ import warnings
 warnings.filterwarnings('ignore')
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+from tqdm import tqdm
 
 import numpy as np
 import torch
@@ -846,6 +847,14 @@ class UnifiedDataPipeline:
                 for exp_id in self.experiment_data.keys()
             }
             
+            # Initialize progress bar for Phase 2
+            progress_bar = tqdm(
+                total=len(futures),
+                desc="Phase 2 Progress", 
+                unit="exp",
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
+            )
+            
             # Process results as they complete
             for future in as_completed(futures):
                 exp_id = futures[future]
@@ -875,16 +884,32 @@ class UnifiedDataPipeline:
                                 
                                 # Clear this experiment from memory to save space
                                 del self.filtered_results[exp_id]
-                                
-                        print(f"✓ Experiment {exp_id}: ALL artifacts passed - saved")
-                    else:
-                        print(f"✗ Experiment {exp_id}: One or more artifacts failed - DISCARDED")
+                    
+                    # Update progress bar with current statistics
+                    discarded_count = len(self.discarded_experiments)
+                    progress_bar.set_postfix({
+                        '✓': passed_experiments, 
+                        '✗': discarded_count, 
+                        'errors': phase2_errors
+                    })
+                    progress_bar.update(1)
                         
                 except Exception as e:
                     phase2_errors += 1
                     error_msg = str(e)
                     logger.error(f"Error processing experiment {exp_id}: {error_msg}")
-                    print(f"✗ Error processing experiment {exp_id}: {error_msg}")
+                    
+                    # Update progress bar with error statistics
+                    discarded_count = len(self.discarded_experiments)
+                    progress_bar.set_postfix({
+                        '✓': passed_experiments, 
+                        '✗': discarded_count, 
+                        'errors': phase2_errors
+                    })
+                    progress_bar.update(1)
+            
+            # Close progress bar when done
+            progress_bar.close()
         
         # Update total cost with Phase 2 costs
         self.money_manager.total_cost += total_phase2_cost
@@ -943,7 +968,7 @@ def main():
     parser.add_argument('--gsam_dir', required=True, help='Directory containing GSAM generated data')
     parser.add_argument('--flux_dir', required=True, help='Directory containing FLUX generated data')
     parser.add_argument('--output_dir', required=True, help='Directory to save filtered datasets with explanations')
-    parser.add_argument('--max_workers', type=int, default=8, help='Maximum number of threads for Phase 2 (default: 8)')
+    parser.add_argument('--max_workers', type=int, default=64, help='Maximum number of threads for Phase 2 (default: 8)')
     
     args = parser.parse_args()
             
