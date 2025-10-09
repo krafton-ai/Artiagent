@@ -14,7 +14,7 @@ from PIL import Image
 # FLUX imports
 import flux
 from flux.sampling import denoise, denoise_first_order, denoise_fireflow, get_schedule, prepare, unpack
-from flux.util import (configs, embed_watermark, load_ae, load_clip,
+from flux.util import (configs, load_ae, load_clip,
                         load_flow_model, load_t5)
 from flux.math import get_attn_mask
 
