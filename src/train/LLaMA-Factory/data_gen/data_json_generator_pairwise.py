@@ -12,25 +12,28 @@ from PIL import Image
 from bbox_aware_augmentations import BBoxAwareAugmentations, robust_validate_bboxes
 import random
 
+DATA_DIR = "/data2/jhpark/image-artifacts/data/"
+JSON_DIR = "/home/jhpark/image-artifacts/src/train/LLaMA-Factory/data"
+
 def create_dataset_entry(img_path, bboxes, artifacts_data, caption="", is_augmented=False, aug_metadata=None, is_negative_sample=False):
     """Helper to create dataset entry with validation."""
     try:
         bbox_label_pairs = []
         
         if is_negative_sample:
-            gpt_response = "There are no artifacts in this image. []"
+            gpt_response = "There are no artifacts in this image. [] ```json\{'has_artifacts': false\}```"
         else:
             for i, artifact in enumerate(artifacts_data):
                 if i < len(bboxes) and len(bboxes[i]) == 4:
                     bbox = bboxes[i]
                     label = artifact.get("label", "Unknown")
                     bbox_str = f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]"
-                    bbox_label_pairs.append(f"{bbox_str}: {label}")
+                    bbox_label_pairs.append(f"{label}: {bbox_str}")
             
             if bbox_label_pairs:
-                gpt_response = f"{caption} [{', '.join(bbox_label_pairs)}]"
+                gpt_response = f"{caption} [{', '.join(bbox_label_pairs)}] " + "```json\{'has_artifacts': true\}```"
             else:
-                gpt_response = f"{caption} "
+                gpt_response = f"{caption} "  + "```json\{'has_artifacts': true\}```"
         
         entry = {
             "images": [img_path],
@@ -189,7 +192,7 @@ def safe_process_and_augment_image(image_path, bboxes, artifacts, caption, augme
         return False
 
 
-def safe_convert_to_sft_format(data_dir, dataset, stats, max_samples=None, enable_augmentation=True, augmentation_prob=0.3, is_negative_sample=False):
+def safe_convert_to_sft_format(data_dir, dataset, stats, samples=None, enable_augmentation=True, augmentation_prob=0.3, is_negative_sample=False):
     """
     Safely convert artifact detection data with comprehensive validation.
     """
@@ -228,8 +231,8 @@ def safe_convert_to_sft_format(data_dir, dataset, stats, max_samples=None, enabl
         for root, dirs, files in os.walk(data_dir):
             print(f"    📁 Scanning: {root}")
             for i, img_id in enumerate(dirs):
-                if max_samples and samples_added >= max_samples:
-                    print(f"    🎯 Reached max samples limit ({max_samples})")
+                if samples and samples_added >= samples:
+                    print(f"    🎯 Reached samples limit ({samples})")
                     break
                 
                 dir_path = os.path.join(root, img_id)
@@ -267,27 +270,74 @@ def safe_convert_to_sft_format(data_dir, dataset, stats, max_samples=None, enabl
                             print(f"    ⚠️  Error loading metadata for {img_id}: {e}")
                             continue
                         
-                    # Process artifact image
-                    if has_artifact_image:
-                        if augmentor and augmentor.should_augment():
-                            success = safe_process_and_augment_image(
-                                artifact_image_path, original_bboxes, artifacts, caption,
-                                augmentor, dataset, dir_path, "artifact_image", create_dataset_entry, is_negative_sample
-                            )
-                            if success:
-                                stats['augmented_count'] += 1
-                                samples_added += 1
+                        # Process images as pairs - both artifact and real images
+                        pair_added = False
+                        
+                        if has_artifact_image and has_real_image:
+                            # Both images exist - process as positive-negative pair
+                            artifact_success = False
+                            real_success = False
+                            
+                            # Process artifact image (positive sample)
+                            if augmentor and augmentor.should_augment():
+                                artifact_success = safe_process_and_augment_image(
+                                    artifact_image_path, original_bboxes, artifacts, caption,
+                                    augmentor, dataset, dir_path, "artifact_image", create_dataset_entry, False
+                                )
+                                if not artifact_success:
+                                    # Fallback to original artifact image
+                                    try:
+                                        dataset.append(create_dataset_entry(artifact_image_path, original_bboxes, artifacts, caption))
+                                        stats['original_count'] += 1
+                                        artifact_success = True
+                                    except Exception as e:
+                                        print(f"    ⚠️  Error adding original artifact image: {e}")
+                                else:
+                                    stats['augmented_count'] += 1
+                            else:
+                                try:
+                                    dataset.append(create_dataset_entry(artifact_image_path, original_bboxes, artifacts, caption))
+                                    stats['original_count'] += 1
+                                    artifact_success = True
+                                except Exception as e:
+                                    print(f"    ⚠️  Error adding original artifact image: {e}")
+                            
+                            # Process real image (negative sample)
+                            if augmentor and augmentor.should_augment():
+                                real_success = safe_process_and_augment_image(
+                                    real_image_path, [], [], "There are no artifacts in this image.",
+                                    augmentor, dataset, dir_path, "real_image", create_dataset_entry, True
+                                )
+                                if not real_success:
+                                    # Fallback to original real image
+                                    try:
+                                        dataset.append(create_dataset_entry(real_image_path, [], [], "There are no artifacts in this image.", is_negative_sample=True))
+                                        stats['original_count'] += 1
+                                        real_success = True
+                                    except Exception as e:
+                                        print(f"    ⚠️  Error adding original real image: {e}")
+                                else:
+                                    stats['augmented_count'] += 1
+                            else:
+                                try:
+                                    dataset.append(create_dataset_entry(real_image_path, [], [], "There are no artifacts in this image.", is_negative_sample=True))
+                                    stats['original_count'] += 1
+                                    real_success = True
+                                except Exception as e:
+                                    print(f"    ⚠️  Error adding original real image: {e}")
+                            
+                            # Count as pair only if both succeeded
+                            if artifact_success and real_success:
+                                samples_added += 1  # Count as one pair
+                                pair_added = True
+                                print(f"  ✅ Added pair: artifact + real image for {img_id}")
                             else:
                                 corruption_count += 1
-                        else:
-                            # Add original image with validation
-                            try:
-                                dataset.append(create_dataset_entry(artifact_image_path, original_bboxes, artifacts, caption))
-                                stats['original_count'] += 1
-                                samples_added += 1
-                            except Exception as e:
-                                print(f"    ⚠️  Error adding original artifact image: {e}")
-                                corruption_count += 1
+                                print(f"  ⚠️  Failed to add complete pair for {img_id}")
+                        
+                        elif has_artifact_image:
+                            continue
+                            
                     processed_count += 1
                     stats['processed_count'] += 1
                     if samples_added % 50 == 0 and samples_added > 0:
@@ -314,131 +364,6 @@ def safe_convert_to_sft_format(data_dir, dataset, stats, max_samples=None, enabl
         print(f"      Zoom failures: {aug_stats['zoom_failure_rate']:.1%}")
         print(f"      Save failures: {aug_stats['save_failure_rate']:.1%}")
 
-def process_negative_images(data_dir, dataset, stats, max_samples=None, enable_augmentation=True, augmentation_prob=0.3):
-    """
-    Process negative images from a directory of image files.
-    """
-    print(f"🔄 Processing negative images from: {data_dir}")
-    
-    # Validate input directory
-    if not os.path.exists(data_dir):
-        print(f"  ❌ Directory does not exist: {data_dir}")
-        return
-    
-    if not os.access(data_dir, os.R_OK):
-        print(f"  ❌ Cannot read directory: {data_dir}")
-        return
-    
-    # Initialize augmentations
-    if enable_augmentation:
-        augmentor = BBoxAwareAugmentations(
-            augmentation_prob=augmentation_prob,
-            resize_range=(0.8, 1.2),
-            zoom_range=(0.8, 1.2),
-            color_jitter_prob=0.5,
-            grayscale_prob=0.1,
-            max_image_size=4096,
-            min_crop_size=64
-        )
-        print(f"  ✅ Augmentation enabled for negatives ({augmentation_prob*100}% probability)")
-    else:
-        augmentor = None
-        print("  ➖ Augmentation disabled for negatives")
-    
-    # Get all image files
-    image_files = []
-    for root, dirs, files in os.walk(data_dir):
-        for file in files:
-            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
-                image_files.append(os.path.join(root, file))
-    
-    # Shuffle and limit
-    random.shuffle(image_files)
-    if max_samples:
-        image_files = image_files[:max_samples]
-    
-    samples_added = 0
-    processed_count = 0
-    corruption_count = 0
-    
-    print(f"  📊 Processing {len(image_files)} negative images...")
-    
-    for image_path in image_files:
-        if max_samples and samples_added >= max_samples:
-            print(f"    🎯 Reached target negative samples ({max_samples}) - stopping")
-            break
-        try:
-            # Load and validate image
-            try:
-                with Image.open(image_path) as img:
-                    img.load()
-                    if img.size[0] < 16 or img.size[1] < 16:
-                        continue
-                    img = img.convert('RGB')
-                    
-            except Exception as e:
-                print(f"  ⚠️  Cannot load image {image_path}: {e}")
-                corruption_count += 1
-                continue
-            
-            # Process with or without augmentation
-            if augmentor and augmentor.should_augment():
-                # Apply augmentation
-                aug_image, _, aug_metadata = augmentor.augment_image_and_bboxes(img, [])
-                
-                if not aug_metadata.get('success', False):
-                    corruption_count += 1
-                    continue
-                
-                # Generate augmented filename
-                base_name = os.path.splitext(os.path.basename(image_path))[0]
-                aug_path = os.path.join(os.path.dirname(image_path), f"{base_name}_neg_aug.png")
-                
-                # Save augmented image
-                if not augmentor.safe_save_image(aug_image, aug_path):
-                    corruption_count += 1
-                    continue
-                
-                # Add to dataset
-                try:
-                    dataset.append(create_dataset_entry(
-                        aug_path, [], [], "There are no artifacts in this image.",
-                        is_augmented=True, aug_metadata=aug_metadata, is_negative_sample=True
-                    ))
-                    stats['augmented_count'] += 1
-                    samples_added += 1
-                except Exception as e:
-                    print(f"  ⚠️  Error creating augmented negative entry: {e}")
-                    corruption_count += 1
-                    continue
-            else:
-                # Use original image
-                try:
-                    dataset.append(create_dataset_entry(
-                        image_path, [], [], "There are no artifacts in this image.",
-                        is_augmented=False, is_negative_sample=True
-                    ))
-                    stats['original_count'] += 1
-                    samples_added += 1
-                except Exception as e:
-                    print(f"  ⚠️  Error creating original negative entry: {e}")
-                    corruption_count += 1
-                    continue
-            
-            processed_count += 1
-            
-            if processed_count % 100 == 0:
-                print(f"    📊 Progress: {processed_count} negative images processed")
-        
-        except Exception as e:
-            print(f"  ⚠️  Error processing negative image {image_path}: {e}")
-            corruption_count += 1
-            continue
-    
-    print(f"  ✅ Processed {processed_count} negative images")
-    if corruption_count > 0:
-        print(f"  ⚠️  Failed: {corruption_count} negative images")
-
 def main():
     """Generate corruption-safe dataset."""
     
@@ -448,54 +373,32 @@ def main():
     dataset = []
     stats = {'processed_count': 0, 'augmented_count': 0, 'original_count': 0}
 
-    # data sources (TODO: UPDATE THESE PATHS)
-    artifact_sources = [
+    # data sources (TODO : UPDATE THESE PATHS)
+    artifact_sources = [    
         # {
         #     'path': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/artifacts/filtered_animals_1k_fireflow_25", 
-        #     'max_samples': 250,
+        #     'samples': 250,
         #     'name': "coco_animal_fireflow_same"
         # },
         # {
         #     'path': "/home/jovyan/image-artifacts/data/filtered_data_synth/coco/animal", 
-        #     'max_samples': None,
+        #     'samples': 250,
         #     'name': "coco_animal_fireflow"
         # },
         # {
         #     'path': "/home/jovyan/image-artifacts/data/filtered_data_synth/coco/person", 
-        #     'max_samples': 250,
+        #     'samples': 250,
         #     'name': "coco_person_fireflow"
         # },
         {
-            'path': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/artifacts/filtered_animals_1k", 
-            'max_samples': 1000,
+            'path': os.path.join(DATA_DIR, "train/vanilla/filtered_animals_1k"), 
+            'samples': 450,
             'name': "coco_animal_vanilla"
         },
         {
-            'path': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/artifacts/filtered_person_1k", 
-            'max_samples': 1000,
+            'path': os.path.join(DATA_DIR, "train/vanilla/filtered_person_1k"), 
+            'samples': 450,
             'name': "coco_person_vanilla"
-        }
-    ]
-    negative_sources = [
-        {
-            'path': "/home/jovyan/image-artifacts/data/coco_2017_extracted/train2017", 
-            'max_samples': 1000,
-            'name': "coco"
-        # },
-        # {
-        #     'path': "/home/jovyan/image-artifacts/data/image-artifact-real-images/caltech", 
-        #     'max_samples': None,
-        #     'name': "caltech"
-        # },
-        # {
-        #     'path': "/home/jovyan/image-artifacts/data/image-artifact-real-images/celebahq", 
-        #     'max_samples': None,
-        #     'name': "celebahq"
-        # },
-        # {
-        #     'path':  "/home/jovyan/image-artifacts/data/image-artifact-real-images/hands", 
-        #     'max_samples': None,
-        #     'name': "hands"
         }
     ]
     
@@ -503,42 +406,32 @@ def main():
     print(f"\n📊 Processing Artifact Sources")
     print("=" * 40)
     for source in artifact_sources:
-       if os.path.exists(source['path']):
-           safe_convert_to_sft_format(
-               source['path'], dataset, stats, source['max_samples'],
-               enable_augmentation=False, augmentation_prob=0.3
-           )
-       else:
-           print(f"⚠️  Path does not exist: {source['path']}")
-    
-    print(f"✅ Artifact sources processed: {stats['processed_count']} samples")
-    print(f"  Total dataset entries: {len(dataset)}")
-
-    # # Process negative sources  
-    print(f"\n📊 Processing Negative Sources")
-    print("=" * 40)
-    for source in negative_sources:
         if os.path.exists(source['path']):
-            print(f"\n🔄 Processing {source['name']}")
-            process_negative_images(
-                source['path'], dataset, stats, source['max_samples'],
+            safe_convert_to_sft_format(
+                source['path'], dataset, stats, source['samples'],
                 enable_augmentation=False, augmentation_prob=0.3
             )
         else:
             print(f"⚠️  Path does not exist: {source['path']}")
+    
+    print(f"✅ Artifact sources processed: {stats['processed_count']} samples")
+    print(f"  Total dataset entries: {len(dataset)}")
+
 
     # Shuffle the final dataset
-    # print(f"\n🔀 Shuffling final dataset...")
-    # random.shuffle(dataset)
+    print(f"\n🔀 Shuffling final dataset...")
+    groups = [dataset[i:i+2] for i in range(0, len(dataset), 2)]
+    random.shuffle(groups)
+    shuffled_dataset = [item for group in groups for item in group]
     
     # Save with validation
-    output_file = "1k_reproduce.json"       # TODO : designate output path
+    output_file = os.path.join(JSON_DIR, "artifact_2k_vanilla_pairwise.json")       # TODO : designate output path
     try:
         with open(output_file, 'w') as f:
-            json.dump(dataset, f, indent=2)
+            json.dump(shuffled_dataset, f, indent=2)
         
         print(f"✅ Dataset saved: {output_file}")
-                 
+
     except Exception as e:
         print(f"❌ Error saving dataset: {e}")
     
