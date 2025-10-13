@@ -318,6 +318,14 @@ class FinetunedModelEvaluator:
         self.model = self.model_components["model"]
         self.processor = self.model_components["processor"]
         self.tokenizer = self.model_components["tokenizer"]
+    
+    def unified_prompt(self):
+        """
+        Create a unified prompt that asks for all three tasks simultaneously.
+        This function provides a template that can be manually modified.
+        """
+        prompt = "Analyze the image and describe any visual anomalies. Provide bounding boxes and explain in detail."
+        return prompt
         
     def inference(self, image: Image.Image, prompt: str) -> str:
         """
@@ -483,8 +491,13 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
     results = {}
     processed = 0
 
-    prompt = create_prompt(eval_type)
-    logger.info(f"Input query: {prompt}")
+    # Create prompt based on configuration
+    if config.get('prompt_match', False):
+        prompt = evaluator_model.unified_prompt()
+        logger.info(f"Using unified prompt: {prompt}")
+    else:
+        prompt = create_prompt(eval_type)
+        logger.info(f"Input query: {prompt}")
 
     try:
         while True:
@@ -717,8 +730,13 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
 
     results = {}
 
-    prompt = create_prompt(eval_type)
-    logger.info(f"Input query: {prompt}")
+    # Create prompt based on configuration
+    if config.get('prompt_match', False):
+        prompt = evaluator_model.unified_prompt()
+        logger.info(f"Using unified prompt: {prompt}")
+    else:
+        prompt = create_prompt(eval_type)
+        logger.info(f"Input query: {prompt}")
     
     # Process samples
     for i, (json_data, image_path) in enumerate(data_iterator):
@@ -942,10 +960,14 @@ def main():
                        help='Maximum number of samples to evaluate (default: all)')
     parser.add_argument('--base-dir', type=str, default=None,
                        help='Custom base directory for dataset')
+    parser.add_argument('--dataset-path', type=str, default=None,
+                       help='Path to dataset (alias for --base-dir)')
     parser.add_argument('--batch-size', type=int, default=2,
                        help='Batch size for evaluation (default: 2)')
     parser.add_argument('--use-batch', action='store_true',
                        help='Use batch processing for evaluation')
+    parser.add_argument('--prompt-match', action='store_true',
+                       help='Use unified prompt for evaluation instead of type-specific prompt')
     
     args = parser.parse_args()
     
@@ -954,7 +976,12 @@ def main():
         raise ValueError(f"Experiment directory does not exist: {args.exp_dir}")
     
     # Set dataset paths if not provided
-    if args.base_dir is None:
+    # Use --dataset-path if provided, otherwise use --base-dir
+    if args.dataset_path is not None:
+        base_dir = args.dataset_path
+    elif args.base_dir is not None:
+        base_dir = args.base_dir
+    else:
         dataset_paths = {
             'synthscars': "/data2/jhpark/image-artifacts/data/eval/SynthScars",
             'synartifact': "/data2/jhpark/image-artifacts/data/eval/SynArtifact",
@@ -965,8 +992,6 @@ def main():
         base_dir = dataset_paths.get(args.dataset)
         if base_dir is None:
             raise ValueError(f"No default path for dataset: {args.dataset}")
-    else:
-        base_dir = args.base_dir
     
     # Setup configuration
     config = {
@@ -976,7 +1001,8 @@ def main():
         'base_dir': base_dir,
         'log_dir': args.log_dir,
         'device': args.device,
-        'batch_size': args.batch_size
+        'batch_size': args.batch_size,
+        'prompt_match': args.prompt_match
     }
     
     # Setup logging

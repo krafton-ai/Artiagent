@@ -207,3 +207,7 @@ src/train/LLaMA-Factory/wandb/
 src/train/LLaMA-Factory/swanlog/
 src/train/LLaMA-Factory/generated_predictions.jsonl
 src/train/LLaMA-Factory/predictions_score.json
+
+
+src/eval_vlm/eval_logs/
+src/eval_vlm/eval_results/

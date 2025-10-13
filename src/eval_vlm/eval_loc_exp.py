@@ -1,14 +1,15 @@
 """
-Batch Evaluation for Original Format Finetuned VLM using TRUE Batch Processing
+Localization + Explanation Evaluation for Finetuned VLM
 
-This evaluation script calculates ALL metrics (binary, localization, explanation)
-in a single run without requiring a --type argument.
+This evaluation script focuses only on localization and explanation metrics,
+removing binary classification to streamline the evaluation process.
 """
 
 import argparse
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -43,8 +44,8 @@ import wsol_eval_utils
 logger = logging.getLogger(__name__)
 
 
-class OriginalFormatEvaluator:
-    """Evaluator for original format finetuned models."""
+class LocExpEvaluator:
+    """Evaluator for localization and explanation only."""
     
     def __init__(self, exp_dir: str, device: str = "cuda:0"):
         self.exp_dir = exp_dir
@@ -55,12 +56,29 @@ class OriginalFormatEvaluator:
         self.template = None
     
     def get_prompt(self):
-        """Get the original format prompt."""
-        prompt = """Analyze this image carefully.
-Describe whether it contains any visual artifacts,
-where those artifacts appear (as bounding boxes),
-and provide short explanations for each localized artifact.
-Also include a concise caption describing the overall scene."""
+        """Get the localization + explanation prompt."""
+        prompt = """Analyze this image carefully and identify any visual artifacts present.
+
+You must respond with exactly two fenced JSON blocks in this order:
+
+First JSON block - Array of artifacts with pixel coordinates:
+```json
+[
+  {"bbox_2d": [x1, y1, x2, y2], "label": "description of the artifact in this region"},
+  {"bbox_2d": [x1, y1, x2, y2], "label": "description of the artifact in this region"}
+]
+```
+
+Second JSON block - Explanation:
+```json
+{"explanation": "description of the anomalies in this image."}
+```
+
+Requirements:
+- Use pixel coordinates (not normalized)
+- Each bbox_2d array must have exactly 4 numbers: [x_min, y_min, x_max, y_max]
+- Provide explanations in English only
+- Ensure both JSON blocks are properly formatted and valid."""
         return prompt
     
     def load_model(self):
@@ -174,27 +192,177 @@ Also include a concise caption describing the overall scene."""
         return results
 
 
-def process_original_output_all_metrics(raw_output: str, image_width: int, image_height: int) -> Dict[str, Any]:
-    """
-    Process original format model output for ALL evaluation metrics.
-    
-    Returns dict with predictions for all three evaluation types.
-    """
-    # Process for each evaluation type using the existing utility
-    binary_prediction = process_finetuned_output(raw_output, 'binary')
-    localization_prediction = process_finetuned_output(raw_output, 'localization')
-    explanation_prediction = process_finetuned_output(raw_output, 'explanation')
-    
-    return {
-        'binary': binary_prediction,
-        'localization': localization_prediction,
-        'explanation': explanation_prediction,
-        'raw_output': raw_output
-    }
+def parse_json_response(response: str) -> Dict[str, Any]:
+    """Parse JSON response from model output with two fenced JSON blocks."""
+    try:
+        # Find all fenced JSON blocks
+        json_pattern = r'```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```'
+        matches = re.findall(json_pattern, response, re.DOTALL)
+        
+        if len(matches) >= 2:
+            # Parse first block (artifacts array)
+            artifacts_json = matches[0]
+            artifacts_data = json.loads(artifacts_json)
+            
+            # Parse second block (explanation object)
+            explanation_json = matches[1]
+            explanation_data = json.loads(explanation_json)
+            
+            # Combine into expected format
+            result = {
+                'artifacts': artifacts_data,
+                'explanation': explanation_data.get('explanation', '')
+            }
+            return result
+            
+        elif len(matches) == 1:
+            # Try to parse single block
+            json_str = matches[0]
+            parsed = json.loads(json_str)
+            
+            # Check if it's the old format or new format
+            if isinstance(parsed, dict) and 'bboxes' in parsed:
+                # Old format - convert to new format
+                artifacts = []
+                for i, bbox in enumerate(parsed.get('bboxes', [])):
+                    label = parsed.get('explanations', [''])[i] if i < len(parsed.get('explanations', [])) else ''
+                    artifacts.append({
+                        'bbox_2d': bbox,
+                        'label': label
+                    })
+                result = {
+                    'artifacts': artifacts,
+                    'explanation': parsed.get('caption', '')
+                }
+                return result
+            elif isinstance(parsed, list):
+                # New format - artifacts array only
+                result = {
+                    'artifacts': parsed,
+                    'explanation': ''
+                }
+                return result
+            else:
+                # Single explanation object
+                result = {
+                    'artifacts': [],
+                    'explanation': parsed.get('explanation', '')
+                }
+                return result
+        else:
+            # Try to find raw JSON without fences
+            json_pattern = r'(\[.*?\]|\{.*?\})'
+            matches = re.findall(json_pattern, response, re.DOTALL)
+            
+            if matches:
+                # Try to parse the first match
+                json_str = matches[0]
+                parsed = json.loads(json_str)
+                
+                if isinstance(parsed, list):
+                    result = {
+                        'artifacts': parsed,
+                        'explanation': ''
+                    }
+                    return result
+                elif isinstance(parsed, dict):
+                    if 'bboxes' in parsed:
+                        # Old format
+                        artifacts = []
+                        for i, bbox in enumerate(parsed.get('bboxes', [])):
+                            label = parsed.get('explanations', [''])[i] if i < len(parsed.get('explanations', [])) else ''
+                            artifacts.append({
+                                'bbox_2d': bbox,
+                                'label': label
+                            })
+                        result = {
+                            'artifacts': artifacts,
+                            'explanation': parsed.get('caption', '')
+                        }
+                        return result
+                    else:
+                        # Single explanation
+                        result = {
+                            'artifacts': [],
+                            'explanation': parsed.get('explanation', '')
+                        }
+                        return result
+        
+        # If nothing found, return empty result
+        return {
+            'artifacts': [],
+            'explanation': ''
+        }
+        
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse JSON: {e}")
+        logger.warning(f"Raw response (first 500 chars): {response[:500]}")
+        logger.warning(f"Raw response (last 200 chars): {response[-200:]}")
+        return {
+            'artifacts': [],
+            'explanation': ''
+        }
 
 
-def run_original_evaluation(args):
-    """Run comprehensive evaluation for original format."""
+def process_loc_exp_output(raw_output: str, image_width: int, image_height: int) -> Dict[str, Any]:
+    """
+    Process model output for localization and explanation evaluation only.
+    
+    Returns dict with predictions for localization and explanation.
+    """
+    # Try to parse as JSON first
+    parsed_json = parse_json_response(raw_output)
+    
+    if parsed_json is not None:
+        # Extract data from new JSON structure
+        artifacts = parsed_json.get('artifacts', [])
+        explanation_text = parsed_json.get('explanation', '')
+        
+        # Format bboxes for localization evaluation
+        bbox_list = []
+        for artifact in artifacts:
+            if isinstance(artifact, dict) and 'bbox_2d' in artifact:
+                bbox = artifact['bbox_2d']
+                if len(bbox) == 4:
+                    try:
+                        # Coordinates are already in pixel format
+                        x1, y1, x2, y2 = bbox
+                        # Ensure coordinates are valid numbers
+                        if all(isinstance(coord, (int, float)) for coord in [x1, y1, x2, y2]):
+                            # Validate coordinates are within image bounds
+                            x1 = max(0, min(image_width, int(x1)))
+                            y1 = max(0, min(image_height, int(y1)))
+                            x2 = max(0, min(image_width, int(x2)))
+                            y2 = max(0, min(image_height, int(y2)))
+                            
+                            # Ensure x2 > x1 and y2 > y1
+                            if x2 > x1 and y2 > y1:
+                                bbox_list.append({"bbox_2d": [x1, y1, x2, y2]})
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid bbox coordinates: {bbox}, error: {e}")
+                        continue
+        
+        return {
+            'localization': bbox_list,
+            'explanation': {"explanation": explanation_text},
+            'raw_output': raw_output,
+            'parsed_json': parsed_json
+        }
+    else:
+        # Fallback to old processing method
+        logger.warning("JSON parsing failed, falling back to regex-based parsing")
+        localization_prediction = process_finetuned_output(raw_output, 'localization')
+        explanation_prediction = process_finetuned_output(raw_output, 'explanation')
+        
+        return {
+            'localization': localization_prediction,
+            'explanation': explanation_prediction,
+            'raw_output': raw_output
+        }
+
+
+def run_loc_exp_evaluation(args):
+    """Run evaluation for localization and explanation only."""
     
     # Setup logging
     exp_name = Path(args.exp_dir).name
@@ -202,7 +370,7 @@ def run_original_evaluation(args):
     log_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"original_comprehensive_{args.dataset}_{exp_name}_{timestamp}.log"
+    log_filename = f"loc_exp_{args.dataset}_{exp_name}_{timestamp}.log"
     log_file = log_dir / log_filename
     
     logging.basicConfig(
@@ -214,20 +382,20 @@ def run_original_evaluation(args):
         ]
     )
     
-    logger.info("🚀 Starting Original Format Comprehensive Evaluation")
+    logger.info("🎯 Starting Localization + Explanation Evaluation")
     logger.info(f"📁 Experiment directory: {args.exp_dir}")
     logger.info(f"📊 Dataset: {args.dataset.upper()}")
-    logger.info(f"📊 Evaluating ALL metrics: Binary + Localization + Explanation")
+    logger.info(f"📊 Evaluating: Localization + Explanation")
     logger.info(f"Batch size: {args.batch_size}")
     
     # Initialize model
-    evaluator_model = OriginalFormatEvaluator(args.exp_dir, args.device)
+    evaluator_model = LocExpEvaluator(args.exp_dir, args.device)
     evaluator_model.load_model()
     
     # Setup dataset
     config = {
         'dataset_type': args.dataset,
-        'eval_type': 'localization',  # Placeholder, we evaluate all types
+        'eval_type': 'localization',  # We evaluate both localization and explanation
         'data_path': args.dataset_path,
         'base_dir': args.dataset_path,
     }
@@ -241,15 +409,16 @@ def run_original_evaluation(args):
     # Get prompt
     input_query = evaluator_model.get_prompt()
     
-    # Initialize metrics for all three evaluation types
+    # Initialize metrics for localization and explanation
     all_results = []
-    all_binary_success = []
     all_iou_scores = []
     all_loc_f1_scores = []
     all_loc_precision_scores = []
     all_loc_recall_scores = []
     all_rouge_l_scores = []
     all_css_scores = []
+    json_parse_success_count = 0
+    total_samples_count = 0
     
     batch_images = []
     batch_metadata = []
@@ -273,35 +442,35 @@ def run_original_evaluation(args):
                 for i, (raw_output, (img_path, gt)) in enumerate(zip(batch_raw_outputs, batch_metadata)):
                     image = batch_images[i]
                     
-                    # Process output for ALL metric types
-                    all_predictions = process_original_output_all_metrics(
+                    # Process output for localization and explanation only
+                    predictions = process_loc_exp_output(
                         raw_output, image.size[0], image.size[1]
                     )
                     
-                    # Calculate stats for ALL evaluation types
-                    binary_stats = evaluator.generate_statistics(
-                        args.dataset, 'binary', gt, all_predictions['binary'], image_size=image.size
-                    )
+                    # Log JSON parsing success/failure for debugging
+                    total_samples_count += 1
+                    if 'parsed_json' in predictions:
+                        json_parse_success_count += 1
+                        logger.debug(f"Successfully parsed JSON for {img_path}")
+                    else:
+                        logger.warning(f"JSON parsing failed for {img_path}, using fallback method")
                     
+                    # Calculate stats for localization and explanation
                     loc_stats = evaluator.generate_statistics(
-                        args.dataset, 'localization', gt, all_predictions['localization'], image_size=image.size
+                        args.dataset, 'localization', gt, predictions['localization'], image_size=image.size
                     )
                     
                     # Additional localization metrics
                     legion_stats = legion_evaluator.generate_statistics(
-                        args.dataset, 'localization', gt, all_predictions['localization'], image_size=image.size
+                        args.dataset, 'localization', gt, predictions['localization'], image_size=image.size
                     )
                     wsol_stats = wsol_evaluator.generate_statistics(
-                        args.dataset, 'localization', gt, all_predictions['localization'], image_size=image.size
+                        args.dataset, 'localization', gt, predictions['localization'], image_size=image.size
                     )
                     
                     expl_stats = evaluator.generate_statistics(
-                        args.dataset, 'explanation', gt, all_predictions['explanation'], image_size=image.size
+                        args.dataset, 'explanation', gt, predictions['explanation'], image_size=image.size
                     )
-                    
-                    # Collect binary metrics
-                    binary_success = binary_stats.get('binary_success', False)
-                    all_binary_success.append(binary_success)
                     
                     # Collect localization metrics (only for positive samples)
                     has_gt = gt.get('has_artifacts', True) if args.dataset == 'ours' else bool(gt.get('Artifacts annotation', []))
@@ -337,20 +506,16 @@ def run_original_evaluation(args):
                     iou_val = loc_stats.get('iou', 0.0) if has_gt else 0.0
                     iou_val = iou_val if iou_val is not None else 0.0
                     pbar.set_postfix({
-                        'Binary': f'{binary_success}',
                         'IoU': f'{iou_val:.3f}',
                         'ROUGE': f'{rouge_l:.3f}'
                     })
                     
-                    # Store comprehensive result
+                    # Store result
                     result_entry = {
                         'image_path': str(img_path),
                         'ground_truth': gt,
-                        'predictions': all_predictions,
+                        'predictions': predictions,
                         'raw_output': raw_output,
-                        # Binary metrics
-                        'binary_success': binary_success,
-                        'classification': binary_stats.get('classification'),
                         # Localization metrics
                         'iou': loc_stats.get('iou') if has_gt else None,
                         'loc_f1': loc_stats.get('loc_f1') if has_gt else None,
@@ -380,14 +545,8 @@ def run_original_evaluation(args):
     # Calculate final metrics
     logger.info("")
     logger.info("=" * 80)
-    logger.info("ORIGINAL FORMAT COMPREHENSIVE EVALUATION RESULTS")
+    logger.info("LOCALIZATION + EXPLANATION EVALUATION RESULTS")
     logger.info("=" * 80)
-    
-    # Binary Classification
-    logger.info("\nBINARY CLASSIFICATION:")
-    binary_acc = sum(all_binary_success) / len(all_binary_success) if all_binary_success else 0.0
-    logger.info(f"  Accuracy: {binary_acc:.4f} ({binary_acc*100:.2f}%)")
-    logger.info(f"  Total samples: {len(all_binary_success)}")
     
     # Localization
     logger.info("\nLOCALIZATION:")
@@ -428,18 +587,23 @@ def run_original_evaluation(args):
         logger.info("  No explanation samples found")
         mean_rouge = mean_css = 0.0
     
+    # JSON Parsing Statistics
+    logger.info("\nJSON PARSING:")
+    if total_samples_count > 0:
+        json_success_rate = (json_parse_success_count / total_samples_count) * 100
+        logger.info(f"  JSON parsing success rate: {json_success_rate:.1f}% ({json_parse_success_count}/{total_samples_count})")
+    else:
+        logger.info("  No samples processed")
+        json_success_rate = 0.0
+    
     logger.info("=" * 80)
     
     # Save results
     results_dir = Path(__file__).parent / "eval_results"
     results_dir.mkdir(exist_ok=True)
-    results_file = results_dir / f"original_comprehensive_{args.dataset}_{exp_name}_{timestamp}.json"
+    results_file = results_dir / f"loc_exp_{args.dataset}_{exp_name}_{timestamp}.json"
     
     metrics = {
-        'binary': {
-            'accuracy': binary_acc,
-            'total_samples': len(all_binary_success)
-        },
         'localization': {
             'mean_iou': mean_iou,
             'mean_f1': mean_f1,
@@ -451,6 +615,11 @@ def run_original_evaluation(args):
             'mean_rouge_l': mean_rouge,
             'mean_css': mean_css,
             'total_samples': len(all_rouge_l_scores)
+        },
+        'json_parsing': {
+            'success_rate': json_success_rate,
+            'successful_parses': json_parse_success_count,
+            'total_samples': total_samples_count
         }
     }
     
@@ -460,7 +629,7 @@ def run_original_evaluation(args):
             'dataset': args.dataset,
             'batch_size': args.batch_size,
             'max_samples': args.max_samples,
-            'format': 'original',
+            'format': 'loc_exp',
             'timestamp': timestamp
         },
         'metrics': metrics,
@@ -475,7 +644,7 @@ def run_original_evaluation(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Original Format Comprehensive Evaluation (All Metrics)")
+    parser = argparse.ArgumentParser(description="Localization + Explanation Evaluation")
     parser.add_argument("--exp-dir", type=str, required=True, help="Path to experiment directory")
     parser.add_argument("--dataset", type=str, default="ours", choices=["ours", "t2i", "synartifact"], help="Dataset to evaluate")
     parser.add_argument("--dataset-path", type=str, default="/data2/jhpark/image-artifacts/data/eval", help="Dataset path")
@@ -484,7 +653,7 @@ def main():
     parser.add_argument("--max-samples", type=int, default=None, help="Max samples to evaluate")
     
     args = parser.parse_args()
-    run_original_evaluation(args)
+    run_loc_exp_evaluation(args)
 
 
 if __name__ == "__main__":
