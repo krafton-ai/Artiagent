@@ -325,17 +325,17 @@ def run_single_vqa_evaluation(args):
     all_results = []
     all_binary_success = []
     all_iou_scores = []
-    all_loc_f1_scores = []
-    all_loc_precision_scores = []
-    all_loc_recall_scores = []
+    all_pixel_f1_scores = []
+    all_pixel_precision_scores = []
+    all_pixel_recall_scores = []
     all_rouge_l_scores = []
     all_css_scores = []
     
     # Additional metrics for samples where both GT and prediction have artifacts
     all_iou_scores_both_positive = []
-    all_loc_f1_scores_both_positive = []
-    all_loc_precision_scores_both_positive = []
-    all_loc_recall_scores_both_positive = []
+    all_pixel_f1_scores_both_positive = []
+    all_pixel_precision_scores_both_positive = []
+    all_pixel_recall_scores_both_positive = []
     all_rouge_l_scores_both_positive = []
     all_css_scores_both_positive = []
     
@@ -395,28 +395,28 @@ def run_single_vqa_evaluation(args):
                     has_gt = gt.get('has_artifacts', True) if args.dataset == 'ours' else bool(gt.get('Artifacts annotation', []))
                     
                     if has_gt:
-                        iou = loc_stats.get('iou', 0.0)
-                        loc_f1 = loc_stats.get('loc_f1', 0.0)
-                        loc_precision = loc_stats.get('loc_precision', 0.0)
-                        loc_recall = loc_stats.get('loc_recall', 0.0)
+                        iou = legion_stats.get('iou', 0.0)
+                        pixel_f1 = legion_stats.get('pixel_f1', 0.0)
+                        pixel_precision = legion_stats.get('pixel_precision', 0.0)
+                        pixel_recall = legion_stats.get('pixel_recall', 0.0)
                         
                         # Ensure no None values
                         iou = iou if iou is not None else 0.0
-                        loc_f1 = loc_f1 if loc_f1 is not None else 0.0
-                        loc_precision = loc_precision if loc_precision is not None else 0.0
-                        loc_recall = loc_recall if loc_recall is not None else 0.0
+                        pixel_f1 = pixel_f1 if pixel_f1 is not None else 0.0
+                        pixel_precision = pixel_precision if pixel_precision is not None else 0.0
+                        pixel_recall = pixel_recall if pixel_recall is not None else 0.0
                         
                         all_iou_scores.append(iou)
-                        all_loc_f1_scores.append(loc_f1)
-                        all_loc_precision_scores.append(loc_precision)
-                        all_loc_recall_scores.append(loc_recall)
+                        all_pixel_f1_scores.append(pixel_f1)
+                        all_pixel_precision_scores.append(pixel_precision)
+                        all_pixel_recall_scores.append(pixel_recall)
                         
                         # Also collect metrics for samples where both GT and prediction have artifacts
                         if binary_success:  # binary_success means prediction also has artifacts
                             all_iou_scores_both_positive.append(iou)
-                            all_loc_f1_scores_both_positive.append(loc_f1)
-                            all_loc_precision_scores_both_positive.append(loc_precision)
-                            all_loc_recall_scores_both_positive.append(loc_recall)
+                            all_pixel_f1_scores_both_positive.append(pixel_f1)
+                            all_pixel_precision_scores_both_positive.append(pixel_precision)
+                            all_pixel_recall_scores_both_positive.append(pixel_recall)
                     
                     # Collect explanation metrics
                     rouge_l = expl_stats.get('rouge_l', 0.0)
@@ -457,6 +457,7 @@ def run_single_vqa_evaluation(args):
                         'loc_precision': loc_stats.get('loc_precision') if has_gt else None,
                         'loc_recall': loc_stats.get('loc_recall') if has_gt else None,
                         'legion_iou': legion_stats.get('iou') if has_gt else None,
+                        'legion_pixel_f1': legion_stats.get('pixel_f1') if has_gt else None,
                         'wsol_iou': wsol_stats.get('iou') if has_gt else None,
                         # Explanation metrics
                         'rouge_l': rouge_l,
@@ -493,9 +494,9 @@ def run_single_vqa_evaluation(args):
     logger.info("\nLOCALIZATION:")
     if all_iou_scores:
         mean_iou = sum(all_iou_scores) / len(all_iou_scores)
-        mean_f1 = sum(all_loc_f1_scores) / len(all_loc_f1_scores)
-        mean_precision = sum(all_loc_precision_scores) / len(all_loc_precision_scores)
-        mean_recall = sum(all_loc_recall_scores) / len(all_loc_recall_scores)
+        mean_f1 = sum(all_pixel_f1_scores) / len(all_pixel_f1_scores)
+        mean_precision = sum(all_pixel_precision_scores) / len(all_pixel_precision_scores)
+        mean_recall = sum(all_pixel_recall_scores) / len(all_pixel_recall_scores)
         
         logger.info(f"  Mean IoU: {mean_iou:.4f}")
         logger.info(f"  Mean F1: {mean_f1:.4f}")
@@ -510,9 +511,9 @@ def run_single_vqa_evaluation(args):
     logger.info("\nLOCALIZATION (Both GT & Prediction Positive):")
     if all_iou_scores_both_positive:
         mean_iou_both = sum(all_iou_scores_both_positive) / len(all_iou_scores_both_positive)
-        mean_f1_both = sum(all_loc_f1_scores_both_positive) / len(all_loc_f1_scores_both_positive)
-        mean_precision_both = sum(all_loc_precision_scores_both_positive) / len(all_loc_precision_scores_both_positive)
-        mean_recall_both = sum(all_loc_recall_scores_both_positive) / len(all_loc_recall_scores_both_positive)
+        mean_f1_both = sum(all_pixel_f1_scores_both_positive) / len(all_pixel_f1_scores_both_positive)
+        mean_precision_both = sum(all_pixel_precision_scores_both_positive) / len(all_pixel_precision_scores_both_positive)
+        mean_recall_both = sum(all_pixel_recall_scores_both_positive) / len(all_pixel_recall_scores_both_positive)
         
         logger.info(f"  Mean IoU: {mean_iou_both:.4f}")
         logger.info(f"  Mean F1: {mean_f1_both:.4f}")
