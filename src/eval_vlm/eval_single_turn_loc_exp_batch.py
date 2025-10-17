@@ -1,8 +1,8 @@
 """
-Batch Evaluation for Single-Turn VQA Finetuned Models
+Batch Evaluation for Single-Turn Localization + Explanation Finetuned Models
 
-This evaluation script calculates ALL metrics (binary, localization, explanation)
-in a single run without requiring a --type argument.
+This evaluation script calculates localization and explanation metrics
+for single-turn VQA models that output two fenced JSON blocks.
 """
 
 import argparse
@@ -44,98 +44,134 @@ logger = logging.getLogger(__name__)
 
 
 def parse_json_response(response: str) -> Dict[str, Any]:
-    """Parse JSON response from model output."""
+    """Parse two fenced JSON blocks from model output."""
     try:
-        # Try to find JSON block in the response
-        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
-        match = re.search(json_pattern, response, re.DOTALL)
+        # Find multiple fenced JSON blocks
+        json_pattern = r'```(?:json)?\s*(\[.*?\]|\{.*?\})\s*```'
+        matches = re.findall(json_pattern, response, re.DOTALL)
         
-        if match:
-            json_str = match.group(1)
+        if len(matches) >= 2:
+            # First block: artifacts array
+            artifacts_json = matches[0]
+            artifacts_data = json.loads(artifacts_json)
+            
+            # Second block: explanation object
+            explanation_json = matches[1]
+            explanation_data = json.loads(explanation_json)
+            
+            result = {
+                'artifacts': artifacts_data,
+                'explanation': explanation_data.get('explanation', '')
+            }
+            return result
+        
+        elif len(matches) == 1:
+            # Single fenced block - try to parse as artifacts array
+            try:
+                artifacts_data = json.loads(matches[0])
+                if isinstance(artifacts_data, list):
+                    return {
+                        'artifacts': artifacts_data,
+                        'explanation': 'Artifacts detected.'
+                    }
+                else:
+                    return {
+                        'artifacts': [],
+                        'explanation': explanation_data.get('explanation', 'No artifacts detected.')
+                    }
+            except:
+                return {
+                    'artifacts': [],
+                    'explanation': 'Failed to parse response.'
+                }
+        
         else:
-            # Try to find raw JSON
-            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-            match = re.search(json_pattern, response, re.DOTALL)
-            if match:
-                json_str = match.group(0)
-            else:
-                json_str = response
-        
-        parsed = json.loads(json_str)
-        return parsed
+            # No fenced blocks - try to find raw JSON
+            json_pattern = r'(\[.*?\]|\{.*?\})'
+            matches = re.findall(json_pattern, response, re.DOTALL)
+            
+            if matches:
+                try:
+                    parsed = json.loads(matches[0])
+                    if isinstance(parsed, list):
+                        return {
+                            'artifacts': parsed,
+                            'explanation': 'Artifacts detected.'
+                        }
+                    else:
+                        return {
+                            'artifacts': [],
+                            'explanation': parsed.get('explanation', 'No artifacts detected.')
+                        }
+                except:
+                    pass
+            
+            # Fallback: return empty
+            return {
+                'artifacts': [],
+                'explanation': 'No artifacts detected.'
+            }
+            
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse JSON: {e}")
-        logger.warning(f"Raw response (first 500 chars): {response[:500]}")
-        logger.warning(f"Raw response (last 200 chars): {response[-200:]}")
-        return None
+        return {
+            'artifacts': [],
+            'explanation': 'Failed to parse response.'
+        }
 
 
-def process_single_vqa_output_all_metrics(raw_output: str, image_width: int, image_height: int) -> Dict[str, Any]:
+def process_single_turn_loc_exp_output(raw_output: str, image_width: int, image_height: int) -> Dict[str, Any]:
     """
-    Process single-turn VQA model output for ALL evaluation metrics.
+    Process single-turn localization + explanation model output.
     
-    Returns dict with predictions for all three evaluation types.
+    Returns dict with localization and explanation predictions.
     """
-    # Parse JSON response
-    parsed = parse_json_response(raw_output)
+    parsed_json = parse_json_response(raw_output)
     
-    # Default predictions
-    result = {
-        'binary': {'prediction': False},
+    if parsed_json is not None:
+        artifacts = parsed_json.get('artifacts', [])
+        explanation_text = parsed_json.get('explanation', '')
+        
+        # Process bboxes (already in pixel coordinates)
+        bbox_list = []
+        for artifact in artifacts:
+            if isinstance(artifact, dict) and 'bbox_2d' in artifact:
+                bbox = artifact['bbox_2d']
+                if len(bbox) == 4:
+                    try:
+                        x1, y1, x2, y2 = bbox
+                        if all(isinstance(coord, (int, float)) for coord in [x1, y1, x2, y2]):
+                            # Validate and clamp coordinates
+                            x1 = max(0, min(image_width, int(x1)))
+                            y1 = max(0, min(image_height, int(y1)))
+                            x2 = max(0, min(image_width, int(x2)))
+                            y2 = max(0, min(image_height, int(y2)))
+                            
+                            # Ensure valid bbox (x2 > x1, y2 > y1)
+                            if x2 > x1 and y2 > y1:
+                                bbox_list.append({"bbox_2d": [x1, y1, x2, y2]})
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid bbox coordinates: {bbox}, error: {e}")
+                        continue
+        
+        return {
+            'localization': bbox_list,
+            'explanation': {"explanation": explanation_text},
+            'raw_output': raw_output,
+            'parsed_json': parsed_json
+        }
+    
+    # Fallback
+    return {
         'localization': [],
         'explanation': {"explanation": "No artifacts detected."},
-        'raw_parsed': parsed
+        'raw_output': raw_output,
+        'parsed_json': None
     }
-    
-    if parsed is None:
-        # Fallback to text-based detection
-        if "yes" in raw_output.lower() and "no" not in raw_output.lower():
-            result['binary'] = {'prediction': True}
-            result['explanation'] = {"explanation": raw_output}
-        return result
-    
-    # Extract fields from parsed JSON
-    artifact_present = parsed.get('artifact_present', 'no').lower() == 'yes'
-    bboxes_normalized = parsed.get('bboxes', [])
-    explanations = parsed.get('explanations', [])
-    caption = parsed.get('caption', '')
-    
-    # Denormalize bboxes from [0,1] to pixel coordinates
-    bboxes_pixel = []
-    for bbox in bboxes_normalized:
-        if len(bbox) == 4:
-            x1, y1, x2, y2 = bbox
-            x1_pixel = int(x1 * image_width)
-            y1_pixel = int(y1 * image_height)
-            x2_pixel = int(x2 * image_width)
-            y2_pixel = int(y2 * image_height)
-            bboxes_pixel.append([x1_pixel, y1_pixel, x2_pixel, y2_pixel])
-    
-    # Binary prediction
-    result['binary'] = {'prediction': artifact_present and len(bboxes_pixel) > 0}
-    
-    # Localization prediction
-    bbox_list = []
-    for bbox in bboxes_pixel:
-        bbox_list.append({"bbox_2d": bbox})
-    result['localization'] = bbox_list
-    
-    # Explanation prediction
-    if caption and explanations:
-        explanation_text = f"{caption} " + " ".join(explanations)
-    elif caption:
-        explanation_text = caption
-    elif explanations:
-        explanation_text = " ".join(explanations)
-    else:
-        explanation_text = "No artifacts detected." if not artifact_present else "Artifacts detected."
-    result['explanation'] = {"explanation": explanation_text}
-    
-    return result
 
 
-class SingleVQAEvaluator:
-    """Evaluator for single-turn VQA format models."""
+class SingleTurnLocExpEvaluator:
+    """Evaluator for single-turn localization + explanation format models."""
     
     def __init__(self, exp_dir: str, device: str = "cuda:0"):
         self.exp_dir = exp_dir
@@ -146,20 +182,29 @@ class SingleVQAEvaluator:
         self.template = None
     
     def get_prompt(self):
-        """Get the single-turn VQA prompt."""
-        prompt = """Analyze this image carefully.
-Describe whether it contains any visual artifacts,
-where those artifacts appear (as bounding boxes normalized to [0,1]),
-and provide short explanations for each localized artifact.
-Also include a concise caption describing the overall scene.
+        """Get the single-turn localization + explanation prompt."""
+        prompt = """Analyze this image carefully and identify any visual artifacts present.
 
-Return the results as a valid JSON object with the following keys:
-- artifact_present: "yes" or "no"
-- bboxes: array of [x1, y1, x2, y2] coordinates normalized to [0,1]
-- explanations: array of strings describing each artifact
-- caption: string describing the overall scene
+You must respond with exactly two fenced JSON blocks in this order:
 
-Generate your response strictly in English only."""
+First JSON block - Array of artifacts with pixel coordinates:
+```json
+[
+  {"bbox_2d": [x1, y1, x2, y2], "label": "description of the artifact in this region"},
+  {"bbox_2d": [x1, y1, x2, y2], "label": "description of the artifact in this region"}
+]
+```
+
+Second JSON block - Explanation:
+```json
+{"explanation": "description of the anomalies in this image."}
+```
+
+Requirements:
+- Use pixel coordinates (not normalized)
+- Each bbox_2d array must have exactly 4 numbers: [x_min, y_min, x_max, y_max]
+- Provide explanations in English only
+- Ensure both JSON blocks are properly formatted and valid."""
         return prompt
     
     def load_model(self):
@@ -273,8 +318,8 @@ Generate your response strictly in English only."""
         return results
 
 
-def run_single_vqa_evaluation(args):
-    """Run comprehensive evaluation for single-turn VQA format."""
+def run_single_turn_loc_exp_evaluation(args):
+    """Run evaluation for single-turn localization + explanation format."""
     
     # Setup logging
     exp_name = Path(args.exp_dir).name
@@ -282,7 +327,7 @@ def run_single_vqa_evaluation(args):
     log_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"single_vqa_comprehensive_{args.dataset}_{exp_name}_{timestamp}.log"
+    log_filename = f"single_turn_loc_exp_{args.dataset}_{exp_name}_{timestamp}.log"
     log_file = log_dir / log_filename
     
     logging.basicConfig(
@@ -294,20 +339,19 @@ def run_single_vqa_evaluation(args):
         ]
     )
     
-    logger.info("🚀 Starting Single-Turn VQA Comprehensive Evaluation")
+    logger.info("🚀 Starting Single-Turn Localization + Explanation Evaluation")
     logger.info(f"📁 Experiment directory: {args.exp_dir}")
     logger.info(f"📊 Dataset: {args.dataset.upper()}")
-    logger.info(f"📊 Evaluating ALL metrics: Binary + Localization + Explanation")
     logger.info(f"Batch size: {args.batch_size}")
     
     # Initialize model
-    evaluator_model = SingleVQAEvaluator(args.exp_dir, args.device)
+    evaluator_model = SingleTurnLocExpEvaluator(args.exp_dir, args.device)
     evaluator_model.load_model()
     
     # Setup dataset
     config = {
         'dataset_type': args.dataset,
-        'eval_type': 'localization',  # Placeholder, we evaluate all types
+        'eval_type': 'localization',
         'data_path': args.dataset_path,
         'base_dir': args.dataset_path,
     }
@@ -321,23 +365,14 @@ def run_single_vqa_evaluation(args):
     # Get prompt
     input_query = evaluator_model.get_prompt()
     
-    # Initialize metrics for all three evaluation types
+    # Initialize metrics
     all_results = []
-    all_binary_success = []
     all_iou_scores = []
     all_pixel_f1_scores = []
     all_pixel_precision_scores = []
     all_pixel_recall_scores = []
     all_rouge_l_scores = []
     all_css_scores = []
-    
-    # Additional metrics for samples where both GT and prediction have artifacts
-    all_iou_scores_both_positive = []
-    all_pixel_f1_scores_both_positive = []
-    all_pixel_precision_scores_both_positive = []
-    all_pixel_recall_scores_both_positive = []
-    all_rouge_l_scores_both_positive = []
-    all_css_scores_both_positive = []
     
     batch_images = []
     batch_metadata = []
@@ -361,38 +396,41 @@ def run_single_vqa_evaluation(args):
                 for i, (raw_output, (img_path, gt)) in enumerate(zip(batch_raw_outputs, batch_metadata)):
                     image = batch_images[i]
                     
-                    # Process output for ALL metric types
-                    all_predictions = process_single_vqa_output_all_metrics(
+                    # Process output
+                    predictions = process_single_turn_loc_exp_output(
                         raw_output, image.size[0], image.size[1]
                     )
                     
-                    # Calculate stats for ALL evaluation types
-                    binary_stats = evaluator.generate_statistics(
-                        args.dataset, 'binary', gt, all_predictions['binary'], image_size=image.size
-                    )
-                    
+                    # Calculate stats
                     loc_stats = evaluator.generate_statistics(
-                        args.dataset, 'localization', gt, all_predictions['localization'], image_size=image.size
+                        args.dataset, 'localization', gt, predictions['localization'], image_size=image.size
                     )
                     
                     # Additional localization metrics
                     legion_stats = legion_evaluator.generate_statistics(
-                        args.dataset, 'localization', gt, all_predictions['localization'], image_size=image.size
+                        args.dataset, 'localization', gt, predictions['localization'], image_size=image.size
                     )
                     wsol_stats = wsol_evaluator.generate_statistics(
-                        args.dataset, 'localization', gt, all_predictions['localization'], image_size=image.size
+                        args.dataset, 'localization', gt, predictions['localization'], image_size=image.size
                     )
                     
                     expl_stats = evaluator.generate_statistics(
-                        args.dataset, 'explanation', gt, all_predictions['explanation'], image_size=image.size
+                        args.dataset, 'explanation', gt, predictions['explanation'], image_size=image.size
                     )
                     
-                    # Collect binary metrics
-                    binary_success = binary_stats.get('binary_success', False)
-                    all_binary_success.append(binary_success)
-                    
-                    # Collect localization metrics (only for positive samples)
-                    has_gt = gt.get('has_artifacts', True) if args.dataset == 'ours' else bool(gt.get('Artifacts annotation', []))
+                    # Collect metrics
+                    if args.dataset in ['synthscars', 'loki', 'richhf']:
+                        # These datasets always have artifacts (they are artifact detection datasets)
+                        has_gt = True
+                    elif args.dataset in ['ours', 'val']:
+                        # Check has_artifacts field
+                        has_gt = gt.get('has_artifacts', True)
+                    elif args.dataset == 'synartifact':
+                        # Check Artifacts annotation field
+                        has_gt = bool(gt.get('Artifacts annotation', []))
+                    else:
+                        # Default fallback
+                        has_gt = True
                     
                     if has_gt:
                         iou = legion_stats.get('iou', 0.0)
@@ -410,13 +448,6 @@ def run_single_vqa_evaluation(args):
                         all_pixel_f1_scores.append(pixel_f1)
                         all_pixel_precision_scores.append(pixel_precision)
                         all_pixel_recall_scores.append(pixel_recall)
-                        
-                        # Also collect metrics for samples where both GT and prediction have artifacts
-                        if binary_success:  # binary_success means prediction also has artifacts
-                            all_iou_scores_both_positive.append(iou)
-                            all_pixel_f1_scores_both_positive.append(pixel_f1)
-                            all_pixel_precision_scores_both_positive.append(pixel_precision)
-                            all_pixel_recall_scores_both_positive.append(pixel_recall)
                     
                     # Collect explanation metrics
                     rouge_l = expl_stats.get('rouge_l', 0.0)
@@ -427,30 +458,21 @@ def run_single_vqa_evaluation(args):
                     all_rouge_l_scores.append(rouge_l)
                     all_css_scores.append(css)
                     
-                    # Also collect explanation metrics for samples where both GT and prediction have artifacts
-                    if has_gt and binary_success:  # Both GT has artifacts AND prediction also has artifacts
-                        all_rouge_l_scores_both_positive.append(rouge_l)
-                        all_css_scores_both_positive.append(css)
-                    
                     # Update progress bar
                     pbar.update(1)
-                    iou_val = legion_stats.get('iou', 0.0) if has_gt else 0.0
+                    iou_val = loc_stats.get('iou', 0.0) if has_gt else 0.0
                     iou_val = iou_val if iou_val is not None else 0.0
                     pbar.set_postfix({
-                        'Binary': f'{binary_success}',
                         'IoU': f'{iou_val:.3f}',
                         'ROUGE': f'{rouge_l:.3f}'
                     })
                     
-                    # Store comprehensive result
+                    # Store result
                     result_entry = {
                         'image_path': str(img_path),
                         'ground_truth': gt,
-                        'predictions': all_predictions,
+                        'predictions': predictions,
                         'raw_output': raw_output,
-                        # Binary metrics
-                        'binary_success': binary_success,
-                        'classification': binary_stats.get('classification'),
                         # Localization metrics
                         'iou': loc_stats.get('iou') if has_gt else None,
                         'loc_f1': loc_stats.get('loc_f1') if has_gt else None,
@@ -458,8 +480,6 @@ def run_single_vqa_evaluation(args):
                         'loc_recall': loc_stats.get('loc_recall') if has_gt else None,
                         'legion_iou': legion_stats.get('iou') if has_gt else None,
                         'legion_pixel_f1': legion_stats.get('pixel_f1') if has_gt else None,
-                        'legion_pixel_precision': legion_stats.get('pixel_precision') if has_gt else None,
-                        'legion_pixel_recall': legion_stats.get('pixel_recall') if has_gt else None,
                         'wsol_iou': wsol_stats.get('iou') if has_gt else None,
                         # Explanation metrics
                         'rouge_l': rouge_l,
@@ -483,14 +503,8 @@ def run_single_vqa_evaluation(args):
     # Calculate final metrics
     logger.info("")
     logger.info("=" * 80)
-    logger.info("SINGLE-TURN VQA COMPREHENSIVE EVALUATION RESULTS")
+    logger.info("SINGLE-TURN LOCALIZATION + EXPLANATION EVALUATION RESULTS")
     logger.info("=" * 80)
-    
-    # Binary Classification
-    logger.info("\nBINARY CLASSIFICATION:")
-    binary_acc = sum(all_binary_success) / len(all_binary_success) if all_binary_success else 0.0
-    logger.info(f"  Accuracy: {binary_acc:.4f} ({binary_acc*100:.2f}%)")
-    logger.info(f"  Total samples: {len(all_binary_success)}")
     
     # Localization
     logger.info("\nLOCALIZATION:")
@@ -509,23 +523,6 @@ def run_single_vqa_evaluation(args):
         logger.info("  No valid localization samples found")
         mean_iou = mean_f1 = mean_precision = mean_recall = 0.0
     
-    # Localization - Both GT and Prediction Positive
-    logger.info("\nLOCALIZATION (Both GT & Prediction Positive):")
-    if all_iou_scores_both_positive:
-        mean_iou_both = sum(all_iou_scores_both_positive) / len(all_iou_scores_both_positive)
-        mean_f1_both = sum(all_pixel_f1_scores_both_positive) / len(all_pixel_f1_scores_both_positive)
-        mean_precision_both = sum(all_pixel_precision_scores_both_positive) / len(all_pixel_precision_scores_both_positive)
-        mean_recall_both = sum(all_pixel_recall_scores_both_positive) / len(all_pixel_recall_scores_both_positive)
-        
-        logger.info(f"  Mean IoU: {mean_iou_both:.4f}")
-        logger.info(f"  Mean F1: {mean_f1_both:.4f}")
-        logger.info(f"  Mean Precision: {mean_precision_both:.4f}")
-        logger.info(f"  Mean Recall: {mean_recall_both:.4f}")
-        logger.info(f"  Valid samples (both positive): {len(all_iou_scores_both_positive)}")
-    else:
-        logger.info("  No valid localization samples found (both GT and prediction positive)")
-        mean_iou_both = mean_f1_both = mean_precision_both = mean_recall_both = 0.0
-    
     # Explanation
     logger.info("\nEXPLANATION:")
     if all_rouge_l_scores:
@@ -539,31 +536,14 @@ def run_single_vqa_evaluation(args):
         logger.info("  No explanation samples found")
         mean_rouge = mean_css = 0.0
     
-    # Explanation - Both GT and Prediction Positive
-    logger.info("\nEXPLANATION (Both GT & Prediction Positive):")
-    if all_rouge_l_scores_both_positive:
-        mean_rouge_both = sum(all_rouge_l_scores_both_positive) / len(all_rouge_l_scores_both_positive)
-        mean_css_both = sum(all_css_scores_both_positive) / len(all_css_scores_both_positive)
-        
-        logger.info(f"  Mean ROUGE-L: {mean_rouge_both:.4f}")
-        logger.info(f"  Mean CSS: {mean_css_both:.4f}")
-        logger.info(f"  Valid samples (both positive): {len(all_rouge_l_scores_both_positive)}")
-    else:
-        logger.info("  No valid explanation samples found (both GT and prediction positive)")
-        mean_rouge_both = mean_css_both = 0.0
-    
     logger.info("=" * 80)
     
     # Save results
     results_dir = Path(__file__).parent / "eval_results"
     results_dir.mkdir(exist_ok=True)
-    results_file = results_dir / f"single_vqa_comprehensive_{args.dataset}_{exp_name}_{timestamp}.json"
+    results_file = results_dir / f"single_turn_loc_exp_{args.dataset}_{exp_name}_{timestamp}.json"
     
     metrics = {
-        'binary': {
-            'accuracy': binary_acc,
-            'total_samples': len(all_binary_success)
-        },
         'localization': {
             'mean_iou': mean_iou,
             'mean_f1': mean_f1,
@@ -571,22 +551,10 @@ def run_single_vqa_evaluation(args):
             'mean_recall': mean_recall,
             'valid_samples': len(all_iou_scores)
         },
-        'localization_both_positive': {
-            'mean_iou': mean_iou_both,
-            'mean_f1': mean_f1_both,
-            'mean_precision': mean_precision_both,
-            'mean_recall': mean_recall_both,
-            'valid_samples': len(all_iou_scores_both_positive)
-        },
         'explanation': {
             'mean_rouge_l': mean_rouge,
             'mean_css': mean_css,
             'total_samples': len(all_rouge_l_scores)
-        },
-        'explanation_both_positive': {
-            'mean_rouge_l': mean_rouge_both,
-            'mean_css': mean_css_both,
-            'valid_samples': len(all_rouge_l_scores_both_positive)
         }
     }
     
@@ -596,7 +564,7 @@ def run_single_vqa_evaluation(args):
             'dataset': args.dataset,
             'batch_size': args.batch_size,
             'max_samples': args.max_samples,
-            'format': 'single_turn_vqa',
+            'format': 'single_turn_loc_exp',
             'timestamp': timestamp
         },
         'metrics': metrics,
@@ -611,18 +579,17 @@ def run_single_vqa_evaluation(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Single-Turn VQA Comprehensive Evaluation (All Metrics)")
+    parser = argparse.ArgumentParser(description="Single-Turn Localization + Explanation Evaluation")
     parser.add_argument("--exp-dir", type=str, required=True, help="Path to experiment directory")
-    parser.add_argument("--dataset", type=str, default="ours", choices=["ours", "t2i", "synartifact"], help="Dataset to evaluate")
+    parser.add_argument("--dataset", type=str, default="ours", choices=["ours", "synthscars", "synartifact", "loki", "richhf", "val"], help="Dataset to evaluate")
     parser.add_argument("--dataset-path", type=str, default="/data2/jhpark/image-artifacts/data/eval", help="Dataset path")
     parser.add_argument("--device", type=str, default="cuda:0", help="Device")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
     parser.add_argument("--max-samples", type=int, default=None, help="Max samples to evaluate")
     
     args = parser.parse_args()
-    run_single_vqa_evaluation(args)
+    run_single_turn_loc_exp_evaluation(args)
 
 
 if __name__ == "__main__":
     main()
-

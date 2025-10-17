@@ -1,15 +1,16 @@
 """
-Localization + Explanation Data JSON Generator (Positive Data Only)
+Multi-Turn VQA Localization + Explanation Data JSON Generator (Positive Data Only)
 
-This script generates training data for VLM models focused on artifact localization and explanation.
-It processes only positive data (images with artifacts) and creates structured JSON responses
-that include normalized bounding box coordinates and explanations.
+This script generates multi-turn training data for VLM models focused on artifact localization and explanation.
+It processes only positive data (images with artifacts) and creates structured multi-turn conversations
+that progressively extract artifact information.
 
-The output format includes:
-1. Normalized bounding boxes [0,1] range
-2. Short explanations for each artifact
-3. Scene captions
-4. Structured JSON response format
+The conversation flow:
+1. Q1: Detection + Bounding boxes (bbox coordinates only)
+2. Q2: Individual explanations for each bbox
+3. Q3: Overall scene description
+
+All images are assumed to have artifacts (no negative samples).
 """
 
 import json
@@ -23,15 +24,19 @@ from typing import List, Dict, Tuple
 DATA_DIR = "/data2/jhpark/image-artifacts/data/"
 JSON_DIR = "/home/jhpark/image-artifacts/src/train/LLaMA-Factory/data"
 
+# Multi-turn VQA prompts
+Q1_PROMPT = "<image>\nExamine the image carefully and identify any visual artifacts. List the artifact regions as bounding boxes in coordinates [x1, y1, x2, y2]."
+Q2_PROMPT = "For the region at {bbox_str}, briefly describe what is wrong there. Return a short sentence only."
+Q3_PROMPT = "Finally, write a concise description of the image and the anomalies you observed."
 
-def create_localization_entry(img_path: str, bboxes: List[List[float]], artifacts_data: List[Dict], 
-                            caption: str = "", image_width: int = None, image_height: int = None) -> Dict:
+def create_dataset_entry(img_path: str, bboxes: List[List[float]], artifacts_data: List[Dict], 
+                        caption: str = "", image_width: int = None, image_height: int = None) -> Dict:
     """
-    Create a dataset entry for localization and explanation (positive data only).
+    Create a multi-turn dataset entry for localization and explanation (positive data only).
     
     Args:
         img_path: Path to the artifact image
-        bboxes: List of bounding boxes [x_min, y_min, x_max, y_max]
+        bboxes: List of bounding boxes [x_min, y_min, x_max, y_max] in pixel coordinates
         artifacts_data: List of artifact metadata dictionaries
         caption: Image caption
         image_width: Image width (optional)
@@ -41,74 +46,79 @@ def create_localization_entry(img_path: str, bboxes: List[List[float]], artifact
         Dictionary containing the dataset entry
     """
     try:
-        # Normalize bboxes to [0,1] range if image dimensions are provided
-        normalized_bboxes = []
+        conversations = []
+        
+        # Q1: Detection + Bounding boxes
+        conversations.append({
+            "from": "human",
+            "value": Q1_PROMPT
+        })
+        
+        # Create bbox array with pixel coordinates
+        bbox_list = []
         explanations = []
         
-        if image_width and image_height:
+        if bboxes and artifacts_data:
             for i, artifact in enumerate(artifacts_data):
                 if i < len(bboxes) and len(bboxes[i]) == 4:
                     bbox = bboxes[i]
-                    # Normalize bbox coordinates to [0,1]
-                    x1, y1, x2, y2 = bbox
-                    norm_x1 = x1 / image_width
-                    norm_y1 = y1 / image_height
-                    norm_x2 = x2 / image_width
-                    norm_y2 = y2 / image_height
-                    
-                    # Ensure coordinates are within [0,1] range
-                    norm_x1 = int(max(0, min(1, norm_x1)))
-                    norm_y1 = int(max(0, min(1, norm_y1)))
-                    norm_x2 = int(max(0, min(1, norm_x2)))
-                    norm_y2 = int(max(0, min(1, norm_y2)))
-                    
-                    normalized_bboxes.append([norm_x1, norm_y1, norm_x2, norm_y2])
+                    # Use pixel coordinates directly
+                    int_bbox = [int(round(coord)) for coord in bbox]
+                    bbox_list.append(int_bbox)
                     
                     # Get explanation from artifact data
                     explanation = artifact.get("explanation", artifact.get("label", "Visual artifact detected"))
                     explanations.append(explanation)
         
-        # Create artifacts array with pixel coordinates
-        artifacts_array = []
-        for i, artifact in enumerate(artifacts_data):
-            if i < len(bboxes) and len(bboxes[i]) == 4:
-                bbox = bboxes[i]  # Use original pixel coordinates
-                int_bbox = [int(round(coord)) for coord in bbox]
-                explanation = artifact.get("explanation", artifact.get("label", "Visual artifact detected"))
-                artifacts_array.append({
-                    "bbox_2d": int_bbox,
-                    "label": explanation
+        # Q1 Response: Just the bbox coordinates
+        if bbox_list:
+            bbox_json = json.dumps(bbox_list, indent=2)
+            conversations.append({
+                "from": "gpt",
+                "value": f"```json\n{bbox_json}\n```"
+            })
+            
+            # Q2: Individual explanations for each bbox
+            for i, (bbox, explanation) in enumerate(zip(bbox_list, explanations)):
+                bbox_str = json.dumps(bbox)
+                conversations.append({
+                    "from": "human",
+                    "value": Q2_PROMPT.format(bbox_str=bbox_str)
                 })
-        
-        # Create the two fenced JSON blocks
-        first_block = json.dumps(artifacts_array, indent=2, ensure_ascii=False)
-        second_block = json.dumps({"explanation": caption}, indent=2, ensure_ascii=False)
-        
-        # Combine into fenced JSON blocks
-        gpt_response_str = f"```json\n{first_block}\n```\n\n```json\n{second_block}\n```"
-        
-        # Validate JSON structure of individual blocks
-        try:
-            json.loads(first_block)
-            json.loads(second_block)
-        except json.JSONDecodeError as e:
-            print(f"    ⚠️  Invalid JSON generated: {e}")
-            raise
+                conversations.append({
+                    "from": "gpt",
+                    "value": explanation
+                })
+            
+            # Q3: Overall scene description
+            conversations.append({
+                "from": "human",
+                "value": Q3_PROMPT
+            })
+            conversations.append({
+                "from": "gpt",
+                "value": f"```json\n{json.dumps({'explanation': caption}, indent=2)}\n```"
+            })
+        else:
+            # No valid bboxes - provide empty response
+            conversations.append({
+                "from": "gpt",
+                "value": "```json\n[]\n```"
+            })
+            conversations.append({
+                "from": "human",
+                "value": Q3_PROMPT
+            })
+            conversations.append({
+                "from": "gpt",
+                "value": f"```json\n{json.dumps({'explanation': 'No artifacts detected in this image.'}, indent=2)}\n```"
+            })
         
         entry = {
             "images": [img_path],
-            "conversations": [
-                {
-                    "from": "human",
-                    "value": "<image>\nAnalyze this image carefully and identify any visual artifacts present.\n\nYou must respond with exactly two fenced JSON blocks in this order:\n\nFirst JSON block - Array of artifacts with pixel coordinates:\n```json\n[\n  {\"bbox_2d\": [x1, y1, x2, y2], \"label\": description of the artifact in this region},\n  {\"bbox_2d\": [x1, y1, x2, y2], \"label\": description of the artifact in this region}\n]\n```\n\nSecond JSON block - Explanation:\n```json\n{\"explanation\": description of the anomalies in this image.}\n```\n\nRequirements:\n- Use pixel coordinates (not normalized)\n- Each bbox_2d array must have exactly 4 numbers: [x_min, y_min, x_max, y_max]\n- Provide explanations in English only\n- Ensure both JSON blocks are properly formatted and valid.\n"
-                },
-                {
-                    "from": "gpt",
-                    "value": gpt_response_str
-                }
-            ],
+            "conversations": conversations,
             "has_artifacts": True,
-            "artifact_count": len(artifacts_array)
+            "artifact_count": len(bbox_list)
         }
         
         # Add image dimensions if available
@@ -118,13 +128,13 @@ def create_localization_entry(img_path: str, bboxes: List[List[float]], artifact
         return entry
         
     except Exception as e:
-        print(f"    ⚠️  Error creating localization entry: {e}")
+        print(f"    ⚠️  Error creating multi-turn dataset entry: {e}")
         raise
 
 def safe_process_artifact_image(image_path: str, metadata_path: str, dataset: List[Dict], 
                               stats: Dict, image_width: int = None, image_height: int = None) -> bool:
     """
-    Safely process an artifact image for localization training.
+    Safely process an artifact image for multi-turn localization training.
     
     Args:
         image_path: Path to the artifact image
@@ -215,7 +225,7 @@ def safe_process_artifact_image(image_path: str, metadata_path: str, dataset: Li
         
         # Create dataset entry
         try:
-            entry = create_localization_entry(
+            entry = create_dataset_entry(
                 image_path, 
                 bboxes, 
                 valid_artifacts,
@@ -237,7 +247,7 @@ def safe_process_artifact_image(image_path: str, metadata_path: str, dataset: Li
 def process_artifact_sources(artifact_sources: List[Dict], dataset: List[Dict], 
                            stats: Dict, max_samples_per_source: int = None) -> int:
     """
-    Process artifact image sources for localization training.
+    Process artifact image sources for multi-turn localization training.
     
     Args:
         artifact_sources: List of source dictionaries with 'path' and 'name' keys
@@ -248,7 +258,7 @@ def process_artifact_sources(artifact_sources: List[Dict], dataset: List[Dict],
     Returns:
         Number of samples successfully added
     """
-    print(f"🔄 Processing Artifact Sources for Localization Training")
+    print(f"🔄 Processing Artifact Sources for Multi-Turn Localization Training")
     print("=" * 60)
     
     total_processed = 0
@@ -266,6 +276,9 @@ def process_artifact_sources(artifact_sources: List[Dict], dataset: List[Dict],
         
         try:
             for root, dirs, files in os.walk(source['path']):
+                # Shuffle directories to get random samples
+                random.shuffle(dirs)
+                
                 for img_id in dirs:
                     if max_samples_per_source and added_count >= max_samples_per_source:
                         break
@@ -286,6 +299,10 @@ def process_artifact_sources(artifact_sources: List[Dict], dataset: List[Dict],
                     
                     if processed_count % 50 == 0 and processed_count > 0:
                         print(f"    📊 Progress: {processed_count} processed, {added_count} added")
+                
+                # Break outer loop if we've reached the limit
+                if max_samples_per_source and added_count >= max_samples_per_source:
+                    break
         
         except Exception as e:
             print(f"  ❌ Error processing {source['name']}: {e}")
@@ -294,24 +311,24 @@ def process_artifact_sources(artifact_sources: List[Dict], dataset: List[Dict],
         total_added += final_added
         total_processed += processed_count
         
-        print(f"  ✅ Added {final_added} localization samples from {source['name']}")
+        print(f"  ✅ Added {final_added} multi-turn localization samples from {source['name']}")
     
     print(f"✅ Artifact sources processed: {total_added} samples")
     return total_added
 
 def main(target_dataset_size: int = 1000, output_name: str = None):
     """
-    Generate localization + explanation training dataset (positive data only).
+    Generate multi-turn localization + explanation training dataset (positive data only).
     
     Args:
         target_dataset_size: Target number of positive samples to generate
         output_name: Custom output filename (without extension)
     """
     
-    print("🎯 Localization + Explanation Dataset Generator (Positive Data Only)")
-    print("=" * 60)
+    print("🎯 Multi-Turn VQA Localization + Explanation Dataset Generator (Positive Data Only)")
+    print("=" * 70)
     print(f"🎯 Target dataset size: {target_dataset_size} (positive samples only)")
-    print("=" * 60)
+    print("=" * 70)
     
     dataset = []
     stats = {'processed_count': 0, 'successful_count': 0, 'failed_count': 0}
@@ -350,6 +367,12 @@ def main(target_dataset_size: int = 1000, output_name: str = None):
     # Process artifact sources
     total_added = process_artifact_sources(available_sources, dataset, stats)
     
+    # Ensure we don't exceed the target size
+    if len(dataset) > target_dataset_size:
+        print(f"\n⚠️  Dataset size ({len(dataset)}) exceeds target ({target_dataset_size}). Truncating...")
+        dataset = dataset[:target_dataset_size]
+        print(f"✅ Dataset truncated to {len(dataset)} samples")
+    
     # Validate dataset
     print(f"\n🔍 Dataset Validation:")
     print("=" * 40)
@@ -375,7 +398,7 @@ def main(target_dataset_size: int = 1000, output_name: str = None):
     if output_name:
         output_file = os.path.join(JSON_DIR, f"{output_name}.json")
     else:
-        output_file = os.path.join(JSON_DIR, f"artifact_localization_positive_{target_dataset_size}.json")
+        output_file = os.path.join(JSON_DIR, f"vqa_loc_exp_multi_turn_{target_dataset_size}.json")
     
     try:
         with open(output_file, 'w') as f:
@@ -394,17 +417,19 @@ def main(target_dataset_size: int = 1000, output_name: str = None):
     print(f"  Average artifacts per image: {avg_artifacts:.2f}")
     
     # Show sample entries
-    print(f"\n📋 Sample Dataset Entries:")
-    print("=" * 60)
+    print(f"\n📋 Sample Multi-Turn Dataset Entries:")
+    print("=" * 70)
     for i, entry in enumerate(dataset[:2]):
         print(f"Sample {i+1}:")
         print(f"  Image: {entry['images'][0]}")
         print(f"  Artifact count: {entry.get('artifact_count', 'N/A')}")
-        print(f"  Response preview: {entry['conversations'][1]['value'][:200]}...")
+        print(f"  Conversation turns: {len(entry['conversations'])}")
+        print(f"  Q1 Response preview: {entry['conversations'][1]['value'][:100]}...")
         print()
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate localization + explanation training dataset (positive data only)")
+    parser = argparse.ArgumentParser(description="Generate multi-turn localization + explanation training dataset (positive data only)")
     parser.add_argument(
         "--target_size", 
         type=int, 
@@ -415,7 +440,7 @@ if __name__ == "__main__":
         "--output_name",
         type=str,
         default=None,
-        help="Custom output filename (without extension). If not provided, uses 'artifact_localization_positive_{target_size}'"
+        help="Custom output filename (without extension). If not provided, uses 'vqa_loc_exp_multi_turn_{target_size}'"
     )
     
     args = parser.parse_args()

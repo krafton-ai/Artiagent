@@ -15,7 +15,7 @@ disable_shuffling: false
 deepspeed: examples/deepspeed/ds_z3_config.json
 
 ### dataset
-dataset: vqa_loc_exp
+dataset: multi_turn_loc_exp_fireflow_train
 template: qwen2_vl
 cutoff_len: 2048
 # max_samples: 1000
@@ -24,13 +24,12 @@ preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
 ### output
-# output_dir: /opt/dlami/nvme/DMLAB/jhpark/image-artifacts/vlm/saves/qwen2_5vl-7b/full/sft_artifacts_vanilla
-output_dir: /data2/jhpark/image-artifacts/vlm/saves/qwen2_5vl-7b/vqa_loc_exp
+# output_dir: /opt/dlami/nvme/DMLAB/jhpark/image-artifacts/vlm/saves/qwen2_5vl-7b/full/sft_artifacts_fireflow
+output_dir: /data2/jhpark/image-artifacts/vlm/saves/qwen2_5vl-7b/1000/multi_turn_loc_exp_fireflow
 logging_steps: 100
 plot_loss: true
 overwrite_output_dir: true
 report_to: tensorboard  # choices: [none, wandb, tensorboard, swanlab, mlflow]
-save_strategy: "no"        
 save_steps: 1000              
 # save_total_limit: 1        
 save_only_model: true   
@@ -40,7 +39,7 @@ per_device_train_batch_size: 2
 gradient_accumulation_steps: 1
 learning_rate: 1.0e-5
 # num_train_epochs: 3.0
-max_steps: 2812
+max_steps: 1000
 lr_scheduler_type: cosine
 warmup_ratio: 0.1
 bf16: true
@@ -49,7 +48,7 @@ resume_from_checkpoint: null
 
 # eval
 # val_size: 0.1
-# eval_dataset: single_vqa_val
-# per_device_eval_batch_size: 8
-# eval_strategy: steps
-# eval_steps: 500
+eval_dataset: multi_turn_loc_exp_fireflow_val
+per_device_eval_batch_size: 8
+eval_strategy: steps
+eval_steps: 500

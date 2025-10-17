@@ -276,6 +276,9 @@ def safe_convert_to_sft_format(data_dir, dataset, stats, max_samples=None, enabl
     try:
         for root, dirs, files in os.walk(data_dir):
             print(f"    📁 Scanning: {root}")
+            # Shuffle directories to get random samples
+            random.shuffle(dirs)
+            
             for i, img_id in enumerate(dirs):
                 if max_samples and samples_added >= max_samples:
                     print(f"    🎯 Reached max samples limit ({max_samples})")
@@ -352,6 +355,10 @@ def safe_convert_to_sft_format(data_dir, dataset, stats, max_samples=None, enabl
                     print(f"    ⚠️  Error processing {img_id}: {e}")
                     corruption_count += 1
                     continue
+            
+            # Break outer loop if we've reached the limit
+            if max_samples and samples_added >= max_samples:
+                break
                 
     except Exception as e:
         print(f"  ❌ Error walking directory: {e}")
@@ -634,6 +641,12 @@ def main(target_dataset_size=2000, output_name=None):
     
     print(f"✅ Negative sources processed: {negative_count} samples")
     print(f"  Total dataset entries: {len(dataset)}")
+
+    # Ensure we don't exceed the target size
+    if len(dataset) > target_dataset_size:
+        print(f"\n⚠️  Dataset size ({len(dataset)}) exceeds target ({target_dataset_size}). Truncating...")
+        dataset = dataset[:target_dataset_size]
+        print(f"✅ Dataset truncated to {len(dataset)} samples")
 
     # Validate balanced dataset
     print(f"\n🔍 Dataset Balance Validation:")

@@ -154,8 +154,8 @@ class DatasetIterator:
             self._load_richhf()
         elif self.dataset_type == "ours":
             self._load_ours()
-        elif self.dataset_type == "t2i":
-            self._load_t2i()
+        elif self.dataset_type == "val":
+            self._load_val_set()
         else:
             raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
             
@@ -218,8 +218,8 @@ class DatasetIterator:
             root_folder = sample.split('/')[0]
             image_id = Path(sample).stem
             
-            image_path = self.base_dir / sample
-            json_file = f"{root_folder}/annotation_json_artifacts_class/{image_id}.json"
+            image_path = self.base_dir / "data" / sample
+            json_file = f"data/{root_folder}/annotation_json_artifacts_class/{image_id}.json"
             json_path = self.base_dir / json_file
             
             with open(json_path, "r") as f:
@@ -234,17 +234,29 @@ class DatasetIterator:
 
         elif self.dataset_type == "richhf":
             json_data = sample
-            image_path = self.base_dir / json_data["filename"]
+            filename = json_data["filename"]
+            # RichHF has images in subdirectories (000, 001, 002, etc.)
+            # The filename in JSON is like "test/bf07713d-b61a-4323-9515-7e9c4a70253b.png"
+            # But actual path is "test/000/bf07713d-b61a-4323-9515-7e9c4a70253b.png"
+            image_name = filename.split('/')[-1]  # Get just the filename
+            test_dir = self.base_dir / "test"
+            
+            # Find the subdirectory containing this image
+            for subdir in test_dir.iterdir():
+                if subdir.is_dir():
+                    potential_path = subdir / image_name
+                    if potential_path.exists():
+                        image_path = potential_path
+                        break
+            else:
+                # Fallback to original path if not found
+                image_path = self.base_dir / filename
+            
             return json_data, image_path
 
         elif self.dataset_type == "ours":
             json_data = sample
             image_path = self.base_dir / "ours" / f"images/{json_data['id']}.png"
-            return json_data, image_path
-            
-        elif self.dataset_type == "t2i":
-            json_data = sample
-            image_path = self.base_dir / "t2i" / f"images/{json_data['id']}.png"
             return json_data, image_path
 
         elif self.dataset_type == "val":
@@ -268,28 +280,31 @@ class DatasetIterator:
     
     def _load_synthscars(self):
         """Load SynthScars dataset."""
-        json_path = self.base_dir / "train.json"
+        json_path = self.base_dir / "annotations" / "test.json"
         with open(json_path, "r") as f:
             self.data = json.load(f)
     
     def _load_synartifact(self):
         """Load SynArtifact dataset."""
-        json_path = self.base_dir / "train.json"
-        with open(json_path, "r") as f:
-            data = json.load(f)
-        self.data = data["images"]
+        eval_path = self.base_dir / "data" / "eval.txt"
+        self.data = []
+        with open(eval_path, "r") as f:
+            for line in f:
+                self.data.append(line.strip())
     
     def _load_loki(self):
         """Load LOKI dataset."""
-        json_path = self.base_dir / "annotations.json"
-        with open(json_path, "r") as f:
+        json_path = self.base_dir / "open_ended_vqa.json"
+        with open(json_path, "r", encoding="utf-16") as f:
             self.data = json.load(f)
     
     def _load_richhf(self):
         """Load RichHF dataset."""
-        json_path = self.base_dir / "richhf_annotations.json"
+        json_path = self.base_dir / "test.json"
         with open(json_path, "r") as f:
-            self.data = json.load(f)
+            data_dict = json.load(f)
+            # Convert dictionary to list of values
+            self.data = list(data_dict.values())
     
     def _load_ours(self):
         """Load our custom dataset."""
@@ -297,14 +312,8 @@ class DatasetIterator:
         with open(json_path, "r") as f:
             self.data = json.load(f)
             
-    def _load_t2i(self):
-        """Load T2I dataset."""
-        json_path = self.base_dir / "t2i" / "metadata.json"
-        with open(json_path, "r") as f:
-            self.data = json.load(f)
-
     def _load_val_set(self):
-        """Load val set."""
+        """Load the validation set used for training"""
         json_path = self.base_dir
         with open(json_path, "r") as f:
             self.data = json.load(f)

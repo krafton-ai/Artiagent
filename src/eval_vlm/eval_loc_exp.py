@@ -106,8 +106,10 @@ Requirements:
         
         self.template = get_template_and_fix_tokenizer(self.tokenizer, data_args)
         
-        self.model = load_model(self.tokenizer, model_args, finetuning_args)
-        self.model = self.model.to(self.device)
+        self.model = load_model(self.tokenizer, model_args, finetuning_args, is_trainable=False, add_valuehead=False)
+        # Don't move model to device if it's already dispatched with accelerate
+        if not hasattr(self.model, 'hf_device_map') or self.model.hf_device_map is None:
+            self.model = self.model.to(self.device)
         self.model.eval()
         
         logger.info("Model loaded successfully")
@@ -646,7 +648,7 @@ def run_loc_exp_evaluation(args):
 def main():
     parser = argparse.ArgumentParser(description="Localization + Explanation Evaluation")
     parser.add_argument("--exp-dir", type=str, required=True, help="Path to experiment directory")
-    parser.add_argument("--dataset", type=str, default="ours", choices=["ours", "t2i", "synartifact"], help="Dataset to evaluate")
+    parser.add_argument("--dataset", type=str, default="ours", choices=['synthscars', 'synartifact', 'loki', 'richhf', 'ours', 'val'], help="Dataset to evaluate")
     parser.add_argument("--dataset-path", type=str, default="/data2/jhpark/image-artifacts/data/eval", help="Dataset path")
     parser.add_argument("--device", type=str, default="cuda:0", help="Device")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")

@@ -88,8 +88,10 @@ Also include a concise caption describing the overall scene."""
         
         self.template = get_template_and_fix_tokenizer(self.tokenizer, data_args)
         
-        self.model = load_model(self.tokenizer, model_args, finetuning_args)
-        self.model = self.model.to(self.device)
+        self.model = load_model(self.tokenizer, model_args, finetuning_args, is_trainable=False, add_valuehead=False)
+        # Don't move model to device if it's already dispatched with accelerate
+        if not hasattr(self.model, 'hf_device_map') or self.model.hf_device_map is None:
+            self.model = self.model.to(self.device)
         self.model.eval()
         
         logger.info("Model loaded successfully")
