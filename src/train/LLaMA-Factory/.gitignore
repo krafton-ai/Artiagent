@@ -166,14 +166,15 @@ cython_debug/
 uv.lock
 
 # custom .gitignore
-src/train/LLaMA-Factory/hf_cache/
-src/train/LLaMA-Factory/ms_cache/
-src/train/LLaMA-Factory/om_cache/
-src/train/LLaMA-Factory/cache/
-src/train/LLaMA-Factory/config/
-src/train/LLaMA-Factory/saves/
-src/train/LLaMA-Factory/output/
-src/train/LLaMA-Factory/wandb/
-src/train/LLaMA-Factory/swanlog/
-src/train/LLaMA-Factory/generated_predictions.jsonl
-src/train/LLaMA-Factory/predictions_score.json
+hf_cache/
+ms_cache/
+om_cache/
+llamaboard_cache/
+llamaboard_config/
+saves/
+output/
+wandb/
+swanlog/
+generated_predictions.jsonl
+predictions_score.json
+

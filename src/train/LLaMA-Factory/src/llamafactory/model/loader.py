@@ -156,13 +156,13 @@ def load_model(
         if model_args.mixture_of_depths == "load":
             model = load_mod_pretrained_model(**init_kwargs)
         else:
-            if type(config) in AutoModelForVision2Seq._model_mapping.keys():  # image-text
-                load_class = AutoModelForVision2Seq
-            elif type(config) in AutoModelForImageTextToText._model_mapping.keys():  # image-text
+            if type(config) in AutoModelForImageTextToText._model_mapping.keys():  # image-text
                 load_class = AutoModelForImageTextToText
+            elif type(config) in AutoModelForVision2Seq._model_mapping.keys():  # image-text
+                load_class = AutoModelForVision2Seq
             elif type(config) in AutoModelForSeq2SeqLM._model_mapping.keys():  # audio-text
                 load_class = AutoModelForSeq2SeqLM
-            elif type(config) in AutoModelForTextToWaveform._model_mapping.keys():  # audio hack for qwen2_5_omni
+            elif type(config) in AutoModelForTextToWaveform._model_mapping.keys():  # audio hack for qwen omni
                 load_class = AutoModelForTextToWaveform
             else:
                 load_class = AutoModelForCausalLM
@@ -171,8 +171,8 @@ def load_model(
                 model = load_class.from_config(config, trust_remote_code=model_args.trust_remote_code)
             else:
                 model = load_class.from_pretrained(**init_kwargs)
-                if getattr(model.config, "model_type", None) == "qwen2_5_omni":
-                    model = model.thinker  # use part of Omni model
+                if getattr(model.config, "model_type", None) in ["qwen2_5_omni", "qwen3_omni_moe"]:
+                    model = getattr(model, "thinker")
 
         if model_args.mixture_of_depths == "convert":
             model = convert_pretrained_model_to_mod(model, config, model_args)
