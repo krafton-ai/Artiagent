@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 from tqdm import tqdm
+import glob
 
 # Handle both direct execution and module import
 if __name__ == "__main__" and __package__ is None:
@@ -28,22 +29,77 @@ else:
     from .vqa_serialize import VQASerializer
 
 
-def load_artiagent_directories(directories: List[str]) -> List[ArtiInstance]:
-    """Load ArtiAgent data from multiple directory structures.
+def load_source_images(source_dir: str, max_images: int = None) -> List[ArtiInstance]:
+    """Load real images from source directory to create balanced binary classification.
+    
+    Args:
+        source_dir: Path to source directory containing images (supports COCO format with train2017/ subdirectory or direct image directory)
+        max_images: Maximum number of images to load (None for all)
+    
+    Returns:
+        List of ArtiInstance objects with real images only (no artifacts)
+    """
+    source_path = Path(source_dir)
+    if not source_path.exists():
+        raise ValueError(f"Source directory not found: {source_dir}")
+    
+    # Try COCO format first (train2017 subdirectory), then direct image directory
+    images_dir = source_path / "train2017"
+    if not images_dir.exists():
+        images_dir = source_path
+    
+    if not images_dir.exists():
+        raise ValueError(f"Image directory not found: {images_dir}")
+    
+    # Get all image files (support common formats)
+    image_files = []
+    for ext in ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tiff"]:
+        image_files.extend(list(images_dir.glob(ext)))
+    
+    if max_images:
+        image_files = image_files[:max_images]
+    
+    instances = []
+    for image_file in tqdm(image_files, desc="Loading source images"):
+        # Create ArtiInstance with only real image (no artifacts)
+        instance = ArtiInstance(
+            real_image=str(image_file),
+            artifact_image=None,
+            metadata_caption=None,  # Source captions not used for this purpose
+            artifacts=[]  # No artifacts for real images
+        )
+        instances.append(instance)
+    
+    return instances
+
+
+def load_artiagent_directories(directories: List[str], source_dir: str = None, balance_real_images: bool = True) -> List[ArtiInstance]:
+    """Load ArtiAgent data from multiple directory structures and optionally balance with real images.
     
     Args:
         directories: List of paths to ArtiAgent directories containing UUID subdirectories
+        source_dir: Path to source directory for real images (optional)
+        balance_real_images: Whether to balance artifact and real images
     
     Returns:
-        List of ArtiInstance objects from all directories
+        List of ArtiInstance objects from all directories, optionally balanced with real images
     """
     all_instances = []
     
+    # Load artifact instances
     for directory in directories:
         print(f"Loading from {directory}...")
         instances = load_artiagent_directory(directory)
         all_instances.extend(instances)
         print(f"  Loaded {len(instances)} instances")
+    
+    # Load real images for balancing if requested
+    if source_dir and balance_real_images:
+        print(f"Loading real images from {source_dir} for balancing...")
+        real_instances = load_source_images(source_dir, max_images=len(all_instances))
+        all_instances.extend(real_instances)
+        print(f"  Loaded {len(real_instances)} real image instances")
+        print(f"  Total instances: {len(all_instances)} (balanced)")
     
     return all_instances
 
@@ -172,8 +228,24 @@ def generate_vqa_dataset(
         if not instance.real_image and not instance.artifact_image:
             continue
         
+        # Determine sampling mode based on available images
+        has_real = instance.real_image is not None
+        has_artifact = instance.artifact_image is not None and len(instance.artifacts) > 0
+        
+        if has_real and has_artifact:
+            # Both available - randomly choose
+            mode = random.choice(["real", "artifact", "pair"])
+        elif has_artifact:
+            # Only artifact available
+            mode = "artifact"
+        elif has_real:
+            # Only real available (for balanced dataset)
+            mode = "real"
+        else:
+            continue
+        
         # Sample conversation
-        images, qa_pairs = sampler.sample_conversation(instance, mode="auto")
+        images, qa_pairs = sampler.sample_conversation(instance, mode=mode)
         
         # Skip if no Q-A pairs generated
         if not qa_pairs:
@@ -242,6 +314,16 @@ def main():
         action="store_true",
         help="Generate separate train and validation files"
     )
+    parser.add_argument(
+        "--source-dir",
+        type=str,
+        help="Path to source directory for real images (for balancing binary classification)"
+    )
+    parser.add_argument(
+        "--no-balance",
+        action="store_true",
+        help="Disable balancing with real images from source directory"
+    )
     
     args = parser.parse_args()
     
@@ -259,7 +341,11 @@ def main():
     
     # Load input data from all directories
     print(f"Loading ArtiAgent data from {len(input_dirs)} directories...")
-    instances = load_artiagent_directories(input_dirs)
+    instances = load_artiagent_directories(
+        input_dirs, 
+        source_dir=args.source_dir,
+        balance_real_images=not args.no_balance
+    )
     
     print(f"Total loaded: {len(instances)} instances")
     
