@@ -326,11 +326,11 @@ class DatasetIterator:
         self.dataset_type = config['dataset_type']
         self.logger = logging.getLogger(__name__)
         
-        # For val dataset, use dataset_path directly
-        if self.dataset_type == "val":
+        # For val and train datasets, use dataset_path directly
+        if self.dataset_type in ["val", "train"]:
             self.dataset_path = config.get('dataset_path')
             if not self.dataset_path:
-                raise ValueError("dataset_path is required for val dataset")
+                raise ValueError(f"dataset_path is required for {self.dataset_type} dataset")
         
         # Initialize dataset-specific iterator
         if self.dataset_type == "synthscars":
@@ -345,6 +345,8 @@ class DatasetIterator:
             self._load_ours()
         elif self.dataset_type == "val":
             self._load_val_set()
+        elif self.dataset_type == "train":
+            self._load_train_set()
         else:
             raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
             
@@ -432,7 +434,7 @@ class DatasetIterator:
             image_path = self.base_dir / f"images/{json_data['id']}.png"
             return json_data, image_path
 
-        elif self.dataset_type == "val":
+        elif self.dataset_type in ["val", "train"]:
             json_data = sample
             image_path = sample['images'][0]
             json_path = os.path.join(os.path.dirname(image_path), "metadata.json")
@@ -505,6 +507,11 @@ class DatasetIterator:
 
     def _load_val_set(self):
         """Load the validation set used for training"""
+        with open(self.dataset_path, "r") as f:
+            self.data = json.load(f)
+    
+    def _load_train_set(self):
+        """Load the training set used for training"""
         with open(self.dataset_path, "r") as f:
             self.data = json.load(f)
 
@@ -645,7 +652,7 @@ def process_sample(args, gt, image_path, image, binary_output, loc_output, expl_
     expl_pred = parse_global_explanation_response(expl_output)
     
     # Determine if GT has artifacts
-    if args.dataset in ['ours', 'val']:
+    if args.dataset in ['ours', 'val', 'train']:
         has_gt = gt.get('has_artifacts', False)
     elif args.dataset == 't2i':
         has_gt = bool(gt.get('Artifacts annotation', []))
@@ -655,7 +662,7 @@ def process_sample(args, gt, image_path, image, binary_output, loc_output, expl_
         has_gt = True
     
     # Pre-process GT to add fields expected by eval_utils
-    if args.dataset in ['ours', 'val']:
+    if args.dataset in ['ours', 'val', 'train']:
         if 'bboxes' not in gt:
             gt_artifacts = gt.get('artifacts', [])
             gt['bboxes'] = [
@@ -746,7 +753,7 @@ def process_sample(args, gt, image_path, image, binary_output, loc_output, expl_
     
     # Log prediction vs GT
     logger.info(f"\n{'='*80}")
-    if args.dataset == 'val':
+    if args.dataset in ['val', 'train']:
         uuid = gt.get('uuid', 'unknown')
         image_type = gt.get('image_type', 'unknown')
         num_artifacts = len(gt.get('artifacts', []))
@@ -808,7 +815,7 @@ def run_multi_task_vqa_evaluation(args):
     """Run evaluation for multi-task VQA format with batch support."""
     
     # Set dataset-specific path
-    if args.dataset == 'val':
+    if args.dataset in ['val', 'train']:
         dataset_path = args.dataset_path
     elif args.dataset == 'synthscars':
         dataset_path = "/data2/jhpark/image-artifacts/data/eval/SynthScars/test"
@@ -838,7 +845,7 @@ def run_multi_task_vqa_evaluation(args):
         logger.info(f"Experiment directory: {args.exp_dir}")
     logger.info(f"Dataset: {args.dataset.upper()}")
     logger.info(f"Dataset path: {dataset_path}")
-    if args.dataset == 'val':
+    if args.dataset in ['val', 'train']:
         logger.info(f"Dataset JSON file: {args.dataset_path}")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Device: {args.device}")
@@ -860,7 +867,7 @@ def run_multi_task_vqa_evaluation(args):
         'device': args.device,
         'dataset_type': args.dataset,
         'base_dir': dataset_path,
-        'dataset_path': dataset_path if args.dataset == 'val' else None,
+        'dataset_path': dataset_path if args.dataset in ['val', 'train'] else None,
         'use_finetuned': bool(args.exp_dir),  # True if exp_dir is provided
         'finetune_mode': 'custom',  # Placeholder for models that need it
     }
@@ -1122,10 +1129,10 @@ def main():
                         help="Model type to use for evaluation")
     parser.add_argument("--exp-dir", type=str, default=None, help="Path to experiment directory (model checkpoint)")
     parser.add_argument("--dataset", type=str, default="ours", 
-                        choices=["ours", "synthscars", "synartifact", "loki", "richhf", "val"], 
+                        choices=["ours", "synthscars", "synartifact", "loki", "richhf", "val", "train"], 
                         help="Dataset to evaluate")
     parser.add_argument("--dataset-path", type=str, default=None, 
-                        help="Path to dataset JSON file (required when --dataset val)")
+                        help="Path to dataset JSON file (required when --dataset val or train)")
     parser.add_argument("--device", type=str, default="cuda", help="Device")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size for inference (default: 1)")
     parser.add_argument("--max-samples", type=int, default=None, help="Max samples to evaluate")
@@ -1135,8 +1142,8 @@ def main():
     args = parser.parse_args()
     
     # Validate arguments
-    if args.dataset == "val" and not args.dataset_path:
-        parser.error("--dataset-path is required when --dataset val")
+    if args.dataset in ["val", "train"] and not args.dataset_path:
+        parser.error(f"--dataset-path is required when --dataset {args.dataset}")
     
     run_multi_task_vqa_evaluation(args)
 
