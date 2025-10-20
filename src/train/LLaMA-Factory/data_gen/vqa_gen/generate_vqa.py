@@ -228,32 +228,36 @@ def generate_vqa_dataset(
         if not instance.real_image and not instance.artifact_image:
             continue
         
-        # Determine sampling mode based on available images
+        # Determine available modes based on available images
         has_real = instance.real_image is not None
         has_artifact = instance.artifact_image is not None and len(instance.artifacts) > 0
         
+        # Generate all possible modes for this instance
+        modes_to_generate = []
+        
+        if has_real:
+            modes_to_generate.append("real")
+        if has_artifact:
+            modes_to_generate.append("artifact")
         if has_real and has_artifact:
-            # Both available - randomly choose
-            mode = random.choice(["real", "artifact", "pair"])
-        elif has_artifact:
-            # Only artifact available
-            mode = "artifact"
-        elif has_real:
-            # Only real available (for balanced dataset)
-            mode = "real"
-        else:
+            modes_to_generate.append("pair")
+        
+        # Skip if no valid modes
+        if not modes_to_generate:
             continue
         
-        # Sample conversation
-        images, qa_pairs = sampler.sample_conversation(instance, mode=mode)
-        
-        # Skip if no Q-A pairs generated
-        if not qa_pairs:
-            continue
-        
-        # Serialize to JSON format
-        conversation = VQASerializer.serialize_conversation(images, qa_pairs)
-        conversations.append(conversation)
+        # Generate conversations for all available modes
+        for mode in modes_to_generate:
+            # Sample conversation
+            images, qa_pairs = sampler.sample_conversation(instance, mode=mode)
+            
+            # Skip if no Q-A pairs generated
+            if not qa_pairs:
+                continue
+            
+            # Serialize to JSON format
+            conversation = VQASerializer.serialize_conversation(images, qa_pairs)
+            conversations.append(conversation)
     
     return conversations
 
