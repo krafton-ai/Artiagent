@@ -1038,32 +1038,32 @@ def run_multi_task_vqa_evaluation(args):
         
         if args.dataset == 'richhf':
             image = image.resize((512, 512), Image.LANCZOS)
-        elif args.dataset == 'ours':
-            # Resize so shortest side is 512, preserving aspect ratio
-            width, height = image.size
-            if width < height:
-                new_width = 512
-                new_height = int(height * (512 / width))
-            else:
-                new_height = 512
-                new_width = int(width * (512 / height))
-            image = image.resize((new_width, new_height), Image.LANCZOS)
+        # elif args.dataset == 'ours':
+        #     # Resize so shortest side is 512, preserving aspect ratio
+        #     width, height = image.size
+        #     if width < height:
+        #         new_width = 512
+        #         new_height = int(height * (512 / width))
+        #     else:
+        #         new_height = 512
+        #         new_width = int(width * (512 / height))
+        #     image = image.resize((new_width, new_height), Image.LANCZOS)
             
-            # Scale bboxes for ours dataset
-            scale_x = new_width / original_width
-            scale_y = new_height / original_height
-            if 'bboxes' in gt:
-                scaled_bboxes = []
-                for bbox in gt['bboxes']:
-                    if len(bbox) == 4:
-                        x1, y1, x2, y2 = bbox
-                        scaled_bboxes.append([
-                            int(x1 * scale_x),
-                            int(y1 * scale_y),
-                            int(x2 * scale_x),
-                            int(y2 * scale_y)
-                        ])
-                gt['bboxes'] = scaled_bboxes
+        #     # Scale bboxes for ours dataset
+        #     scale_x = new_width / original_width
+        #     scale_y = new_height / original_height
+        #     if 'bboxes' in gt:
+        #         scaled_bboxes = []
+        #         for bbox in gt['bboxes']:
+        #             if len(bbox) == 4:
+        #                 x1, y1, x2, y2 = bbox
+        #                 scaled_bboxes.append([
+        #                     int(x1 * scale_x),
+        #                     int(y1 * scale_y),
+        #                     int(x2 * scale_x),
+        #                     int(y2 * scale_y)
+        #                 ])
+        #         gt['bboxes'] = scaled_bboxes
         
         batch_gts.append(gt)
         batch_image_paths.append(image_path)
