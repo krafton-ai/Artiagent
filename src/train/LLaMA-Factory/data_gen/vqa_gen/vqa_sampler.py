@@ -10,7 +10,8 @@ class VQASampler:
         self,
         format_dropout: float = 0.15,
         qa_dropout_rate: float = 0.3,
-        single_turn_prob: float = 0.2
+        single_turn_prob: float = 0.2,
+        always_start_with_binary: bool = False
     ):
         """Initialize VQA sampler.
         
@@ -18,10 +19,12 @@ class VQASampler:
             format_dropout: Probability to omit format instructions (0.1-0.2)
             qa_dropout_rate: Probability to drop each Q-A pair (0.2-0.4)
             single_turn_prob: Probability to create single-turn conversation (0.2)
+            always_start_with_binary: If True, always start artifact conversations with 1.1 (binary detection)
         """
         self.format_dropout = format_dropout
         self.qa_dropout_rate = qa_dropout_rate
         self.single_turn_prob = single_turn_prob
+        self.always_start_with_binary = always_start_with_binary
     
     def sample_real_image(self, instance: ArtiInstance) -> Tuple[List[str], List[QAPair]]:
         """Sample Q-A pairs for real image only.
@@ -48,9 +51,12 @@ class VQASampler:
         """
         images = [instance.artifact_image]
         
-        # Choose random start point
-        start_options = ['1.1', '1.2', '1.3']
-        start = random.choice(start_options)
+        # Choose random start point (or force 1.1 if configured)
+        if self.always_start_with_binary:
+            start = '1.1'
+        else:
+            start_options = ['1.1', '1.2', '1.3']
+            start = random.choice(start_options)
         
         qa_pairs = []
         has_bboxes = bool(instance.artifacts)
