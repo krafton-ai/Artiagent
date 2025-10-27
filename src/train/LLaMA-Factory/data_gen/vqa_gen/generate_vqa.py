@@ -23,10 +23,12 @@ if __name__ == "__main__" and __package__ is None:
     from vqa_gen.types import ArtiInstance, ArtifactRegion
     from vqa_gen.vqa_sampler import VQASampler
     from vqa_gen.vqa_serialize import VQASerializer
+    from vqa_gen.vqa_prompts import VQAPrompts
 else:
     from .types import ArtiInstance, ArtifactRegion
     from .vqa_sampler import VQASampler
     from .vqa_serialize import VQASerializer
+    from .vqa_prompts import VQAPrompts
 
 
 def load_source_images(source_dir: str, max_images: int = None) -> List[ArtiInstance]:
@@ -63,7 +65,7 @@ def load_source_images(source_dir: str, max_images: int = None) -> List[ArtiInst
     for image_file in tqdm(image_files, desc="Loading source images"):
         # Create ArtiInstance with only real image (no artifacts)
         instance = ArtiInstance(
-            real_image=str(image_file),
+            real_image=str(image_file.resolve()),  # Convert to absolute path
             artifact_image=None,
             metadata_caption=None,  # Source captions not used for this purpose
             artifacts=[]  # No artifacts for real images
@@ -73,13 +75,16 @@ def load_source_images(source_dir: str, max_images: int = None) -> List[ArtiInst
     return instances
 
 
-def load_artiagent_directories(directories: List[str], source_dir: str = None, balance_real_images: bool = True) -> List[ArtiInstance]:
+def load_artiagent_directories(directories: List[str], source_dir: str = None, balance_real_images: bool = True, max_instances_per_path: int = None, real_image_filename: str = "real_image.png", artifact_image_filename: str = "artifact_image.png") -> List[ArtiInstance]:
     """Load ArtiAgent data from multiple directory structures and optionally balance with real images.
     
     Args:
         directories: List of paths to ArtiAgent directories containing UUID subdirectories
         source_dir: Path to source directory for real images (optional)
         balance_real_images: Whether to balance artifact and real images
+        max_instances_per_path: Maximum instances to load from each directory (None for no limit)
+        real_image_filename: Filename to use for real images (default: "real_image.png")
+        artifact_image_filename: Filename to use for artifact images (default: "artifact_image.png")
     
     Returns:
         List of ArtiInstance objects from all directories, optionally balanced with real images
@@ -89,7 +94,7 @@ def load_artiagent_directories(directories: List[str], source_dir: str = None, b
     # Load artifact instances
     for directory in directories:
         print(f"Loading from {directory}...")
-        instances = load_artiagent_directory(directory)
+        instances = load_artiagent_directory(directory, max_instances=max_instances_per_path, real_image_filename=real_image_filename, artifact_image_filename=artifact_image_filename)
         all_instances.extend(instances)
         print(f"  Loaded {len(instances)} instances")
     
@@ -104,11 +109,14 @@ def load_artiagent_directories(directories: List[str], source_dir: str = None, b
     return all_instances
 
 
-def load_artiagent_directory(directory: str) -> List[ArtiInstance]:
+def load_artiagent_directory(directory: str, max_instances: int = None, real_image_filename: str = "real_image.png", artifact_image_filename: str = "artifact_image.png") -> List[ArtiInstance]:
     """Load ArtiAgent data from directory structure.
     
     Args:
         directory: Path to ArtiAgent directory containing UUID subdirectories
+        max_instances: Maximum number of instances to load (None for no limit)
+        real_image_filename: Filename to use for real images (default: "real_image.png")
+        artifact_image_filename: Filename to use for artifact images (default: "artifact_image.png")
     
     Returns:
         List of ArtiInstance objects
@@ -122,11 +130,15 @@ def load_artiagent_directory(directory: str) -> List[ArtiInstance]:
     # Iterate through all subdirectories
     subdirs = [d for d in directory_path.iterdir() if d.is_dir()]
     
+    # Limit number of subdirectories if max_instances is specified
+    if max_instances is not None:
+        subdirs = subdirs[:max_instances]
+    
     for subdir in tqdm(subdirs, desc="Loading ArtiAgent data"):
         # Expected files in each subdirectory
         metadata_file = subdir / "metadata.json"
-        real_image_file = subdir / "real_image.png"
-        artifact_image_file = subdir / "artifact_image.png"
+        real_image_file = subdir / real_image_filename
+        artifact_image_file = subdir / artifact_image_filename
         
         # Skip if metadata.json doesn't exist
         if not metadata_file.exists():
@@ -148,9 +160,9 @@ def load_artiagent_directory(directory: str) -> List[ArtiInstance]:
         # Get caption
         caption = metadata.get("caption")
         
-        # Get image paths (use absolute or relative paths)
-        real_image = str(real_image_file) if real_image_file.exists() else None
-        artifact_image = str(artifact_image_file) if artifact_image_file.exists() else None
+        # Get image paths (convert to absolute paths)
+        real_image = str(real_image_file.resolve()) if real_image_file.exists() else None
+        artifact_image = str(artifact_image_file.resolve()) if artifact_image_file.exists() else None
         
         # Create instance
         instance = ArtiInstance(
@@ -168,7 +180,6 @@ def load_artiagent_directory(directory: str) -> List[ArtiInstance]:
 def split_instances(
     instances: List[ArtiInstance],
     train_ratio: float = 0.8,
-    val_ratio: float = 0.2,
     seed: int = 42
 ) -> Tuple[List[ArtiInstance], List[ArtiInstance]]:
     """Split instances into train and validation sets.
@@ -176,14 +187,13 @@ def split_instances(
     Args:
         instances: List of ArtiInstance objects
         train_ratio: Ratio of instances for training (default: 0.8)
-        val_ratio: Ratio of instances for validation (default: 0.2)
         seed: Random seed for reproducibility
     
     Returns:
         Tuple of (train_instances, val_instances)
     """
-    if abs(train_ratio + val_ratio - 1.0) > 1e-6:
-        raise ValueError(f"Train ratio ({train_ratio}) + val ratio ({val_ratio}) must equal 1.0")
+    if train_ratio < 0 or train_ratio > 1:
+        raise ValueError(f"Train ratio must be between 0 and 1, got {train_ratio}")
     
     random.seed(seed)
     shuffled_instances = instances.copy()
@@ -201,7 +211,8 @@ def split_instances(
 def generate_vqa_dataset(
     instances: List[ArtiInstance],
     format_dropout: float = 0.15,
-    seed: int = 42
+    seed: int = 42,
+    sample_one_mode: bool = False
 ) -> List[Dict[str, Any]]:
     """Generate VQA dataset from ArtiAgent instances.
     
@@ -246,16 +257,17 @@ def generate_vqa_dataset(
         if not modes_to_generate:
             continue
         
-        # Generate conversations for all available modes
-        for mode in modes_to_generate:
-            # Sample conversation
+        # Decide which modes to generate
+        if sample_one_mode and modes_to_generate:
+            selected_modes = [random.choice(modes_to_generate)]
+        else:
+            selected_modes = modes_to_generate
+
+        # Generate conversations for selected modes
+        for mode in selected_modes:
             images, qa_pairs = sampler.sample_conversation(instance, mode=mode)
-            
-            # Skip if no Q-A pairs generated
             if not qa_pairs:
-                continue
-            
-            # Serialize to JSON format
+                raise ValueError(f"No Q-A pairs generated for mode: {mode}")
             conversation = VQASerializer.serialize_conversation(images, qa_pairs)
             conversations.append(conversation)
     
@@ -265,17 +277,11 @@ def generate_vqa_dataset(
 def main():
     parser = argparse.ArgumentParser(description="Generate VQA dataset from multiple ArtiAgent directories")
     
-    # Create mutually exclusive group for input options
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument(
+    parser.add_argument(
         "--input",
         nargs="+",
+        required=True,
         help="One or more paths to ArtiAgent directories (containing UUID subdirectories)"
-    )
-    input_group.add_argument(
-        "--input-dirs",
-        nargs="+",
-        help="Alternative flag for multiple ArtiAgent directories"
     )
     
     parser.add_argument(
@@ -287,7 +293,7 @@ def main():
     parser.add_argument(
         "--format-dropout",
         type=float,
-        default=0.15,
+        default=0.0,
         help="Probability to omit format instructions (default: 0.15)"
     )
     parser.add_argument(
@@ -297,26 +303,10 @@ def main():
         help="Random seed for reproducibility (default: 42)"
     )
     parser.add_argument(
-        "--no-validate",
-        action="store_true",
-        help="Skip validation before saving"
-    )
-    parser.add_argument(
         "--train-ratio",
         type=float,
-        default=0.8,
-        help="Ratio of data for training (default: 0.8)"
-    )
-    parser.add_argument(
-        "--val-ratio",
-        type=float,
-        default=0.2,
-        help="Ratio of data for validation (default: 0.2)"
-    )
-    parser.add_argument(
-        "--split-outputs",
-        action="store_true",
-        help="Generate separate train and validation files"
+        default=1.0,
+        help="Ratio of data for training (default: 1.0, no validation split). Set < 1.0 to create train/val split."
     )
     parser.add_argument(
         "--source-dir",
@@ -324,18 +314,37 @@ def main():
         help="Path to source directory for real images (for balancing binary classification)"
     )
     parser.add_argument(
-        "--no-balance",
+        "--sample-one-mode",
         action="store_true",
-        help="Disable balancing with real images from source directory"
+        help="If set, sample only one mode (real/artifact/pair) per instance; default generates all available modes"
+    )
+    parser.add_argument(
+        "--enable-prompt-variants",
+        action="store_true",
+        help="Enable random selection among prompt variants (default off: always use first)"
+    )
+    parser.add_argument(
+        "--max-instances-per-path",
+        type=int,
+        help="Maximum number of instances to collect from each input directory (default: no limit)"
+    )
+    parser.add_argument(
+        "--real-image-filename",
+        type=str,
+        default="real_image.png",
+        help="Filename to use for real images in subdirectories (default: real_image.png)"
+    )
+    parser.add_argument(
+        "--artifact-image-filename",
+        type=str,
+        default="artifact_image.png",
+        help="Filename to use for artifact images in subdirectories (default: artifact_image.png)"
     )
     
     args = parser.parse_args()
     
-    # Determine input directories
-    if args.input:
-        input_dirs = args.input
-    else:
-        input_dirs = args.input_dirs
+    # Get input directories
+    input_dirs = args.input
     
     # Validate directories exist
     for directory in input_dirs:
@@ -345,21 +354,28 @@ def main():
     
     # Load input data from all directories
     print(f"Loading ArtiAgent data from {len(input_dirs)} directories...")
+
+    # Configure prompt variant behavior
+    VQAPrompts.USE_VARIANTS = bool(args.enable_prompt_variants)
+
     instances = load_artiagent_directories(
-        input_dirs, 
+        input_dirs,
         source_dir=args.source_dir,
-        balance_real_images=not args.no_balance
+        balance_real_images=bool(args.source_dir),
+        max_instances_per_path=args.max_instances_per_path,
+        real_image_filename=args.real_image_filename,
+        artifact_image_filename=args.artifact_image_filename
     )
     
     print(f"Total loaded: {len(instances)} instances")
     
-    # Split into train/val if requested
-    if args.split_outputs:
-        print(f"Splitting data: {args.train_ratio:.1%} train, {args.val_ratio:.1%} validation...")
+    # Split into train/val if train ratio < 1.0
+    if args.train_ratio < 1.0:
+        val_ratio = 1.0 - args.train_ratio
+        print(f"Splitting data: {args.train_ratio:.1%} train, {val_ratio:.1%} validation...")
         train_instances, val_instances = split_instances(
             instances=instances,
             train_ratio=args.train_ratio,
-            val_ratio=args.val_ratio,
             seed=args.seed
         )
         print(f"Train: {len(train_instances)} instances, Val: {len(val_instances)} instances")
@@ -369,7 +385,8 @@ def main():
         train_conversations = generate_vqa_dataset(
             instances=train_instances,
             format_dropout=args.format_dropout,
-            seed=args.seed
+            seed=args.seed,
+            sample_one_mode=args.sample_one_mode
         )
         
         # Generate val dataset
@@ -377,7 +394,8 @@ def main():
         val_conversations = generate_vqa_dataset(
             instances=val_instances,
             format_dropout=args.format_dropout,
-            seed=args.seed + 1  # Different seed for val
+            seed=args.seed + 1,  # Different seed for val
+            sample_one_mode=args.sample_one_mode
         )
         
         print(f"Generated {len(train_conversations)} train conversations")
@@ -391,23 +409,24 @@ def main():
         VQASerializer.save_to_json(
             conversations=train_conversations,
             output_path=train_output,
-            validate=not args.no_validate
+            validate=True
         )
         
         print(f"Saving validation data to {val_output}...")
         VQASerializer.save_to_json(
             conversations=val_conversations,
             output_path=val_output,
-            validate=not args.no_validate
+            validate=True
         )
         
     else:
-        # Generate single dataset
-        print("Generating VQA dataset...")
+        # Generate single dataset (no split)
+        print("Generating VQA dataset (no train/val split)...")
         conversations = generate_vqa_dataset(
             instances=instances,
             format_dropout=args.format_dropout,
-            seed=args.seed
+            seed=args.seed,
+            sample_one_mode=args.sample_one_mode
         )
         
         print(f"Generated {len(conversations)} conversations")
@@ -417,7 +436,7 @@ def main():
         VQASerializer.save_to_json(
             conversations=conversations,
             output_path=args.output,
-            validate=not args.no_validate
+            validate=True
         )
     
     print("Done!")

@@ -3,6 +3,9 @@ from typing import Tuple
 
 class VQAPrompts:
     """Question templates for VQA generation."""
+    # Toggle: when False (default), always use the first prompt in each variant list
+    # When True, randomly sample from variants
+    USE_VARIANTS = False
     
     # 1.1 Binary Detection (evaluated - strict JSON)
     BINARY_DETECTION_VARIANTS = [
@@ -76,7 +79,11 @@ Answer format (strict JSON):
     @staticmethod
     def get_binary_detection(include_format: bool = True) -> str:
         """Get binary detection question."""
-        q = random.choice(VQAPrompts.BINARY_DETECTION_VARIANTS)
+        q = (
+            random.choice(VQAPrompts.BINARY_DETECTION_VARIANTS)
+            if VQAPrompts.USE_VARIANTS
+            else VQAPrompts.BINARY_DETECTION_VARIANTS[0]
+        )
         if include_format:
             q += VQAPrompts.BINARY_DETECTION_FORMAT
         return q
@@ -84,7 +91,11 @@ Answer format (strict JSON):
     @staticmethod
     def get_localization(include_format: bool = True) -> str:
         """Get localization question."""
-        q = random.choice(VQAPrompts.LOCALIZATION_VARIANTS)
+        q = (
+            random.choice(VQAPrompts.LOCALIZATION_VARIANTS)
+            if VQAPrompts.USE_VARIANTS
+            else VQAPrompts.LOCALIZATION_VARIANTS[0]
+        )
         if include_format:
             q += VQAPrompts.LOCALIZATION_FORMAT
         return q
@@ -92,7 +103,11 @@ Answer format (strict JSON):
     @staticmethod
     def get_global_explanation(include_format: bool = True) -> str:
         """Get global explanation question."""
-        q = random.choice(VQAPrompts.GLOBAL_EXPLANATION_VARIANTS)
+        q = (
+            random.choice(VQAPrompts.GLOBAL_EXPLANATION_VARIANTS)
+            if VQAPrompts.USE_VARIANTS
+            else VQAPrompts.GLOBAL_EXPLANATION_VARIANTS[0]
+        )
         if include_format:
             q += VQAPrompts.GLOBAL_EXPLANATION_FORMAT
         return q
@@ -100,7 +115,11 @@ Answer format (strict JSON):
     @staticmethod
     def get_regional_explanation(bbox: Tuple[int, int, int, int]) -> str:
         """Get regional explanation question for specific bbox."""
-        template = random.choice(VQAPrompts.REGIONAL_EXPLANATION_VARIANTS)
+        template = (
+            random.choice(VQAPrompts.REGIONAL_EXPLANATION_VARIANTS)
+            if VQAPrompts.USE_VARIANTS
+            else VQAPrompts.REGIONAL_EXPLANATION_VARIANTS[0]
+        )
         xmin, ymin, xmax, ymax = bbox
         return template.format(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax)
     
@@ -117,9 +136,17 @@ Answer format (strict JSON):
             artifact_position: Either 'first' or 'second'
         """
         if artifact_position == "first":
-            return random.choice(VQAPrompts.PAIR_LOCALIZATION_FIRST_ARTIFACT)
+            return (
+                random.choice(VQAPrompts.PAIR_LOCALIZATION_FIRST_ARTIFACT)
+                if VQAPrompts.USE_VARIANTS
+                else VQAPrompts.PAIR_LOCALIZATION_FIRST_ARTIFACT[0]
+            )
         else:
-            return random.choice(VQAPrompts.PAIR_LOCALIZATION_SECOND_ARTIFACT)
+            return (
+                random.choice(VQAPrompts.PAIR_LOCALIZATION_SECOND_ARTIFACT)
+                if VQAPrompts.USE_VARIANTS
+                else VQAPrompts.PAIR_LOCALIZATION_SECOND_ARTIFACT[0]
+            )
     
     @staticmethod
     def get_pair_regional(artifact_position: str) -> str:
@@ -129,9 +156,17 @@ Answer format (strict JSON):
             artifact_position: Either 'first' or 'second'
         """
         if artifact_position == "first":
-            return random.choice(VQAPrompts.PAIR_REGIONAL_FIRST_ARTIFACT)
+            return (
+                random.choice(VQAPrompts.PAIR_REGIONAL_FIRST_ARTIFACT)
+                if VQAPrompts.USE_VARIANTS
+                else VQAPrompts.PAIR_REGIONAL_FIRST_ARTIFACT[0]
+            )
         else:
-            return random.choice(VQAPrompts.PAIR_REGIONAL_SECOND_ARTIFACT)
+            return (
+                random.choice(VQAPrompts.PAIR_REGIONAL_SECOND_ARTIFACT)
+                if VQAPrompts.USE_VARIANTS
+                else VQAPrompts.PAIR_REGIONAL_SECOND_ARTIFACT[0]
+            )
     
     @staticmethod
     def get_pair_explanation(artifact_position: str) -> str:
@@ -141,7 +176,15 @@ Answer format (strict JSON):
             artifact_position: Either 'first' or 'second'
         """
         if artifact_position == "first":
-            return random.choice(VQAPrompts.PAIR_EXPLANATION_FIRST_ARTIFACT)
+            return (
+                random.choice(VQAPrompts.PAIR_EXPLANATION_FIRST_ARTIFACT)
+                if VQAPrompts.USE_VARIANTS
+                else VQAPrompts.PAIR_EXPLANATION_FIRST_ARTIFACT[0]
+            )
         else:
-            return random.choice(VQAPrompts.PAIR_EXPLANATION_SECOND_ARTIFACT)
+            return (
+                random.choice(VQAPrompts.PAIR_EXPLANATION_SECOND_ARTIFACT)
+                if VQAPrompts.USE_VARIANTS
+                else VQAPrompts.PAIR_EXPLANATION_SECOND_ARTIFACT[0]
+            )
 

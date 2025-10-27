@@ -37,6 +37,36 @@ from vqa_gen.vqa_prompts import VQAPrompts
 logger = logging.getLogger(__name__)
 
 
+# Dataset-specific task configuration
+DATASET_TASKS = {
+    'train': {'binary', 'localization', 'explanation'},
+    'val': {'binary', 'localization', 'explanation'},
+    'ours': {'binary', 'localization', 'explanation'},
+    'synartifact': {'binary', 'localization'},
+    'synthscars': {'localization', 'explanation'},
+    'loki': {'localization', 'explanation'},
+    'richhf': {'localization'}
+}
+
+
+def get_enabled_tasks(dataset: str) -> Dict[str, bool]:
+    """
+    Get enabled tasks for the given dataset.
+    
+    Args:
+        dataset: Dataset name
+        
+    Returns:
+        Dict with task names as keys and boolean values indicating if enabled
+    """
+    enabled = DATASET_TASKS.get(dataset, {'binary', 'localization', 'explanation'})
+    return {
+        'binary': 'binary' in enabled,
+        'localization': 'localization' in enabled,
+        'explanation': 'explanation' in enabled
+    }
+
+
 def extract_bboxes(text: str) -> List[List[int]]:
     """
     Extracts all 4-number bounding boxes that appear in the form:
@@ -407,15 +437,21 @@ class DatasetIterator:
             
         elif self.dataset_type == "synartifact":
             image_rel = sample.lstrip('./')
-            if image_rel.startswith('images/'):
-                image_path = self.base_dir / image_rel
-            else:
-                image_path = self.base_dir / 'images' / image_rel
+            image_path = self.base_dir / image_rel
             image_id = Path(image_path).stem
-            json_path = self.base_dir / 'data' / 'annotation_json_artifacts_class' / f"{image_id}.json"
             
-            with open(json_path, "r") as f:
-                json_data = json.load(f)
+            if 'sub_data_' in str(image_path):
+                subdir = str(image_path).split('/')[-3]
+                json_path = self.base_dir / subdir / 'annotation_json_artifacts_class' / f"{image_id}.json"
+            else:
+                json_path = self.base_dir / 'annotation_json_artifacts_class' / f"{image_id}.json"
+            
+            if json_path.exists():
+                with open(json_path, "r") as f:
+                    json_data = json.load(f)
+            else:
+                self.logger.warning(f"Annotation file not found: {json_path}")
+                json_data = {"Artifacts annotation": []}
             
             return json_data, image_path
             
@@ -426,7 +462,23 @@ class DatasetIterator:
 
         elif self.dataset_type == "richhf":
             json_data = sample
-            image_path = self.base_dir / json_data["filename"]
+            filename = json_data["filename"]
+            if filename.startswith("test/"):
+                actual_filename = filename[5:]
+                found_path = None
+                for subdir in self.base_dir.glob("test/*/"):
+                    potential_path = subdir / actual_filename
+                    if potential_path.exists():
+                        found_path = potential_path
+                        break
+                
+                if found_path:
+                    image_path = found_path
+                else:
+                    image_path = self.base_dir / filename
+            else:
+                image_path = self.base_dir / filename
+            
             return json_data, image_path
 
         elif self.dataset_type == "ours":
@@ -643,13 +695,24 @@ def get_prompts() -> Dict[str, str]:
 
 
 def process_sample(args, gt, image_path, image, binary_output, loc_output, expl_output,
-                   evaluator, legion_evaluator, wsol_evaluator, total_processed):
+                   evaluator, legion_evaluator, wsol_evaluator, total_processed, enabled_tasks):
     """Process a single sample and return results."""
     
-    # Parse outputs for each task
-    binary_pred = parse_binary_detection_response(binary_output)
-    loc_pred = parse_localization_response(loc_output, image.size[0], image.size[1])
-    expl_pred = parse_global_explanation_response(expl_output)
+    # Parse outputs for each enabled task
+    if enabled_tasks['binary']:
+        binary_pred = parse_binary_detection_response(binary_output)
+    else:
+        binary_pred = None
+    
+    if enabled_tasks['localization']:
+        loc_pred = parse_localization_response(loc_output, image.size[0], image.size[1])
+    else:
+        loc_pred = None
+    
+    if enabled_tasks['explanation']:
+        expl_pred = parse_global_explanation_response(expl_output)
+    else:
+        expl_pred = None
     
     # Determine if GT has artifacts
     if args.dataset in ['ours', 'val', 'train']:
@@ -705,50 +768,62 @@ def process_sample(args, gt, image_path, image, binary_output, loc_output, expl_
                 if x2 > x1 and y2 > y1:
                     loc_pred_formatted.append([x1, y1, x2, y2])
     
-    # Calculate stats for all three tasks
-    binary_stats = evaluator.generate_statistics(
-        args.dataset, 'binary', gt, binary_pred, image_size=image.size
-    )
+    # Calculate stats for enabled tasks only
+    binary_stats = None
+    classification = None
+    binary_success = False
+    if enabled_tasks['binary']:
+        binary_stats = evaluator.generate_statistics(
+            args.dataset, 'binary', gt, binary_pred, image_size=image.size
+        )
+        binary_success = binary_stats.get('binary_success', False)
+        pred_positive = binary_pred.get('prediction', False)
+        gt_positive = has_gt
+        
+        if pred_positive and gt_positive:
+            classification = 'TP'
+        elif pred_positive and not gt_positive:
+            classification = 'FP'
+        elif not pred_positive and not gt_positive:
+            classification = 'TN'
+        elif not pred_positive and gt_positive:
+            classification = 'FN'
     
-    loc_stats = evaluator.generate_statistics(
-        args.dataset, 'localization', gt, loc_pred_formatted, image_size=image.size
-    )
+    loc_stats = None
+    legion_stats = None
+    wsol_stats = None
+    if enabled_tasks['localization']:
+        loc_stats = evaluator.generate_statistics(
+            args.dataset, 'localization', gt, loc_pred_formatted, image_size=image.size
+        )
+        
+        legion_stats = legion_evaluator.generate_statistics(
+            args.dataset, 'localization', gt, loc_pred_formatted, image_size=image.size
+        )
+        wsol_stats = wsol_evaluator.generate_statistics(
+            args.dataset, 'localization', gt, loc_pred_formatted, image_size=image.size
+        )
     
-    legion_stats = legion_evaluator.generate_statistics(
-        args.dataset, 'localization', gt, loc_pred_formatted, image_size=image.size
-    )
-    wsol_stats = wsol_evaluator.generate_statistics(
-        args.dataset, 'localization', gt, loc_pred_formatted, image_size=image.size
-    )
-    
-    expl_stats = evaluator.generate_statistics(
-        args.dataset, 'explanation', gt, expl_pred, image_size=image.size
-    )
+    expl_stats = None
+    if enabled_tasks['explanation']:
+        expl_stats = evaluator.generate_statistics(
+            args.dataset, 'explanation', gt, expl_pred, image_size=image.size
+        )
     
     # Collect metrics
-    binary_success = binary_stats.get('binary_success', False)
-    pred_positive = binary_pred.get('prediction', False)
-    gt_positive = has_gt
-    
-    if pred_positive and gt_positive:
-        classification = 'TP'
-    elif pred_positive and not gt_positive:
-        classification = 'FP'
-    elif not pred_positive and not gt_positive:
-        classification = 'TN'
-    elif not pred_positive and gt_positive:
-        classification = 'FN'
-    
-    # Collect localization and explanation metrics (only for positive samples)
-    if has_gt:
+    # Collect localization and explanation metrics (only for positive samples and enabled tasks)
+    if enabled_tasks['localization'] and has_gt and legion_stats:
         iou = legion_stats.get('iou', 0.0) if legion_stats.get('iou') is not None else 0.0
         pixel_f1 = legion_stats.get('pixel_f1', 0.0) if legion_stats.get('pixel_f1') is not None else 0.0
         pixel_precision = legion_stats.get('pixel_precision', 0.0) if legion_stats.get('pixel_precision') is not None else 0.0
         pixel_recall = legion_stats.get('pixel_recall', 0.0) if legion_stats.get('pixel_recall') is not None else 0.0
+    else:
+        iou = pixel_f1 = pixel_precision = pixel_recall = None
+    
+    if enabled_tasks['explanation'] and has_gt and expl_stats:
         rouge_l = expl_stats.get('rouge_l', 0.0) if expl_stats.get('rouge_l') is not None else 0.0
         css = expl_stats.get('css', 0.0) if expl_stats.get('css') is not None else 0.0
     else:
-        iou = pixel_f1 = pixel_precision = pixel_recall = 0.0
         rouge_l = css = None
     
     # Log prediction vs GT
@@ -761,52 +836,67 @@ def process_sample(args, gt, image_path, image, binary_output, loc_output, expl_
     else:
         logger.info(f"Sample {total_processed}: {image_path.name}")
     logger.info(f"{'='*80}")
-    logger.info(f"BINARY DETECTION:")
-    logger.info(f"  GT: {gt_positive} | Pred: {pred_positive} | Classification: {classification}")
-    logger.info(f"\nLOCALIZATION:")
-    logger.info(f"  GT bboxes: {len(gt.get('bboxes', []))} artifacts")
-    logger.info(f"  Pred bboxes: {len(loc_pred)} detections")
-    if has_gt:
-        logger.info(f"  LEGION IoU: {iou:.4f}, LEGION F1: {pixel_f1:.4f}")
     
-    logger.info(f"\nEXPLANATION:")
-    gt_explanation = gt.get('explanation', 'N/A')
-    pred_explanation = expl_pred.get('explanation', 'N/A')
-    logger.info(f"  GT: {gt_explanation[:150]}{'...' if len(gt_explanation) > 150 else ''}")
-    logger.info(f"  Pred: {pred_explanation[:150]}{'...' if len(pred_explanation) > 150 else ''}")
-    if has_gt:
-        logger.info(f"  ROUGE-L: {rouge_l:.4f}, CSS: {css:.4f}")
+    if enabled_tasks['binary']:
+        gt_positive = has_gt
+        pred_positive = binary_pred.get('prediction', False) if binary_pred else False
+        logger.info(f"BINARY DETECTION:")
+        logger.info(f"  GT: {gt_positive} | Pred: {pred_positive} | Classification: {classification}")
+    
+    if enabled_tasks['localization']:
+        logger.info(f"\nLOCALIZATION:")
+        logger.info(f"  GT bboxes: {len(gt.get('bboxes', []))} artifacts")
+        logger.info(f"  Pred bboxes: {len(loc_pred) if loc_pred else 0} detections")
+        if has_gt and iou is not None:
+            logger.info(f"  LEGION IoU: {iou:.4f}, LEGION F1: {pixel_f1:.4f}")
+    
+    if enabled_tasks['explanation']:
+        logger.info(f"\nEXPLANATION:")
+        gt_explanation = gt.get('explanation', 'N/A')
+        pred_explanation = expl_pred.get('explanation', 'N/A') if expl_pred else 'N/A'
+        logger.info(f"  GT: {gt_explanation[:150]}{'...' if len(gt_explanation) > 150 else ''}")
+        logger.info(f"  Pred: {pred_explanation[:150]}{'...' if len(pred_explanation) > 150 else ''}")
+        if has_gt and rouge_l is not None:
+            logger.info(f"  ROUGE-L: {rouge_l:.4f}, CSS: {css:.4f}")
     logger.info(f"{'='*80}\n")
     
     # Store comprehensive result
     result_entry = {
         'image_path': str(image_path),
         'ground_truth': gt,
-        'predictions': {
-            'binary': binary_pred,
-            'localization': loc_pred,
-            'explanation': expl_pred
-        },
-        'raw_outputs': {
-            'binary': binary_output,
-            'localization': loc_output,
-            'explanation': expl_output
-        },
-        'binary_success': binary_success,
-        'classification': classification,
-        'iou': loc_stats.get('iou') if has_gt else None,
-        'loc_f1': loc_stats.get('loc_f1') if has_gt else None,
-        'loc_precision': loc_stats.get('loc_precision') if has_gt else None,
-        'loc_recall': loc_stats.get('loc_recall') if has_gt else None,
-        'legion_iou': iou if has_gt else None,
-        'legion_pixel_f1': pixel_f1 if has_gt else None,
-        'legion_pixel_precision': pixel_precision if has_gt else None,
-        'legion_pixel_recall': pixel_recall if has_gt else None,
-        'wsol_iou': wsol_stats.get('iou') if has_gt else None,
-        'rouge_l': rouge_l if has_gt else None,
-        'css': css if has_gt else None,
+        'predictions': {},
+        'raw_outputs': {},
         'has_gt_artifacts': has_gt
     }
+    
+    if enabled_tasks['binary']:
+        result_entry['predictions']['binary'] = binary_pred
+        result_entry['raw_outputs']['binary'] = binary_output
+        result_entry['binary_success'] = binary_success
+        result_entry['classification'] = classification
+    
+    if enabled_tasks['localization']:
+        result_entry['predictions']['localization'] = loc_pred
+        result_entry['raw_outputs']['localization'] = loc_output
+        if loc_stats:
+            result_entry['iou'] = loc_stats.get('iou')
+            result_entry['loc_f1'] = loc_stats.get('loc_f1')
+            result_entry['loc_precision'] = loc_stats.get('loc_precision')
+            result_entry['loc_recall'] = loc_stats.get('loc_recall')
+        if legion_stats and has_gt:
+            result_entry['legion_iou'] = iou
+            result_entry['legion_pixel_f1'] = pixel_f1
+            result_entry['legion_pixel_precision'] = pixel_precision
+            result_entry['legion_pixel_recall'] = pixel_recall
+        if wsol_stats:
+            result_entry['wsol_iou'] = wsol_stats.get('iou')
+    
+    if enabled_tasks['explanation']:
+        result_entry['predictions']['explanation'] = expl_pred
+        result_entry['raw_outputs']['explanation'] = expl_output
+        if has_gt:
+            result_entry['rouge_l'] = rouge_l
+            result_entry['css'] = css
     
     return result_entry, binary_success, classification, iou, pixel_f1, pixel_precision, pixel_recall, rouge_l, css, has_gt
 
@@ -818,17 +908,17 @@ def run_multi_task_vqa_evaluation(args):
     if args.dataset in ['val', 'train']:
         dataset_path = args.dataset_path
     elif args.dataset == 'synthscars':
-        dataset_path = "/data2/jhpark/image-artifacts/data/eval/SynthScars/test"
+        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/SynthScars/test"
     elif args.dataset == 'synartifact':
-        dataset_path = "/data2/jhpark/image-artifacts/data/eval/SynArtifact"
+        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/SynArtifact/data"
     elif args.dataset == 'loki':
-        dataset_path = "/data2/jhpark/image-artifacts/data/eval/loki"
+        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/loki"
     elif args.dataset == 'richhf':
-        dataset_path = "/data2/jhpark/image-artifacts/data/eval/richhf-18k"
+        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/richhf-18k"
     elif args.dataset == 'ours':
-        dataset_path = "/data2/jhpark/image-artifacts/data/eval/ours"
+        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/ours"
     else:
-        dataset_path = "/data2/jhpark/image-artifacts/data/eval"
+        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval"
     
     # Setup logging
     exp_name = Path(args.exp_dir).name if args.exp_dir else args.model_type
@@ -852,10 +942,14 @@ def run_multi_task_vqa_evaluation(args):
     logger.info(f"Batch size: {args.batch_size}")
     logger.info(f"Max samples: {args.max_samples if args.max_samples else 'All'}")
     logger.info("")
-    logger.info("Evaluating three independent tasks:")
-    logger.info("  1. Binary Detection")
-    logger.info("  2. Localization")
-    logger.info("  3. Global Explanation")
+    
+    # Get enabled tasks for dataset
+    enabled_tasks = get_enabled_tasks(args.dataset)
+    enabled_task_names = [task for task, enabled in enabled_tasks.items() if enabled]
+    logger.info(f"Enabled tasks for {args.dataset.upper()}:")
+    for i, task in enumerate(enabled_task_names, 1):
+        logger.info(f"  {i}. {task.replace('_', ' ').title()}")
+    
     if args.batch_size > 1:
         logger.info(f"Note: Using batch inference with size {args.batch_size}")
     logger.info("=" * 80)
@@ -885,27 +979,40 @@ def run_multi_task_vqa_evaluation(args):
     legion_evaluator = legion_eval_utils.Evaluation()
     wsol_evaluator = wsol_eval_utils.Evaluation()
     
-    # Get three prompts
-    prompts = get_prompts()
+    # Get only the prompts we need
+    all_prompts = get_prompts()
+    prompts = {}
+    if enabled_tasks['binary']:
+        prompts['binary'] = all_prompts['binary']
+    if enabled_tasks['localization']:
+        prompts['localization'] = all_prompts['localization']
+    if enabled_tasks['explanation']:
+        prompts['explanation'] = all_prompts['explanation']
+    
     logger.info("\nUsing training template prompts:")
-    logger.info(f"Binary prompt: {prompts['binary'][:80]}...")
-    logger.info(f"Localization prompt: {prompts['localization'][:80]}...")
-    logger.info(f"Explanation prompt: {prompts['explanation'][:80]}...")
+    for task_name, prompt_text in prompts.items():
+        logger.info(f"{task_name.capitalize()} prompt: {prompt_text[:80]}...")
     logger.info("")
     
-    # Initialize metrics for all three tasks
+    # Initialize metrics for enabled tasks only
     all_results = []
-    all_binary_success = []
-    true_positives = 0
-    false_positives = 0
-    true_negatives = 0
-    false_negatives = 0
-    all_iou_scores = []
-    all_pixel_f1_scores = []
-    all_pixel_precision_scores = []
-    all_pixel_recall_scores = []
-    all_rouge_l_scores = []
-    all_css_scores = []
+    
+    # Binary detection metrics
+    all_binary_success = [] if enabled_tasks['binary'] else None
+    true_positives = 0 if enabled_tasks['binary'] else None
+    false_positives = 0 if enabled_tasks['binary'] else None
+    true_negatives = 0 if enabled_tasks['binary'] else None
+    false_negatives = 0 if enabled_tasks['binary'] else None
+    
+    # Localization metrics
+    all_iou_scores = [] if enabled_tasks['localization'] else None
+    all_pixel_f1_scores = [] if enabled_tasks['localization'] else None
+    all_pixel_precision_scores = [] if enabled_tasks['localization'] else None
+    all_pixel_recall_scores = [] if enabled_tasks['localization'] else None
+    
+    # Explanation metrics
+    all_rouge_l_scores = [] if enabled_tasks['explanation'] else None
+    all_css_scores = [] if enabled_tasks['explanation'] else None
     
     total_processed = 0
     total_samples = args.max_samples if args.max_samples else len(data_iterator)
@@ -927,8 +1034,36 @@ def run_multi_task_vqa_evaluation(args):
             continue
         
         image = Image.open(image_path).convert('RGB')
+        original_width, original_height = image.size
+        
         if args.dataset == 'richhf':
             image = image.resize((512, 512), Image.LANCZOS)
+        elif args.dataset == 'ours':
+            # Resize so shortest side is 512, preserving aspect ratio
+            width, height = image.size
+            if width < height:
+                new_width = 512
+                new_height = int(height * (512 / width))
+            else:
+                new_height = 512
+                new_width = int(width * (512 / height))
+            image = image.resize((new_width, new_height), Image.LANCZOS)
+            
+            # Scale bboxes for ours dataset
+            scale_x = new_width / original_width
+            scale_y = new_height / original_height
+            if 'bboxes' in gt:
+                scaled_bboxes = []
+                for bbox in gt['bboxes']:
+                    if len(bbox) == 4:
+                        x1, y1, x2, y2 = bbox
+                        scaled_bboxes.append([
+                            int(x1 * scale_x),
+                            int(y1 * scale_y),
+                            int(x2 * scale_x),
+                            int(y2 * scale_y)
+                        ])
+                gt['bboxes'] = scaled_bboxes
         
         batch_gts.append(gt)
         batch_image_paths.append(image_path)
@@ -937,35 +1072,64 @@ def run_multi_task_vqa_evaluation(args):
         # Process batch when it's full or we've reached the end
         if len(batch_images) >= current_batch_size or total_processed + len(batch_images) >= total_samples:
             try:
-                if args.batch_size > 1:
-                    # Use batch inference
-                    binary_outputs = unified_batch_inference(model, batch_images, prompts['binary'])
-                    loc_outputs = unified_batch_inference(model, batch_images, prompts['localization'])
-                    expl_outputs = unified_batch_inference(model, batch_images, prompts['explanation'])
-                else:
-                    # Single sample inference
-                    binary_outputs = [unified_inference(model, img, prompts['binary']) for img in batch_images]
-                    loc_outputs = [unified_inference(model, img, prompts['localization']) for img in batch_images]
-                    expl_outputs = [unified_inference(model, img, prompts['explanation']) for img in batch_images]
+                # Run inference only for enabled tasks
+                binary_outputs = None
+                loc_outputs = None
+                expl_outputs = None
+                
+                if enabled_tasks['binary']:
+                    if args.batch_size > 1:
+                        binary_outputs = unified_batch_inference(model, batch_images, prompts['binary'])
+                    else:
+                        binary_outputs = [unified_inference(model, img, prompts['binary']) for img in batch_images]
+                
+                if enabled_tasks['localization']:
+                    if args.batch_size > 1:
+                        loc_outputs = unified_batch_inference(model, batch_images, prompts['localization'])
+                    else:
+                        loc_outputs = [unified_inference(model, img, prompts['localization']) for img in batch_images]
+                
+                if enabled_tasks['explanation']:
+                    if args.batch_size > 1:
+                        expl_outputs = unified_batch_inference(model, batch_images, prompts['explanation'])
+                    else:
+                        expl_outputs = [unified_inference(model, img, prompts['explanation']) for img in batch_images]
+                
             except RuntimeError as e:
                 if "out of memory" in str(e).lower() and len(batch_images) > 1:
                     logger.warning("OOM during batched inference. Falling back to per-sample inference.")
                     current_batch_size = max(1, current_batch_size // 2)
-                    binary_outputs = []
-                    loc_outputs = []
-                    expl_outputs = []
+                    
+                    binary_outputs = [] if enabled_tasks['binary'] else None
+                    loc_outputs = [] if enabled_tasks['localization'] else None
+                    expl_outputs = [] if enabled_tasks['explanation'] else None
+                    
                     for img in batch_images:
                         try:
-                            binary_outputs.append(unified_inference(model, img, prompts['binary']))
-                            loc_outputs.append(unified_inference(model, img, prompts['localization']))
-                            expl_outputs.append(unified_inference(model, img, prompts['explanation']))
+                            if enabled_tasks['binary']:
+                                binary_outputs.append(unified_inference(model, img, prompts['binary']))
+                            if enabled_tasks['localization']:
+                                loc_outputs.append(unified_inference(model, img, prompts['localization']))
+                            if enabled_tasks['explanation']:
+                                expl_outputs.append(unified_inference(model, img, prompts['explanation']))
                         except Exception as inner_e:
                             logger.error(f"Per-sample inference failed: {inner_e}")
-                            binary_outputs.append("")
-                            loc_outputs.append("")
-                            expl_outputs.append("")
+                            if enabled_tasks['binary']:
+                                binary_outputs.append("")
+                            if enabled_tasks['localization']:
+                                loc_outputs.append("")
+                            if enabled_tasks['explanation']:
+                                expl_outputs.append("")
                 else:
                     raise
+            
+            # Ensure outputs are lists (with empty strings if task disabled)
+            if binary_outputs is None:
+                binary_outputs = [""] * len(batch_images)
+            if loc_outputs is None:
+                loc_outputs = [""] * len(batch_images)
+            if expl_outputs is None:
+                expl_outputs = [""] * len(batch_images)
             
             # Process each sample in the batch
             for gt, image_path, image, binary_output, loc_output, expl_output in zip(
@@ -975,39 +1139,46 @@ def run_multi_task_vqa_evaluation(args):
                 
                 result_entry, binary_success, classification, iou, pixel_f1, pixel_precision, pixel_recall, rouge_l, css, has_gt = process_sample(
                     args, gt, image_path, image, binary_output, loc_output, expl_output,
-                    evaluator, legion_evaluator, wsol_evaluator, total_processed
+                    evaluator, legion_evaluator, wsol_evaluator, total_processed, enabled_tasks
                 )
                 
-                # Update metrics
-                all_binary_success.append(binary_success)
+                # Update metrics for enabled tasks only
                 all_results.append(result_entry)
                 
-                if classification == 'TP':
-                    true_positives += 1
-                elif classification == 'FP':
-                    false_positives += 1
-                elif classification == 'TN':
-                    true_negatives += 1
-                elif classification == 'FN':
-                    false_negatives += 1
+                if enabled_tasks['binary']:
+                    all_binary_success.append(binary_success)
+                    if classification == 'TP':
+                        true_positives += 1
+                    elif classification == 'FP':
+                        false_positives += 1
+                    elif classification == 'TN':
+                        true_negatives += 1
+                    elif classification == 'FN':
+                        false_negatives += 1
                 
-                if has_gt:
+                if enabled_tasks['localization'] and has_gt and iou is not None:
                     all_iou_scores.append(iou)
                     all_pixel_f1_scores.append(pixel_f1)
                     all_pixel_precision_scores.append(pixel_precision)
                     all_pixel_recall_scores.append(pixel_recall)
+                
+                if enabled_tasks['explanation'] and has_gt:
                     if rouge_l is not None:
                         all_rouge_l_scores.append(rouge_l)
                     if css is not None:
                         all_css_scores.append(css)
                 
                 # Update progress bar
+                progress_info = {}
+                if enabled_tasks['binary']:
+                    progress_info['Binary'] = f'{binary_success}'
+                if enabled_tasks['localization']:
+                    progress_info['LEGION_IoU'] = f'{iou:.3f}' if iou is not None else 'N/A'
+                if enabled_tasks['explanation']:
+                    progress_info['ROUGE'] = f'{rouge_l:.3f}' if rouge_l is not None else 'N/A'
+                
                 pbar.update(1)
-                pbar.set_postfix({
-                    'Binary': f'{binary_success}',
-                    'LEGION_IoU': f'{iou:.3f}' if has_gt else '0.000',
-                    'ROUGE': f'{rouge_l:.3f}' if rouge_l is not None else '0.000'
-                })
+                pbar.set_postfix(progress_info)
             
             # Clear batch for next iteration
             batch_gts = []
@@ -1022,58 +1193,22 @@ def run_multi_task_vqa_evaluation(args):
     logger.info("MULTI-TASK VQA EVALUATION RESULTS")
     logger.info("=" * 80)
     
+    metrics = {}
+    
     # Binary Classification
-    logger.info("\nBINARY CLASSIFICATION:")
-    binary_acc = sum(all_binary_success) / len(all_binary_success) if all_binary_success else 0.0
-    logger.info(f"  Accuracy: {binary_acc:.4f} ({binary_acc*100:.2f}%)")
-    
-    f1_metrics = calculate_f1_metrics(true_positives, false_positives, true_negatives, false_negatives)
-    logger.info(f"  Precision: {f1_metrics['precision']:.4f} ({f1_metrics['precision']*100:.2f}%)")
-    logger.info(f"  Recall: {f1_metrics['recall']:.4f} ({f1_metrics['recall']*100:.2f}%)")
-    logger.info(f"  F1 Score: {f1_metrics['f1']:.4f} ({f1_metrics['f1']*100:.2f}%)")
-    logger.info(f"  Confusion Matrix: TP={true_positives}, FP={false_positives}, TN={true_negatives}, FN={false_negatives}")
-    logger.info(f"  Total samples: {len(all_binary_success)}")
-    
-    # Localization
-    logger.info("\nLOCALIZATION (LEGION Metrics):")
-    if all_iou_scores:
-        mean_iou = sum(all_iou_scores) / len(all_iou_scores)
-        mean_f1 = sum(all_pixel_f1_scores) / len(all_pixel_f1_scores)
-        mean_precision = sum(all_pixel_precision_scores) / len(all_pixel_precision_scores)
-        mean_recall = sum(all_pixel_recall_scores) / len(all_pixel_recall_scores)
+    if enabled_tasks['binary']:
+        logger.info("\nBINARY CLASSIFICATION:")
+        binary_acc = sum(all_binary_success) / len(all_binary_success) if all_binary_success else 0.0
+        logger.info(f"  Accuracy: {binary_acc:.4f} ({binary_acc*100:.2f}%)")
         
-        logger.info(f"  Mean LEGION IoU: {mean_iou:.4f}")
-        logger.info(f"  Mean LEGION F1: {mean_f1:.4f}")
-        logger.info(f"  Mean LEGION Precision: {mean_precision:.4f}")
-        logger.info(f"  Mean LEGION Recall: {mean_recall:.4f}")
-        logger.info(f"  Valid samples (GT positive): {len(all_iou_scores)}")
-    else:
-        logger.info("  No valid localization samples found")
-        mean_iou = mean_f1 = mean_precision = mean_recall = 0.0
-    
-    # Explanation
-    logger.info("\nGLOBAL EXPLANATION:")
-    if all_rouge_l_scores:
-        mean_rouge = sum(all_rouge_l_scores) / len(all_rouge_l_scores)
-        mean_css = sum(all_css_scores) / len(all_css_scores)
+        f1_metrics = calculate_f1_metrics(true_positives, false_positives, true_negatives, false_negatives)
+        logger.info(f"  Precision: {f1_metrics['precision']:.4f} ({f1_metrics['precision']*100:.2f}%)")
+        logger.info(f"  Recall: {f1_metrics['recall']:.4f} ({f1_metrics['recall']*100:.2f}%)")
+        logger.info(f"  F1 Score: {f1_metrics['f1']:.4f} ({f1_metrics['f1']*100:.2f}%)")
+        logger.info(f"  Confusion Matrix: TP={true_positives}, FP={false_positives}, TN={true_negatives}, FN={false_negatives}")
+        logger.info(f"  Total samples: {len(all_binary_success)}")
         
-        logger.info(f"  Mean ROUGE-L: {mean_rouge:.4f}")
-        logger.info(f"  Mean CSS: {mean_css:.4f}")
-        logger.info(f"  Valid samples (GT positive): {len(all_rouge_l_scores)}")
-    else:
-        logger.info("  No explanation samples found")
-        mean_rouge = mean_css = 0.0
-    
-    logger.info("=" * 80)
-    
-    # Save results
-    results_dir = output_dir / "results"
-    results_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = results_dir / f"multi_task_vqa_{args.dataset}_{args.model_type}_{exp_name}_{timestamp}.json"
-    
-    metrics = {
-        'binary': {
+        metrics['binary'] = {
             'accuracy': binary_acc,
             'precision': f1_metrics['precision'],
             'recall': f1_metrics['recall'],
@@ -1085,26 +1220,78 @@ def run_multi_task_vqa_evaluation(args):
                 'false_negatives': false_negatives
             },
             'total_samples': len(all_binary_success)
-        },
-        'localization': {
-            'mean_iou': mean_iou,
-            'mean_f1': mean_f1,
-            'mean_precision': mean_precision,
-            'mean_recall': mean_recall,
-            'valid_samples': len(all_iou_scores)
-        },
-        'explanation': {
-            'mean_rouge_l': mean_rouge,
-            'mean_css': mean_css,
-            'valid_samples': len(all_rouge_l_scores)
         }
-    }
+    
+    # Localization
+    if enabled_tasks['localization']:
+        logger.info("\nLOCALIZATION (LEGION Metrics):")
+        if all_iou_scores:
+            mean_iou = sum(all_iou_scores) / len(all_iou_scores)
+            mean_f1 = sum(all_pixel_f1_scores) / len(all_pixel_f1_scores)
+            mean_precision = sum(all_pixel_precision_scores) / len(all_pixel_precision_scores)
+            mean_recall = sum(all_pixel_recall_scores) / len(all_pixel_recall_scores)
+            
+            logger.info(f"  Mean LEGION IoU: {mean_iou:.4f}")
+            logger.info(f"  Mean LEGION F1: {mean_f1:.4f}")
+            logger.info(f"  Mean LEGION Precision: {mean_precision:.4f}")
+            logger.info(f"  Mean LEGION Recall: {mean_recall:.4f}")
+            logger.info(f"  Valid samples (GT positive): {len(all_iou_scores)}")
+            
+            metrics['localization'] = {
+                'mean_iou': mean_iou,
+                'mean_f1': mean_f1,
+                'mean_precision': mean_precision,
+                'mean_recall': mean_recall,
+                'valid_samples': len(all_iou_scores)
+            }
+        else:
+            logger.info("  No valid localization samples found")
+            metrics['localization'] = {
+                'mean_iou': 0.0,
+                'mean_f1': 0.0,
+                'mean_precision': 0.0,
+                'mean_recall': 0.0,
+                'valid_samples': 0
+            }
+    
+    # Explanation
+    if enabled_tasks['explanation']:
+        logger.info("\nGLOBAL EXPLANATION:")
+        if all_rouge_l_scores:
+            mean_rouge = sum(all_rouge_l_scores) / len(all_rouge_l_scores)
+            mean_css = sum(all_css_scores) / len(all_css_scores)
+            
+            logger.info(f"  Mean ROUGE-L: {mean_rouge:.4f}")
+            logger.info(f"  Mean CSS: {mean_css:.4f}")
+            logger.info(f"  Valid samples (GT positive): {len(all_rouge_l_scores)}")
+            
+            metrics['explanation'] = {
+                'mean_rouge_l': mean_rouge,
+                'mean_css': mean_css,
+                'valid_samples': len(all_rouge_l_scores)
+            }
+        else:
+            logger.info("  No explanation samples found")
+            metrics['explanation'] = {
+                'mean_rouge_l': 0.0,
+                'mean_css': 0.0,
+                'valid_samples': 0
+            }
+    
+    logger.info("=" * 80)
+    
+    # Save results
+    results_dir = output_dir / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_file = results_dir / f"multi_task_vqa_{args.dataset}_{args.model_type}_{exp_name}_{timestamp}.json"
     
     final_results = {
         'config': {
             'model_type': args.model_type,
             'exp_dir': args.exp_dir,
             'dataset': args.dataset,
+            'enabled_tasks': enabled_task_names,
             'batch_size': args.batch_size,
             'max_samples': args.max_samples,
             'output_dir': str(results_dir),
