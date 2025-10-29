@@ -212,7 +212,8 @@ def generate_vqa_dataset(
     instances: List[ArtiInstance],
     format_dropout: float = 0.15,
     seed: int = 42,
-    sample_one_mode: bool = False
+    sample_one_mode: bool = False,
+    always_start_with_binary: bool = False
 ) -> List[Dict[str, Any]]:
     """Generate VQA dataset from ArtiAgent instances.
     
@@ -220,6 +221,8 @@ def generate_vqa_dataset(
         instances: List of ArtiInstance objects
         format_dropout: Probability to omit format instructions
         seed: Random seed for reproducibility
+        sample_one_mode: If True, sample only one mode per instance
+        always_start_with_binary: If True, always start artifact conversations with 1.1 (binary detection)
     
     Returns:
         List of conversation dictionaries
@@ -229,7 +232,8 @@ def generate_vqa_dataset(
     sampler = VQASampler(
         format_dropout=format_dropout,
         qa_dropout_rate=0.0,  # No longer used (kept for compatibility)
-        single_turn_prob=0.0  # No longer used (kept for compatibility)
+        single_turn_prob=0.0,  # No longer used (kept for compatibility)
+        always_start_with_binary=always_start_with_binary
     )
     
     conversations = []
@@ -340,6 +344,11 @@ def main():
         default="artifact_image.png",
         help="Filename to use for artifact images in subdirectories (default: artifact_image.png)"
     )
+    parser.add_argument(
+        "--always-start-with-binary",
+        action="store_true",
+        help="Always start artifact image conversations with question 1.1 (binary detection)"
+    )
     
     args = parser.parse_args()
     
@@ -386,7 +395,8 @@ def main():
             instances=train_instances,
             format_dropout=args.format_dropout,
             seed=args.seed,
-            sample_one_mode=args.sample_one_mode
+            sample_one_mode=args.sample_one_mode,
+            always_start_with_binary=args.always_start_with_binary
         )
         
         # Generate val dataset
@@ -395,7 +405,8 @@ def main():
             instances=val_instances,
             format_dropout=args.format_dropout,
             seed=args.seed + 1,  # Different seed for val
-            sample_one_mode=args.sample_one_mode
+            sample_one_mode=args.sample_one_mode,
+            always_start_with_binary=args.always_start_with_binary
         )
         
         print(f"Generated {len(train_conversations)} train conversations")
@@ -426,7 +437,8 @@ def main():
             instances=instances,
             format_dropout=args.format_dropout,
             seed=args.seed,
-            sample_one_mode=args.sample_one_mode
+            sample_one_mode=args.sample_one_mode,
+            always_start_with_binary=args.always_start_with_binary
         )
         
         print(f"Generated {len(conversations)} conversations")
