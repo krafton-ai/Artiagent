@@ -1,6 +1,6 @@
 import random
 from typing import List, Tuple
-from .types import ArtiInstance
+from .vqa_types import ArtiInstance
 from .vqa_builders import VQABuilders, QAPair
 
 class VQASampler:
@@ -51,6 +51,10 @@ class VQASampler:
         """
         images = [instance.artifact_image]
         
+        # Choose random start point
+        start_options = ['1.1', '1.2', '1.3']
+        # start = random.choice(start_options)
+        start = '1.1'
         # Choose random start point (or force 1.1 if configured)
         if self.always_start_with_binary:
             start = '1.1'
@@ -91,7 +95,7 @@ class VQASampler:
                 format_dropout=self.format_dropout
             ))
         
-        else:  # start == '1.3'
+        else:   # '1.3'
             # [1.3]
             qa_pairs.append(VQABuilders.build_global_explanation(
                 metadata_caption=instance.metadata_caption,
@@ -101,10 +105,14 @@ class VQASampler:
         
         return images, qa_pairs
     
-    def sample_pair(self, instance: ArtiInstance) -> Tuple[List[str], List[QAPair]]:
+    def sample_pair(self, instance: ArtiInstance, force_localization: bool = False) -> Tuple[List[str], List[QAPair]]:
         """Sample ONE pairwise task (4.1-4.4) as single-turn.
         
         Tasks: 4.1 Binary, 4.2 Localization, 4.3 Regional, 4.4 Explanation
+        
+        Args:
+            instance: ArtiInstance to generate conversation for
+            force_localization: If True, force task 4.2 (Localization) when available
         
         Returns:
             Tuple of (image_list, qa_pairs with exactly one element)
@@ -116,6 +124,12 @@ class VQASampler:
         else:
             images = [instance.real_image, instance.artifact_image]
             artifact_position = "second"
+        
+        # If force_localization is True and localization is available, use it
+        if force_localization and instance.artifacts:
+            task = VQABuilders.build_pair_localization(instance.artifacts, artifact_position)
+            if task:
+                return images, [task]
         
         # Collect available tasks
         available_tasks = []
@@ -149,12 +163,13 @@ class VQASampler:
             # Fallback to 4.1 if nothing else available
             return images, [VQABuilders.build_pair_binary(artifact_position)]
     
-    def sample_conversation(self, instance: ArtiInstance, mode: str = "auto") -> Tuple[List[str], List[QAPair]]:
+    def sample_conversation(self, instance: ArtiInstance, mode: str = "auto", force_localization: bool = False) -> Tuple[List[str], List[QAPair]]:
         """Sample a complete conversation for an ArtiInstance.
         
         Args:
             instance: ArtiInstance to generate conversation for
             mode: Sampling mode - "real", "artifact", "pair", or "auto"
+            force_localization: If True and mode is "pair", force localization task
         
         Returns:
             Tuple of (image_list, qa_pairs)
@@ -180,7 +195,7 @@ class VQASampler:
         elif mode == "artifact":
             images, qa_pairs = self.sample_artifact_image(instance)
         elif mode == "pair":
-            images, qa_pairs = self.sample_pair(instance)
+            images, qa_pairs = self.sample_pair(instance, force_localization=force_localization)
         else:
             raise ValueError(f"Unknown mode: {mode}")
         

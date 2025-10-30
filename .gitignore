@@ -212,3 +212,5 @@ src/train/LLaMA-Factory/predictions_score.json
 
 src/eval_vlm/eval_logs/
 src/eval_vlm/eval_results/
+
+data/

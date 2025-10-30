@@ -149,7 +149,7 @@ class Evaluation:
             self.rouge_scorer = None
 
     @staticmethod
-    def _binarize_heatmap(artifact_map: Optional[np.ndarray], threshold: float = 0.3) -> Optional[np.ndarray]:
+    def _binarize_heatmap(artifact_map: Optional[np.ndarray], threshold: float = 0.0) -> Optional[np.ndarray]:
         """Binarize a heatmap with a threshold. Ensures 2D array output."""
         if artifact_map is None:
             return None
@@ -465,17 +465,17 @@ class Evaluation:
                                         stats: Dict, img_w: int, img_h: int) -> Dict[str, Any]:
         """Handle localization evaluation - return only mean IoU."""
         pred_heatmap = None
+        result_bbox_list = []
         if isinstance(result, Dict):
             pred_heatmap = result.get('heatmap', None)
-            pred_heatmap = self._binarize_heatmap(pred_heatmap)
-
-        # Extract prediction data
-        result_bbox_list = []
-        if len(result) > 0:
-            if isinstance(result[0], List):
-                result_bbox_list = result
-            else:
-                result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
+            pred_heatmap = self._binarize_heatmap(pred_heatmap, 0)
+        else:
+            # Extract prediction data
+            if len(result) > 0:
+                if isinstance(result[0], List):
+                    result_bbox_list = result
+                else:
+                    result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
 
         # Compute IoU and F1 based on dataset type
         if dataset_type == 'synthscars':
@@ -488,7 +488,7 @@ class Evaluation:
             
             # Convert predictions to binary mask
             if pred_heatmap is not None:
-                pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+                pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h, 0)
             
             elif result_bbox_list:
                 pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
@@ -559,7 +559,7 @@ class Evaluation:
             gt_mask = self._convert_to_binary_mask(ground_bbox_list, 'bbox_list', img_w, img_h)
             
             if pred_heatmap is not None:
-                    pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+                    pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h, 0)
             elif result_bbox_list:
                 pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
             else:
@@ -578,14 +578,14 @@ class Evaluation:
             artifact_map = np.load(artifact_map_path)
             gt_mask = self._convert_to_binary_mask(artifact_map, 'heatmap', img_w, img_h)
             if gt_mask is not None:
-                binarized_gt = self._binarize_heatmap(gt_mask)
+                binarized_gt = self._binarize_heatmap(gt_mask, 0.3)
                 if binarized_gt is not None:
                     gt_mask = binarized_gt
                 else:
                     gt_mask = np.zeros((img_h, img_w), dtype=np.uint8)
 
             if pred_heatmap is not None:
-                pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+                pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h, 0)
             elif result_bbox_list:
                 pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
             else:
@@ -603,6 +603,45 @@ class Evaluation:
 
             if has_gt_artifacts:
                 ground_bbox_list = json_data['bboxes']
+                
+                gt_mask = self._convert_to_binary_mask(ground_bbox_list, 'bbox_list', img_w, img_h)
+            
+                # Convert predictions to binary mask
+                if pred_heatmap is not None:
+                    pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+                elif result_bbox_list:
+                    pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
+                else:
+                    pred_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            
+                # Compute pixel-level metrics
+                pixel_metrics = self._compute_pixel_level_metrics(pred_mask, gt_mask)
+                stats.update(pixel_metrics)
+
+                # Keep legacy IoU for backward compatibility
+                stats['iou'] = pixel_metrics['iou_foreground']
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark these metrics as None so they can be filtered out during aggregation
+                stats.update({
+                    'iou': None,
+                    'miou': None,
+                    'iou_foreground': None,
+                    'iou_background': None,
+                    'pixel_f1': None,
+                    'pixel_precision': None,
+                    'pixel_recall': None,
+                    'tp_pixels': None,
+                    'tn_pixels': None,
+                    'fp_pixels': None,
+                    'fn_pixels': None
+                })
+
+        elif dataset_type == 'val':
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+
+            if has_gt_artifacts:
+                ground_bbox_list = [artifact['target_bbox'] for artifact in json_data['artifacts']]
                 
                 gt_mask = self._convert_to_binary_mask(ground_bbox_list, 'bbox_list', img_w, img_h)
             

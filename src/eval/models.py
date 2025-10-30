@@ -212,26 +212,18 @@ class QwenEval:
         self.use_finetuned = config.get('use_finetuned', False)
         
         # Load model and processor
-        self._load_model(config['finetune_mode'])
+        # self._load_model(config['finetune_path'])
+        self._load_model(config['model_path'])
         
-    def _load_model(self, config: str):
+    def _load_model(self, model_path: str):
         """Load the Qwen2.5-VL model and processor."""
         if self.use_finetuned:
-            model_names = {'1k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k",
-                        '3k_all': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k",
-                        '3k_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary",
-                        '3k_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc",
-                        '3k_exp': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_exp",
-                        '3k_reasoned_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_bin",
-                        '3k_reasoned_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_loc",
-                        '8k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_8k"}
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/sft_artifacts_gpt"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_exp"
-            model_name = model_names[config]
+            model_name = model_path
+            # model_name = f"/home/jovyan/image-artifacts/vlm/saves/qwen2_5vl-7b/vf_compare/{model_path}"
+            # model_name = f"/home/jovyan/image-artifacts/vlm/saves/qwen2_5vl-7b/{model_path}"
+            # model_name = f"/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/{model_path}"
+            # model_name = f"/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/1k_ablations/{model_path}"
+            # model_name = f"/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/image_artifacts_100/{model_path}"
             # config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer.padding_side = "left"
@@ -364,10 +356,157 @@ class QwenEval:
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
 
-        for output_text in output_texts:
-            print(output_text)
+        # for output_text in output_texts:
+        #     print(output_text)
 
         return output_texts
+
+class Qwen32Eval:
+    """
+    Wrapper class for Qwen2.5-VL-32B-Instruct model evaluation via OpenRouter API.
+    
+    This class provides a unified interface for running inference
+    on images to detect and describe artifacts using the larger 32B model
+    through OpenRouter's free tier.
+    
+    Reference: https://openrouter.ai/qwen/qwen2.5-vl-32b-instruct:free
+    
+    Setup:
+        1. Get an API key from OpenRouter (https://openrouter.ai)
+        2. Set environment variable: export OPENROUTER_API_KEY="your-key"
+           (or use OPENAI_API_KEY as fallback)
+        
+    Usage:
+        python eval.py --model qwen32 --dataset ours --type explanation
+        python eval.py --model qwen32 --dataset synartifact --type localization --batch-size 1
+        
+    Note: 
+        - This uses the FREE tier model (no cost per token)
+        - Finetuned models are NOT supported (API-based inference only)
+        - Batch processing is sequential (no true batch API support)
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the Qwen 32B model for evaluation via OpenRouter.
+        
+        Args:
+            config: Configuration dictionary containing model settings
+        """
+        self.config = config
+        self.use_finetuned = config.get('use_finetuned', False)
+        
+        if self.use_finetuned:
+            raise NotImplementedError("Finetuned models are not supported for Qwen32Eval (OpenRouter API)")
+        
+        # Initialize OpenRouter client
+        self._init_client()
+    
+    def _init_client(self):
+        """Initialize OpenRouter client with API key."""
+        # Check for OpenRouter API key (falls back to OpenAI key format)
+        api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            print("❌ Error: OPENROUTER_API_KEY or OPENAI_API_KEY environment variable not set.")
+            sys.exit(1)
+        
+        # Initialize OpenAI client with OpenRouter base URL
+        self.client = openai.OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+        )
+        
+        # Model identifier for OpenRouter
+        self.model_name = "qwen/qwen2.5-vl-32b-instruct"
+    
+    def _encode_image_to_base64(self, image: Image.Image) -> str:
+        """Convert PIL Image to base64 string."""
+        if isinstance(image, np.ndarray):
+            # Convert numpy array to PIL Image
+            pil_image = Image.fromarray(image)
+        else:
+            pil_image = image
+        
+        # Convert to RGB if necessary
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+        
+        # Save to bytes buffer
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format='JPEG')
+        buffer.seek(0)
+        
+        # Encode to base64
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+    
+    def inference(self, image: Image.Image, prompt: str) -> str:
+        """
+        Run inference on a single image to detect artifacts via OpenRouter API.
+        
+        Args:
+            image: PIL Image to analyze
+            prompt: Text prompt for the model
+            
+        Returns:
+            String containing model output
+        """
+        base64_image = self._encode_image_to_base64(image)
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=512,
+                temperature=0.2
+            )
+            
+            raw_text = response.choices[0].message.content.strip()
+            return raw_text
+            
+        except Exception as e:
+            print(f"Error during OpenRouter API call for Qwen32: {e}")
+            return ""
+
+    def inference_batch(self, images: List[Image.Image], prompt: str) -> List[str]:
+        """
+        Run inference on a batch of images via OpenRouter API.
+        
+        Note: OpenRouter API doesn't support true batch processing,
+        so we process images sequentially.
+
+        Args:
+            images: List of PIL Images to analyze
+            prompt: Text prompt for the model
+
+        Returns:
+            List of strings containing model outputs, one per image
+        """
+        if not images:
+            return []
+        
+        results = []
+        for img in images:
+            try:
+                result = self.inference(img, prompt)
+                results.append(result)
+            except Exception as e:
+                print(f"Error processing image in batch: {e}")
+                results.append("")
+        
+        return results
 
 class InternEval:
     """
@@ -574,22 +713,8 @@ class GPTEval:
         base64_image = self._encode_image_to_base64(image)
 
         try:
-            # response = self.client.chat.completions.create(
-            #     model="gpt-4o",
-            #     messages=[
-            #         {
-            #             "role": "user",
-            #             "content": [
-            #                 {"type": "text", "text": prompt},
-            #                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-            #             ]
-            #         }
-            #     ],
-            #     max_tokens=1000,
-            #     temperature=0.2
-            # )
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model="gpt-4o",
                 messages=[
                     {
                         "role": "user",
@@ -598,8 +723,22 @@ class GPTEval:
                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                         ]
                     }
-                ]
+                ],
+                max_tokens=1000,
+                temperature=0.2
             )
+            # response = self.client.chat.completions.create(
+            #     model="gpt-5",
+            #     messages=[
+            #         {
+            #             "role": "user",
+            #             "content": [
+            #                 {"type": "text", "text": prompt},
+            #                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+            #             ]
+            #         }
+            #     ]
+            # )
 
             if self.money_manager:
                 self.money_manager(response)

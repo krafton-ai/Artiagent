@@ -1260,7 +1260,7 @@ def main():
             'loki': "/home/jovyan/image-artifacts/data/loki",
             'richhf': "/home/jovyan/image-artifacts/data/richhf-18k",
             'ours': "/home/jovyan/image-artifacts/data/eval",
-            'val': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/artifact_1k.json"
+            'val': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/artifact_1k_fireflow_val.json"
         }
         base_dir = dataset_paths.get(args.dataset)
         if base_dir is None:

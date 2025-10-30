@@ -957,18 +957,18 @@ class Evaluation:
                                         stats: Dict, img_w: int, img_h: int) -> Dict[str, Any]:
         """Handle localization evaluation using threshold-independent IoU."""
         pred_heatmap = None
-        if isinstance(result, Dict):
-            pred_heatmap = result.get('heatmap', None)
-
-        # Extract prediction data
         result_bbox_list = []
         result_seg_list = []
-        if len(result) > 0:
-            if isinstance(result[0], List):
-                result_bbox_list = result
-            else:
-                result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
-                result_seg_list = [d.get('segmentation', []) for d in result if 'segmentation' in d]
+        if isinstance(result, Dict):
+            pred_heatmap = result.get('heatmap', None)
+        else:
+            # Extract prediction data
+            if len(result) > 0:
+                if isinstance(result[0], List):
+                    result_bbox_list = result
+                else:
+                    result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
+                    result_seg_list = [d.get('segmentation', []) for d in result if 'segmentation' in d]
 
         # Determine prediction and ground truth types
         pred_type = None
@@ -1107,6 +1107,35 @@ class Evaluation:
             if has_gt_artifacts:
                 # Only compute localization metrics for positive samples (samples with artifacts)
                 ground_bbox_list = json_data['bboxes']
+                
+                if ground_bbox_list:
+                    if len(ground_bbox_list) > 1:
+                        # Multiple GT bboxes - use bbox_list for optimal matching
+                        gt_type = 'bbox_list'
+                        iou = self._compute_threshold_independent_iou(
+                            pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
+                        )
+                        stats['iou'] = iou
+                    else:
+                        # Single GT bbox
+                        gt_type = 'bbox'
+                        iou = self._compute_threshold_independent_iou(
+                            pred_data, ground_bbox_list[0], pred_type, gt_type, img_w, img_h
+                        )
+                        stats['iou'] = iou
+                else:
+                    stats['iou'] = 0.0
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark IoU as None so it can be filtered out during aggregation
+                stats['iou'] = None
+
+        elif dataset_type == 'val':
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+            
+            if has_gt_artifacts:
+                # Only compute localization metrics for positive samples (samples with artifacts)
+                ground_bbox_list = [artifact['target_bbox'] for artifact in json_data['artifacts']]
                 
                 if ground_bbox_list:
                     if len(ground_bbox_list) > 1:

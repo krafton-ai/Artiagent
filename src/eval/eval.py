@@ -16,29 +16,43 @@ from typing import Dict, List, Optional, Tuple, Any
 from PIL import Image  # type: ignore
 from pathlib import Path
 
-from models import QwenEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval, LegionEval
+from models import QwenEval, Qwen32Eval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval, LegionEval
 from eval_utils import Evaluation, parse_json, create_prompt
 import legion_eval_utils
 import wsol_eval_utils
 
-def extract_bboxes(text: str) -> List[List[int]]:
-    """
-    Extracts all 4-number bounding boxes that appear in the form:
-        [x1, y1, x2, y2]: <optional description>
-    Returns a list of [x1, y1, x2, y2]. If none are found, returns [].
-    """
-    # Matches a bracketed list of four integers (allowing spaces) immediately followed by a colon.
-    # Supports negative numbers just in case: -?\d+
-    pattern = re.compile(
-        r'\[\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\]\s*:',
-        flags=re.UNICODE
-    )
+# def extract_bboxes(text: str) -> List[List[int]]:
+#     """
+#     Extracts all 4-number bounding boxes that appear in the form:
+#         [x1, y1, x2, y2]: <optional description>
+#     Returns a list of [x1, y1, x2, y2]. If none are found, returns [].
+#     """
+#     # Matches a bracketed list of four integers (allowing spaces) immediately followed by a colon.
+#     # Supports negative numbers just in case: -?\d+
+#     pattern = re.compile(
+#         r'\[\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\]\s*:',
+#         flags=re.UNICODE
+#     )
 
-    bboxes = []
-    for x1, y1, x2, y2 in pattern.findall(text):
-        bboxes.append([int(x1), int(y1), int(x2), int(y2)])
+#     bboxes = []
+#     for x1, y1, x2, y2 in pattern.findall(text):
+#         bboxes.append([int(x1), int(y1), int(x2), int(y2)])
+#     return bboxes
+
+def extract_bboxes(text):
+    """
+    Extract all bounding boxes of the format [int, int, int, int] from a string.
+
+    Args:
+        text (str): The input string containing potential bounding boxes.
+
+    Returns:
+        List of tuples, each containing 4 integers representing a bounding box.
+    """
+    pattern = r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]'
+    matches = re.findall(pattern, text)
+    bboxes = [list(map(int, match)) for match in matches]
     return bboxes
-
 
 def process_finetuned_output(raw_output: str, eval_type: str) -> Dict[str, Any]:
     """
@@ -52,7 +66,7 @@ def process_finetuned_output(raw_output: str, eval_type: str) -> Dict[str, Any]:
         Dictionary formatted for the specific evaluation type
     """
     # Check if the model says there are no artifacts
-    if "there are no artifacts in the image" in raw_output.lower():
+    if "false" in raw_output.lower():
         if eval_type == 'binary':
             return {'prediction': False}
         elif eval_type == 'localization':
@@ -67,14 +81,18 @@ def process_finetuned_output(raw_output: str, eval_type: str) -> Dict[str, Any]:
     # Extract bounding boxes from the output
     bboxes = extract_bboxes(raw_output)
     
-    # Process based on evaluation type
+    # # Process based on evaluation type
     if eval_type == 'binary':
         # If there are bboxes, there are artifacts
-        return {'prediction': len(bboxes) > 0}
+        if bboxes is None:
+            return {'prediction': False}
+        return {'prediction': len(bboxes)>0}
     
-    elif eval_type == 'localization':
+    if eval_type == 'localization':
         # Format bboxes for localization evaluation
         bbox_list = []
+        if bboxes is None:
+            return bbox_list
         for bbox in bboxes:
             bbox_list.append({"bbox_2d": bbox})
         return bbox_list
@@ -86,7 +104,7 @@ def process_finetuned_output(raw_output: str, eval_type: str) -> Dict[str, Any]:
         match = bbox_pattern.search(raw_output)
         
         if match:
-            explanation_text = raw_output[:match.start()].strip()
+            explanation_text = raw_output[:match.start()-1].strip()
         else:
             explanation_text = raw_output.strip()
             
@@ -96,7 +114,7 @@ def process_finetuned_output(raw_output: str, eval_type: str) -> Dict[str, Any]:
     return {"raw_response": raw_output}
 
 
-def setup_logging(output_dir: str, dataset_type: str, model: str, use_finetuned: bool, eval_type: str, finetune_mode: str) -> logging.Logger:
+def setup_logging(output_dir: str, dataset_type: str, model: str, use_finetuned: bool, eval_type: str, finetune_path: str) -> logging.Logger:
     """
     Setup logging configuration with file and console handlers.
     
@@ -107,20 +125,22 @@ def setup_logging(output_dir: str, dataset_type: str, model: str, use_finetuned:
     Returns:
         Configured logger instance
     """
-    log_dir = Path(output_dir) / 'logs'
+    log_dir = Path(output_dir) / model
     log_dir.mkdir(parents=True, exist_ok=True)
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%m%d_%H%M%S")
     if use_finetuned:
+        log_mode_dir = log_dir / finetune_path
+        log_mode_dir.mkdir(parents=True, exist_ok=True)
         if eval_type == 'localization':
-            log_file = log_dir / f'artifact_eval_{dataset_type}_{model}_finetuned_bbox_{finetune_mode}.log'
+            log_file = log_mode_dir / f'{timestamp}_{dataset_type}_finetuned_bbox.log'
         else:
-            log_file = log_dir / f'artifact_eval_{dataset_type}_{model}_finetuned_{eval_type}_{finetune_mode}.log'
+            log_file = log_mode_dir / f'{timestamp}_{dataset_type}_finetuned_{eval_type}.log'
     else:
         if eval_type == 'localization':
-            log_file = log_dir / f'artifact_eval_{dataset_type}_{model}_bbox_{timestamp}.log'
+            log_file = log_dir / f'{timestamp}_{dataset_type}_bbox.log'
         else:
-            log_file = log_dir / f'artifact_eval_{dataset_type}_{model}_{eval_type}_{timestamp}.log'
+            log_file = log_dir / f'{timestamp}_{dataset_type}_{eval_type}.log'
     
     # Clear any existing handlers
     for handler in logging.root.handlers[:]:
@@ -168,6 +188,8 @@ class DatasetIterator:
             self._load_richhf()
         elif self.dataset_type == "ours":
             self._load_ours()
+        elif self.dataset_type == "val":
+            self._load_val_set()
         else:
             raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
             
@@ -253,6 +275,23 @@ class DatasetIterator:
             json_data = sample
             image_path = self.base_dir / f"images/{json_data['id']}.png"
             return json_data, image_path
+
+        elif self.dataset_type == "val":
+            json_data = sample
+            image_path = sample['images'][0]
+            json_path = os.path.join(os.path.dirname(image_path), "metadata.json")
+            has_artifacts = True if "artifact_image" in image_path else False
+            image_path = Path(image_path)
+            if has_artifacts:
+                with open(json_path, "r") as f:
+                    json_data = json.load(f)
+            else:
+                json_data = {}
+                json_data['artifacts'] = []
+                json_data['caption'] = "There are no artifacts in this image."
+            json_data['has_artifacts'] = has_artifacts
+            # print(json_data)
+            return json_data, image_path
         # Should not reach here
         raise RuntimeError("Unsupported dataset type in _process_sample")
     
@@ -288,12 +327,20 @@ class DatasetIterator:
         with open(json_path, "r") as f:
             self.data = json.load(f)
 
+    def _load_val_set(self):
+        """Load the validation set used for training"""
+        json_path = self.base_dir
+        with open(json_path, "r") as f:
+            self.data = json.load(f)
+
 def create_model(config: Dict):
     """Create model instance based on configuration."""
     model_type = config.get('model_type', 'qwen')
     
     if model_type == 'qwen':
         return QwenEval(config)
+    elif model_type == 'qwen32':
+        return Qwen32Eval(config)
     elif model_type == 'intern':
         return InternEval(config)
     elif model_type == 'gpt':
@@ -310,7 +357,7 @@ def create_model(config: Dict):
         raise ValueError(f"Unsupported model type: {model_type}")
 
 
-def unified_inference(model, image: Image.Image, prompt: str) -> Dict[str, Any]:
+def unified_inference(model, image: Image.Image, prompt: str, logger) -> Dict[str, Any]:
     """
     Unified inference wrapper that handles different model signatures and return types.
     
@@ -330,6 +377,8 @@ def unified_inference(model, image: Image.Image, prompt: str) -> Dict[str, Any]:
             # Models that take both image and prompt
             result = model.inference(image, prompt)
         
+        logger.info(f"Raw response: {result}")
+
         # Handle None returns (GPTEval can return None on error)
         if result is None:
             return {"error": "model_returned_none", "raw_response": ""}
@@ -360,7 +409,7 @@ def unified_inference(model, image: Image.Image, prompt: str) -> Dict[str, Any]:
         return {"error": "inference_exception", "raw_response": "", "exception": str(e)}
 
 
-def unified_batch_inference(model, images: List[Image.Image], prompt: str) -> List[Dict[str, Any]]:
+def unified_batch_inference(model, images: List[Image.Image], prompt: str, logger) -> List[Dict[str, Any]]:
     """
     Unified batch inference wrapper that handles different model signatures.
     
@@ -383,13 +432,14 @@ def unified_batch_inference(model, images: List[Image.Image], prompt: str) -> Li
         # Models that take both images and prompt
         if hasattr(model, 'inference_batch'):
             results = model.inference_batch(images, prompt)
-            print(results)
+            # print(results)
         else:
             results = [model.inference(img, prompt) for img in images]
     
     # Standardize each result
     standardized_results = []
     for result in results:
+        logger.info(f"Raw result: {result}")
         if result is None:
             standardized_results.append({"error": "model_returned_none", "raw_response": ""})
         elif isinstance(result, str):
@@ -425,31 +475,31 @@ def extract_prediction_result(unified_result: Dict[str, Any], use_finetuned: boo
     Returns:
         Dictionary suitable for evaluation
     """
-    # If there's an error, return empty result with error info
-    if "error" in unified_result:
-        # Handle finetuned model outputs with special processing
-        if use_finetuned:
-            raw_response = unified_result.get("raw_response", "")
-            if raw_response:
-                return process_finetuned_output(raw_response, eval_type)
-        else:
-            return {
-                "error": unified_result["error"],
-                "raw_response": unified_result.get("raw_response", "")
-            }
     
     # If there's a heatmap (PAL/DiffDoctor models), return it
     if "heatmap" in unified_result:
         return unified_result
     
-    
-    
+    # if "error" in unified_result:
+    # Handle finetuned model outputs with special processing
+    if use_finetuned:
+        raw_response = unified_result.get("raw_response", "")
+        if raw_response:
+            return process_finetuned_output(raw_response, eval_type)
+    else:
+        raw_response = unified_result.get("raw_response", "")
+        return process_finetuned_output(raw_response, eval_type)
+        return {
+            "error": unified_result["error"],
+            "raw_response": unified_result.get("raw_response", "")
+        }
+
     # If there's parsed output, use it
-    if "parsed_output" in unified_result:
-        return unified_result["parsed_output"]
+    # if "parsed_output" in unified_result:
+    #     return unified_result["parsed_output"]
     
     # Fallback to the whole result
-    return unified_result
+    return unified_result["raw_response"]
 
 
 def run_evaluation(config: Dict, max_samples: Optional[int] = None):
@@ -515,11 +565,11 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
                 image = image.resize((512, 512), Image.LANCZOS)
 
             # Run model inference with unified interface
-            unified_output = unified_inference(model, image, prompt)
-            print(f"Unified output: {unified_output}")
+            unified_output = unified_inference(model, image, prompt, logger)
+            # print(f"Unified output: {unified_output}")
             
             prediction = extract_prediction_result(unified_output, config['use_finetuned'], eval_type)
-            print(f"Extracted prediction: {prediction}")
+            # print(f"Extracted prediction: {prediction}")
             # Evaluate results
             stats = evaluator.generate_statistics(
                 dataset_type, eval_type, json_data, prediction, image_size=image.size
@@ -539,6 +589,7 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
                 stats.update({f'wsol_{k}': v for k, v in wsol_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
             if eval_type == 'binary':
                 sample_result = {
+                    'process_id': i + 1,
                     'image_path': str(image_path),
                     'binary_success': stats['binary_success'],
                     'classification': stats['classification'],
@@ -555,11 +606,16 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
                     has_gt_artifacts = bool(json_data.get('Artifacts annotation', []))
                 elif dataset_type == 'ours':
                     has_gt_artifacts = json_data.get('has_artifacts', False)
+                elif dataset_type == 'val':
+                    has_gt_artifacts = json_data.get('has_artifacts', False)
                 else:
                     has_gt_artifacts = True
+                
                 if has_gt_artifacts:
                     sample_result = {
+                        'process_id': i + 1,
                         'image_path': str(image_path),
+                        'has_gt_artifacts': True,
                         # Standard evaluation metrics
                         'iou': stats['iou'],
                         'loc_tp': stats['loc_tp'],
@@ -578,16 +634,28 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
                         'legion_pixel_recall': stats.get('legion_pixel_recall'),
                         # WSOL evaluation metrics
                         'wsol_iou': stats.get('wsol_iou'),
-                        'prediction': prediction
+                        'prediction': prediction,
+                        'artifact_type_stats': stats.get('artifact_type_stats') if dataset_type == 'val' else None
                     }
+                    # Use LEGION stats for intermediate logging
+                    legion_iou = legion_stats.get('iou', 0.0) if legion_stats.get('iou') is not None else 0.0
+                    legion_miou = legion_stats.get('miou', 0.0) if legion_stats.get('miou') is not None else 0.0
                     logger.info(
-                        f"Sample {i + 1} - IoU: {sample_result['iou']:.3f}, "
-                        f"F1: {sample_result['loc_f1']:.3f} (P: {sample_result['loc_precision']:.3f}, "
-                        f"R: {sample_result['loc_recall']:.3f}, TP/FP/FN: {sample_result['loc_tp']}/{sample_result['loc_fp']}/{sample_result['loc_fn']})"
+                        f"Sample {i + 1} - LEGION IoU: {legion_iou:.3f}, mIoU: {legion_miou:.3f}"
                     )
+                    
+                    # Log artifact type matching for 'val' dataset
+                    if dataset_type == 'val' and stats.get('artifact_type_stats') is not None:
+                        type_stats = stats.get('artifact_type_stats')
+                        logger.info(f"  Artifact Types - Addition: {type_stats['addition']['matched']}/{type_stats['addition']['total']}, "
+                                  f"Removal: {type_stats['removal']['matched']}/{type_stats['removal']['total']}, "
+                                  f"Distortion: {type_stats['distortion']['matched']}/{type_stats['distortion']['total']}, "
+                                  f"Fusion: {type_stats['fusion']['matched']}/{type_stats['fusion']['total']}")
                 else:
                     sample_result = {
+                        'process_id': i + 1,
                         'image_path': str(image_path),
+                        'has_gt_artifacts': False,
                         # Standard evaluation metrics
                         'iou': None,
                         'loc_tp': None,
@@ -653,7 +721,7 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             f1_metrics = evaluator.compute_f1_metrics(results)
         elif eval_type == 'localization':
             # Filter out None values for SynArtifact negative samples
-            valid_loc_results = [r for _, r in results.items() if r.get('iou') is not None]
+            valid_loc_results = [r for _, r in results.items() if r.get('has_gt_artifacts') is True]
             mean_iou = sum(r.get('iou', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
             mean_loc_f1 = sum(r.get('loc_f1', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
             mean_loc_precision = sum(r.get('loc_precision', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
@@ -675,6 +743,11 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             # WSOL evaluation metrics
             wsol_valid_results = [r for r in valid_loc_results if r.get('wsol_iou') is not None]
             wsol_mean_iou = sum(r.get('wsol_iou', 0.0) for r in wsol_valid_results) / len(wsol_valid_results) if wsol_valid_results else 0.0
+            
+            # Aggregate artifact type statistics for 'val' dataset
+            artifact_type_stats = None
+            if dataset_type == "val":
+                artifact_type_stats = evaluator.aggregate_artifact_type_stats(results)
         elif eval_type == 'explanation':
             mean_rouge_l = sum(r.get('rouge_l', 0.0) for _, r in results.items()) / total_samples
             mean_css = sum(r.get('css', 0.0) for _, r in results.items()) / total_samples
@@ -720,6 +793,14 @@ def run_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info(f"  Global Precision: {global_precision:.3f}")
             logger.info(f"  Global Recall: {global_recall:.3f}")
             logger.info(f"  Global F1: {global_f1:.3f}")
+            
+            # Artifact type statistics for 'val' dataset
+            if dataset_type == "val" and artifact_type_stats is not None:
+                logger.info("")
+                logger.info("  📋 PER-ARTIFACT-TYPE STATISTICS:")
+                for artifact_type in ['addition', 'removal', 'distortion', 'fusion']:
+                    stats = artifact_type_stats[artifact_type]
+                    logger.info(f"    {artifact_type.capitalize()}: {stats['matched']}/{stats['total']} detected (rate: {stats['detection_rate']:.3f})")
             logger.info("")
             
             # LEGION evaluation results
@@ -816,96 +897,108 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
     target_batch_size: int = int(config.get('batch_size', 2) or 2)
     current_batch_size: int = target_batch_size
 
-    try:
-        while True:
-            if max_samples and processed >= max_samples:
-                break
-            # Collect a batch of samples
-            batch_json_data: List[Dict[str, Any]] = []
-            batch_image_paths: List[Path] = []
-            batch_images: List[Image.Image] = []
-            while len(batch_images) < current_batch_size:
-                try:
-                    json_data, image_path = next(data_iterator)
-                except StopIteration:
-                    break
-                if not os.path.exists(image_path):
-                    logger.warning(f"Image not found: {image_path}")
-                    continue
-                try:
-                    image = Image.open(image_path).convert("RGB")
-                except Exception as e:
-                    logger.warning(f"Failed to load image {image_path}: {e}")
-                    continue
-                batch_json_data.append(json_data)
-                batch_image_paths.append(image_path)
-                batch_images.append(image)
-                if max_samples and (processed + len(batch_images)) >= max_samples:
-                    break
-            if not batch_images:
-                # No more data
-                break
-            logger.info(
-                f"Processing batch starting at index {processed + 1} with size {len(batch_images)}"
-            )
-            # Run batched inference with OOM fallback
+    # try:
+    while True:
+        if max_samples and processed >= max_samples:
+            break
+        # Collect a batch of samples
+        batch_json_data: List[Dict[str, Any]] = []
+        batch_image_paths: List[Path] = []
+        batch_images: List[Image.Image] = []
+        while len(batch_images) < current_batch_size:
             try:
-                # Use unified batch inference
-                batch_unified_results = unified_batch_inference(model, batch_images, prompt)
-                batch_results = [extract_prediction_result(result, config['use_finetuned'], eval_type) for result in batch_unified_results]
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower() and len(batch_images) > 1:
-                    logger.warning("OOM during batched inference. Falling back to per-sample inference for this batch.")
-                    # Reduce future batch size to be more conservative
-                    current_batch_size = max(1, current_batch_size // 2)
-                    batch_results = []
-                    for img in batch_images:
-                        try:
-                            unified_result = unified_inference(model, img, prompt)
-                            batch_results.append(extract_prediction_result(unified_result, config['use_finetuned'], eval_type))
-                        except Exception as inner_e:
-                            logger.error(f"Per-sample inference failed: {inner_e}")
-                            batch_results.append({
-                                'error': str(inner_e)
-                            })
-                else:
-                    raise
-            # Evaluate each item in the batch
-            for idx, (json_data, image_path, image, result) in enumerate(
-                zip(batch_json_data, batch_image_paths, batch_images, batch_results)
-            ):
-                stats = evaluator.generate_statistics(
+                json_data, image_path = next(data_iterator)
+            except StopIteration:
+                break
+            if not os.path.exists(image_path):
+                logger.warning(f"Image not found: {image_path}")
+                continue
+            try:
+                image = Image.open(image_path).convert("RGB")
+            except Exception as e:
+                logger.warning(f"Failed to load image {image_path}: {e}")
+                continue
+            batch_json_data.append(json_data)
+            batch_image_paths.append(image_path)
+            batch_images.append(image)
+            if max_samples and (processed + len(batch_images)) >= max_samples:
+                break
+        if not batch_images:
+            # No more data
+            break
+        logger.info(
+            f"Processing batch starting at index {processed + 1} with size {len(batch_images)}"
+        )
+        # Run batched inference with OOM fallback
+        try:
+            # Use unified batch inference
+            batch_unified_results = unified_batch_inference(model, batch_images, prompt, logger)
+            batch_results = [extract_prediction_result(result, config['use_finetuned'], eval_type) for result in batch_unified_results]
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and len(batch_images) > 1:
+                logger.warning("OOM during batched inference. Falling back to per-sample inference for this batch.")
+                # Reduce future batch size to be more conservative
+                current_batch_size = max(1, current_batch_size // 2)
+                batch_results = []
+                for img in batch_images:
+                    try:
+                        unified_result = unified_inference(model, img, prompt, logger)
+                        batch_results.append(extract_prediction_result(unified_result, config['use_finetuned'], eval_type))
+                    except Exception as inner_e:
+                        logger.error(f"Per-sample inference failed: {inner_e}")
+                        batch_results.append({
+                            'error': str(inner_e)
+                        })
+            else:
+                raise
+        # Evaluate each item in the batch
+        for idx, (json_data, image_path, image, result) in enumerate(
+            zip(batch_json_data, batch_image_paths, batch_images, batch_results)
+        ):
+            stats = evaluator.generate_statistics(
+                dataset_type, eval_type, json_data, result, image_size=image.size
+            )
+            
+            # For localization evaluation, also run LEGION and WSOL methods
+            if eval_type == 'localization':
+                legion_stats = legion_evaluator.generate_statistics(
+                    dataset_type, eval_type, json_data, result, image_size=image.size
+                )
+                wsol_stats = wsol_evaluator.generate_statistics(
                     dataset_type, eval_type, json_data, result, image_size=image.size
                 )
                 
-                # For localization evaluation, also run LEGION and WSOL methods
-                if eval_type == 'localization':
-                    legion_stats = legion_evaluator.generate_statistics(
-                        dataset_type, eval_type, json_data, result, image_size=image.size
-                    )
-                    wsol_stats = wsol_evaluator.generate_statistics(
-                        dataset_type, eval_type, json_data, result, image_size=image.size
-                    )
-                    
-                    # Merge stats with prefixes to distinguish evaluation methods
-                    stats.update({f'legion_{k}': v for k, v in legion_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
-                    stats.update({f'wsol_{k}': v for k, v in wsol_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
-                if eval_type == 'binary':
+                # Merge stats with prefixes to distinguish evaluation methods
+                stats.update({f'legion_{k}': v for k, v in legion_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
+                stats.update({f'wsol_{k}': v for k, v in wsol_stats.items() if k not in ['binary_success', 'rouge_l', 'css', 'classification', 'has_gt_artifacts', 'has_pred_artifacts']})
+            if eval_type == 'binary':
+                sample_result = {
+                    'process_id': processed + idx + 1,
+                    'image_path': str(image_path),
+                    'binary_success': stats['binary_success'],
+                    'classification': stats['classification'],
+                    'has_gt_artifacts': stats['has_gt_artifacts'],
+                    'has_pred_artifacts': stats['has_pred_artifacts'],
+                    'prediction': result
+                }
+                logger.info(
+                    f"Sample {processed + idx + 1} - Binary: {sample_result['binary_success']}, "
+                    f"Prediction: {result}"
+                )
+            elif eval_type == 'localization':
+                if dataset_type == 'synartifact':
+                    has_gt_artifacts = bool(json_data.get('Artifacts annotation', []))
+                elif dataset_type == 'ours':
+                    has_gt_artifacts = json_data.get('has_artifacts', False)
+                elif dataset_type == 'val':
+                    has_gt_artifacts = json_data.get('has_artifacts', False)
+                else:
+                    has_gt_artifacts = True
+                if has_gt_artifacts:
                     sample_result = {
+                        'process_id': processed + idx + 1,
                         'image_path': str(image_path),
-                        'binary_success': stats['binary_success'],
-                        'classification': stats['classification'],
-                        'has_gt_artifacts': stats['has_gt_artifacts'],
-                        'has_pred_artifacts': stats['has_pred_artifacts'],
-                        'prediction': result
-                    }
-                    logger.info(
-                        f"Sample {processed + idx + 1} - Binary: {sample_result['binary_success']}, "
-                        f"Prediction: {result}"
-                    )
-                elif eval_type == 'localization':
-                    sample_result = {
-                        'image_path': str(image_path),
+                        'has_gt_artifacts': True,
                         # Standard evaluation metrics
                         'iou': stats['iou'],
                         'loc_tp': stats['loc_tp'],
@@ -924,42 +1017,76 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
                         'legion_pixel_recall': stats.get('legion_pixel_recall'),
                         # WSOL evaluation metrics
                         'wsol_iou': stats.get('wsol_iou'),
-                        'prediction': result
+                        'prediction': result,
+                        'artifact_type_stats': stats.get('artifact_type_stats') if dataset_type == 'val' else None
                     }
-                    if sample_result.get('iou', None) is None:
-                        logger.info(f"Sample {processed + idx + 1} - Skipped (negative sample)")
-                    else:
-                        logger.info(
-                            f"Sample {processed + idx + 1} - IoU: {sample_result['iou']:.3f}, "
-                            f"F1: {sample_result['loc_f1']:.3f} (P: {sample_result['loc_precision']:.3f}, "
-                            f"R: {sample_result['loc_recall']:.3f}, TP/FP/FN: {sample_result['loc_tp']}/{sample_result['loc_fp']}/{sample_result['loc_fn']})"
-                        )
-                elif eval_type == 'explanation':
-                    sample_result = {
-                        'image_path': str(image_path),
-                        'rouge_l': stats['rouge_l'],
-                        'css': stats['css'],
-                        'prediction': result
-                    }
+                    # Use LEGION stats for intermediate logging
+                    legion_iou = legion_stats.get('iou', 0.0) if legion_stats.get('iou') is not None else 0.0
+                    legion_miou = legion_stats.get('miou', 0.0) if legion_stats.get('miou') is not None else 0.0
                     logger.info(
-                        f"Sample {processed + idx + 1} - ROUGE-L: {sample_result['rouge_l']:.3f}, "
-                        f"CSS: {sample_result['css']:.3f}"
+                        f"Sample {processed + idx + 1} - LEGION IoU: {legion_iou:.3f}, mIoU: {legion_miou:.3f}"
                     )
+                    
+                    # Log artifact type matching for 'val' dataset
+                    if dataset_type == 'val' and stats.get('artifact_type_stats') is not None:
+                        type_stats = stats.get('artifact_type_stats')
+                        logger.info(f"  Artifact Types - Addition: {type_stats['addition']['matched']}/{type_stats['addition']['total']}, "
+                                  f"Removal: {type_stats['removal']['matched']}/{type_stats['removal']['total']}, "
+                                  f"Distortion: {type_stats['distortion']['matched']}/{type_stats['distortion']['total']}, "
+                                  f"Fusion: {type_stats['fusion']['matched']}/{type_stats['fusion']['total']}")
                 else:
-                    raise ValueError(f"Unsupported evaluation type: {eval_type}")
+                    sample_result = {
+                        'process_id': processed + idx + 1,
+                        'image_path': str(image_path),
+                        'has_gt_artifacts': False,
+                        # Standard evaluation metrics
+                        'iou': None,
+                        'loc_tp': None,
+                        'loc_fp': None,
+                        'loc_fn': None,
+                        'loc_precision': None,
+                        'loc_recall': None,
+                        'loc_f1': None,
+                        # LEGION evaluation metrics
+                        'legion_iou': None,
+                        'legion_miou': None,
+                        'legion_iou_foreground': None,
+                        'legion_iou_background': None,
+                        'legion_pixel_f1': None,
+                        'legion_pixel_precision': None,
+                        'legion_pixel_recall': None,
+                        # WSOL evaluation metrics
+                        'wsol_iou': None,
+                        'prediction': result
+                    }
+                    logger.info(f"Sample {processed + idx + 1} - Skipped (negative sample)")
+            elif eval_type == 'explanation':
+                sample_result = {
+                    'process_id': processed + idx + 1,
+                    'image_path': str(image_path),
+                    'rouge_l': stats['rouge_l'],
+                    'css': stats['css'],
+                    'prediction': result
+                }
+                logger.info(
+                    f"Sample {processed + idx + 1} - ROUGE-L: {sample_result['rouge_l']:.3f}, "
+                    f"CSS: {sample_result['css']:.3f}"
+                )
+            else:
+                raise ValueError(f"Unsupported evaluation type: {eval_type}")
 
-                results[processed + idx] = sample_result
+            results[processed + idx] = sample_result
 
-            processed += len(batch_images)
+        processed += len(batch_images)
 
-            if config.get('model_type') == 'pal' and isinstance(model, PalEval) and processed % (10 * current_batch_size) == 0:
-                model.clear_gpu_cache()
-                logger.info(f"🧹 Cleared GPU cache after processing {processed} samples")
+        if config.get('model_type') == 'pal' and isinstance(model, PalEval) and processed % (10 * current_batch_size) == 0:
+            model.clear_gpu_cache()
+            logger.info(f"🧹 Cleared GPU cache after processing {processed} samples")
             
-    except StopIteration:
-        logger.info("Reached end of dataset")
-    except Exception as e:
-        logger.error(f"Error during batch processing: {e}")
+    # except StopIteration:
+    #     logger.info("Reached end of dataset")
+    # except Exception as e:
+    #     logger.error(f"Error during batch processing: {e}")
     
     # Compute summary statistics
     if results:
@@ -983,7 +1110,7 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             f1_metrics = evaluator.compute_f1_metrics(results)
         elif eval_type == 'localization':
             # Filter out None values for SynArtifact negative samples
-            valid_loc_results = [r for _, r in results.items() if r.get('iou') is not None]
+            valid_loc_results = [r for _, r in results.items() if r.get('has_gt_artifacts') is True]
             mean_iou = sum(r.get('iou', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
             mean_loc_f1 = sum(r.get('loc_f1', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
             mean_loc_precision = sum(r.get('loc_precision', 0.0) for r in valid_loc_results) / len(valid_loc_results) if valid_loc_results else 0.0
@@ -1005,6 +1132,11 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             # WSOL evaluation metrics
             wsol_valid_results = [r for r in valid_loc_results if r.get('wsol_iou') is not None]
             wsol_mean_iou = sum(r.get('wsol_iou', 0.0) for r in wsol_valid_results) / len(wsol_valid_results) if wsol_valid_results else 0.0
+            
+            # Aggregate artifact type statistics for 'val' dataset
+            artifact_type_stats = None
+            if dataset_type == "val":
+                artifact_type_stats = evaluator.aggregate_artifact_type_stats(results)
         elif eval_type == 'explanation':
             mean_rouge_l = sum(r.get('rouge_l', 0.0) for _, r in results.items()) / total_samples
             mean_css = sum(r.get('css', 0.0) for _, r in results.items()) / total_samples
@@ -1050,6 +1182,14 @@ def run_batch_evaluation(config: Dict, max_samples: Optional[int] = None):
             logger.info(f"  Global Precision: {global_precision:.3f}")
             logger.info(f"  Global Recall: {global_recall:.3f}")
             logger.info(f"  Global F1: {global_f1:.3f}")
+            
+            # Artifact type statistics for 'val' dataset
+            if dataset_type == "val" and artifact_type_stats is not None:
+                logger.info("")
+                logger.info("  📋 PER-ARTIFACT-TYPE STATISTICS:")
+                for artifact_type in ['addition', 'removal', 'distortion', 'fusion']:
+                    stats = artifact_type_stats[artifact_type]
+                    logger.info(f"    {artifact_type.capitalize()}: {stats['matched']}/{stats['total']} detected (rate: {stats['detection_rate']:.3f})")
             logger.info("")
             
             # LEGION evaluation results
@@ -1098,10 +1238,10 @@ def main():
     parser = argparse.ArgumentParser(
         description='Evaluate VLM/MLLM models on artifact detection tasks'
     )
-    parser.add_argument('--model', type=str, choices=['qwen', 'intern', 'gpt', 'gemini', 'pal', 'diff', 'legion'], 
+    parser.add_argument('--model', type=str, choices=['qwen', 'qwen32', 'intern', 'gpt', 'gemini', 'pal', 'diff', 'legion'], 
                        default='qwen', help='Model type to evaluate (default: qwen)')
     parser.add_argument('--dataset', type=str, 
-                       choices=['synthscars', 'synartifact', 'loki', 'richhf', 'ours'], 
+                       choices=['synthscars', 'synartifact', 'loki', 'richhf', 'ours', 'val'], 
                        default='ours', help='Dataset to evaluate on (default: ours)')
     parser.add_argument('--type', type=str,
                        choices=['binary', 'localization', 'explanation'],
@@ -1124,8 +1264,7 @@ def main():
                        help='Enable multi-GPU inference for PAL model')
     parser.add_argument('--gpu-devices', type=str, nargs='+', default=None,
                        help='Specify GPU devices to use (e.g., 0 1 or cuda:0 cuda:1)')
-    parser.add_argument('--finetune-mode', type=str, 
-                       choices=['4epoch', '1e-6', '5e-6', '5e-5', '1e-4', '5e-4', '1epoch_open', 'all_open', 'shuf', 'sep', 'sep_shuf', 'new_prompt_sep', 'new_prompt_check', 'new_prompt_sep_reasoned', 've_warmup'])
+    parser.add_argument('--finetune-path', type=str)
                        
     args = parser.parse_args()
     
@@ -1136,7 +1275,12 @@ def main():
             'synartifact': "/home/jovyan/image-artifacts/data/SynArtifact/data",
             'loki': "/home/jovyan/image-artifacts/data/loki",
             'richhf': "/home/jovyan/image-artifacts/data/richhf-18k",
-            'ours': "/home/jovyan/image-artifacts/data/eval"
+            'ours': "/home/jovyan/image-artifacts/data/eval",
+            # 'val': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/artifact_1k_pairwise_eval.json"
+            # 'val': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/binary_simple_pairwise_1200_val.json"
+            # 'val': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/binary_localization_pairwise_fireflow_1200_val.json"
+            # 'val': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/binary_with_localization_1200_val.json"
+            'val': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/data/binary_diff_neg_val.json"
         }
         base_dir = dataset_paths.get(args.dataset)
         if base_dir is None:
@@ -1156,11 +1300,11 @@ def main():
         'batch_size': args.batch_size,
         'use_multi_gpu': args.use_multi_gpu,
         'gpu_devices': args.gpu_devices,
-        'finetune_mode': args.finetune_mode
+        'finetune_path': args.finetune_path
     }
     
     # Setup logging
-    logger = setup_logging(args.log_dir, args.dataset, args.model, args.use_finetuned, args.type, args.finetune_mode)
+    logger = setup_logging(args.log_dir, args.dataset, args.model, args.use_finetuned, args.type, args.finetune_path)
     
     logger.info(f"🚀 Starting evaluation for {args.dataset.upper()} dataset")
     logger.info(f"🤖 Model: {args.model}")
@@ -1189,20 +1333,24 @@ def main():
             results = run_evaluation(config, args.max_samples)
         
         # Save results
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%m%d_%H%M%S")
         if args.use_finetuned:
+            output_dir = Path(args.output_dir)
+            output_specified_dir = output_dir / args.model / args.finetune_path
+            output_specified_dir.mkdir(parents=True, exist_ok=True)
             if args.type == 'localization':
-                results_file = output_dir / f"results_{args.dataset}_{args.model}_finetuned_bbox_{args.finetune_mode}.json"
+                results_file = output_specified_dir / f"{timestamp}_results_{args.dataset}_bbox.json"
             else:
-                results_file = output_dir / f"results_{args.dataset}_{args.model}_finetuned_{args.type}_{args.finetune_mode}.json"
+                results_file = output_specified_dir / f"{timestamp}_results_{args.dataset}_{args.type}.json"
         else:
+            output_dir = Path(args.output_dir)
+            output_specified_dir = output_dir / args.model
+            output_specified_dir.mkdir(parents=True, exist_ok=True)
             if args.type == 'localization':
-                results_file = output_dir / f"results_{args.dataset}_{args.model}_bbox_{timestamp}.json"
+                results_file = output_specified_dir / f"{timestamp}_results_{args.dataset}_bbox.json"
             else:
-                results_file = output_dir / f"results_{args.dataset}_{args.model}_{args.type}_{timestamp}.json"
+                results_file = output_specified_dir / f"{timestamp}_results_{args.dataset}_{args.type}.json"
 
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2)
