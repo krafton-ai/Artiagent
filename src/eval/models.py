@@ -219,11 +219,6 @@ class QwenEval:
         """Load the Qwen2.5-VL model and processor."""
         if self.use_finetuned:
             model_name = model_path
-            # model_name = f"/home/jovyan/image-artifacts/vlm/saves/qwen2_5vl-7b/vf_compare/{model_path}"
-            # model_name = f"/home/jovyan/image-artifacts/vlm/saves/qwen2_5vl-7b/{model_path}"
-            # model_name = f"/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/{model_path}"
-            # model_name = f"/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/1k_ablations/{model_path}"
-            # model_name = f"/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/image_artifacts_100/{model_path}"
             # config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer.padding_side = "left"
@@ -360,6 +355,246 @@ class QwenEval:
         #     print(output_text)
 
         return output_texts
+
+class Qwen32BMultiGPUEval:
+    """
+    Wrapper class for Qwen2.5-VL-32B-Instruct model with multi-GPU support.
+    
+    This class splits the large 32B model across multiple GPUs using HuggingFace
+    Accelerate's device_map="auto" feature, enabling inference on models too large
+    for a single GPU.
+    
+    Usage:
+        # Each inference job uses 2 GPUs (or num_devices_per_job)
+        config = {
+            'model_type': 'qwen32b_multi',
+            'model_path': '/path/to/checkpoint',
+            'device': 'cuda:0',  # Starting device
+            'num_devices_per_job': 2,  # Number of GPUs per inference job
+            'use_finetuned': True
+        }
+        
+    Note:
+        - Requires sufficient GPU memory across devices
+        - Uses accelerate's automatic device mapping
+        - Supports both base and LoRA-finetuned models
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the Qwen 32B model with multi-GPU support.
+        
+        Args:
+            config: Configuration dictionary with:
+                - model_path: Path to model checkpoint
+                - device: Starting device (e.g., 'cuda:0')
+                - num_devices_per_job: Number of GPUs to use (default: 2)
+                - use_finetuned: Whether to load finetuned checkpoint
+        """
+        self.config = config
+        self.use_finetuned = config.get('use_finetuned', False)
+        self.num_devices = config.get('num_devices_per_job', 2)
+        
+        # Parse starting device
+        if 'cuda:' in config.get('device', 'cuda:0'):
+            self.start_device_id = int(config['device'].split(':')[1])
+        else:
+            self.start_device_id = 0
+        
+        # Build device map for the specified GPUs
+        self.device_map = self._build_device_map()
+        
+        # Load model and processor
+        self._load_model(config['model_path'])
+        
+    def _build_device_map(self) -> Dict[str, int]:
+        """
+        Build device map for multi-GPU model splitting.
+        
+        Returns:
+            Dict mapping layer names to device IDs, or "auto" for automatic mapping
+        """
+        # Use "auto" but constrain to specific devices via max_memory
+        return "auto"
+    
+    def _get_max_memory(self) -> Dict[int, str]:
+        """
+        Get max memory configuration for specific GPU devices.
+        
+        Returns:
+            Dict mapping device IDs to memory limits
+        """
+        max_memory = {}
+        for i in range(self.num_devices):
+            device_id = self.start_device_id + i
+            # Allocate slightly less than full memory to be safe
+            max_memory[device_id] = "40GiB"  # Adjust based on your GPU memory
+        
+        # Disable other GPUs by setting their memory to 0
+        total_gpus = torch.cuda.device_count()
+        for i in range(total_gpus):
+            if i not in max_memory:
+                max_memory[i] = "0GiB"
+        
+        return max_memory
+    
+    def _load_model(self, model_path: str):
+        """Load the Qwen2.5-VL-32B model with multi-GPU support."""
+        if self.use_finetuned:
+            model_name = model_path
+        else:
+            model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/Qwen/Qwen2.5-VL-32B-Instruct"
+        
+        print(f"Loading Qwen2.5-VL-32B on GPUs {self.start_device_id} to {self.start_device_id + self.num_devices - 1}")
+        
+        # Get max memory configuration
+        max_memory = self._get_max_memory()
+        
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.tokenizer.padding_side = "left"
+        
+        # Load model with device map
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map=self.device_map,
+            max_memory=max_memory,
+            trust_remote_code=True
+        )
+        
+        # Load processor
+        self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        self.processor.tokenizer.padding_side = "left"
+        
+        print(f"Model loaded successfully across {self.num_devices} GPUs")
+        print(f"Device map: {self.model.hf_device_map}")
+    
+    def inference(self, image: Image.Image, prompt: str) -> str:
+        """
+        Run inference on a single image.
+        
+        Args:
+            image: PIL Image to analyze
+            prompt: Text prompt for inference
+            
+        Returns:
+            String containing the model's response
+        """
+        # Prepare the conversation
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ]
+        
+        # Process the input
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        
+        image_inputs, _ = process_vision_info(messages)
+        inputs = self.processor(
+            text=[text],
+            images=image_inputs,
+            padding=True,
+            return_tensors="pt"
+        )
+        
+        # Move inputs to first device (model will handle distribution)
+        first_device = f"cuda:{self.start_device_id}"
+        inputs = {k: v.to(first_device) if isinstance(v, torch.Tensor) else v 
+                  for k, v in inputs.items()}
+        
+        # Generate response
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=512
+            )
+        
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs['input_ids'], generated_ids)
+        ]
+        
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]
+        
+        return output_text
+    
+    def inference_batch(self, images: List[Image.Image], prompt: str) -> List[str]:
+        """
+        Run inference on a batch of images.
+        
+        Args:
+            images: List of PIL Images to analyze
+            prompt: Text prompt for inference
+            
+        Returns:
+            List of strings containing the model's responses
+        """
+        if not images:
+            return []
+        
+        # Build batched messages
+        messages_list = []
+        for image in images:
+            messages_list.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            )
+        
+        # Build per-sample chat templates and vision inputs
+        texts: List[str] = []
+        batch_image_inputs: List[Any] = []
+        for messages in messages_list:
+            text = self.processor.apply_chat_template(
+                [messages], tokenize=False, add_generation_prompt=True
+            )
+            image_inputs, _ = process_vision_info([messages])
+            texts.append(text)
+            batch_image_inputs.append(image_inputs)
+        
+        # Tokenize/process as a batch
+        inputs = self.processor(
+            text=texts,
+            images=batch_image_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        
+        # Move inputs to first device
+        first_device = f"cuda:{self.start_device_id}"
+        inputs = {k: v.to(first_device) if isinstance(v, torch.Tensor) else v 
+                  for k, v in inputs.items()}
+        
+        # Generate batched outputs
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs, max_new_tokens=512
+            )
+        
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs['input_ids'], generated_ids)
+        ]
+        
+        output_texts = self.processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        
+        return output_texts
+
 
 class Qwen32Eval:
     """
