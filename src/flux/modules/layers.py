@@ -253,16 +253,17 @@ class SingleStreamBlock(nn.Module):
             if info['inverse']:
                 info['feature'][feature_name] = v.clone()
             else:
-                num_patches = v.size(2)
-                mask = torch.ones(num_patches, dtype=torch.bool, device='cuda')
-                mask[info['patch_ids']] = False
-                mask[:512] = False
-                keep_indices = mask.nonzero(as_tuple=True)[0]
-                if feature_name in info['feature']:
-                    backup = info['feature'][feature_name]
-                    v[:, :, keep_indices, :] = backup[:, :, keep_indices, :]
-                    if len(info['patch_ref_ids']) != 0:
-                        v[:, :, info['patch_ids'], :] = v[:, :, info['patch_ref_ids'], :]
+                v = info['feature'][feature_name]
+                # num_patches = v.size(2)
+                # mask = torch.ones(num_patches, dtype=torch.bool, device='cuda:2')
+                # mask[info['patch_ids']] = False
+                # mask[:512] = False
+                # keep_indices = mask.nonzero(as_tuple=True)[0]
+                # if feature_name in info['feature']:
+                #     backup = info['feature'][feature_name]
+                #     v[:, :, keep_indices, :] = backup[:, :, keep_indices, :]
+                #     if len(info['patch_ref_ids']) != 0:
+                #         v[:, :, info['patch_ids'], :] = v[:, :, info['patch_ref_ids'], :]
 
         attn = attention(q, k, v, pe=pe)
         # compute activation in mlp stream, cat again and run second linear layer

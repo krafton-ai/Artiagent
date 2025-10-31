@@ -140,6 +140,13 @@ def load_model(
     config = load_config(model_args)
     patch_config(config, tokenizer, model_args, init_kwargs, is_trainable)
     apply_liger_kernel(config, model_args, is_trainable, require_logits=(finetuning_args.stage not in ["pt", "sft"]))
+    
+    # Log tensor parallelism configuration
+    if model_args.tensor_parallel_size > 1:
+        logger.info_rank0(
+            f"Tensor Parallelism enabled: model will be split across {model_args.tensor_parallel_size} GPUs. "
+            "DeepSpeed will handle automatic layer-wise sharding."
+        )
 
     model = None
     lazy_load = False

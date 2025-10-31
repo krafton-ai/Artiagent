@@ -144,30 +144,36 @@ def process_single_image(data_file: str, flux_generator: FluxGenerator,
     logger.info(f"  Generating artifacts...")
             
     # Run artifact injection with patch annotations only
-    generated_image = flux_generator.inject_artifacts(
-        source_prompt=caption,
-        target_prompt=caption,
-        artifact_data=artifact_data,
-        source_img=img_array.copy(),
-    )
+    try:
+        generated_image = flux_generator.inject_artifacts(
+            source_prompt=caption,
+            target_prompt=caption,
+            artifact_data=artifact_data,
+            source_img=img_array.copy(),
+        )
 
-    visualizer.show_comparison(
-        img_array, generated_image, artifact_data, caption,
-        base_dir=flux_output_path,
-        filename=f"comparison.png",
-    )
+        visualizer.show_comparison(
+            img_array, generated_image, artifact_data, caption,
+            base_dir=flux_output_path,
+            filename=f"comparison.png",
+        )
 
-    generated_image.save(os.path.join(flux_output_path, f'artifact.png'))
+        generated_image.save(os.path.join(flux_output_path, f'artifact.png'))
 
-    results['artifacts'] = {
-        'success': True,
-        'artifacts': artifact_data
-    }
-    successful_artifacts += 1
-    logger.info(f"  ✅ artifact generated successfully")
-    
-    if successful_artifacts > 0:
-        results['success'] = True
+        results['artifacts'] = {
+            'success': True,
+            'artifacts': artifact_data
+        }
+        successful_artifacts += 1
+        logger.info(f"  ✅ artifact generated successfully")
+
+        if successful_artifacts > 0:
+            results['success'] = True
+    except:
+        results['artifacts'] = {
+            'success': False
+        }
+        logger.info(f"  ❌ artifact generation failure")
     
     results['processing_time'] = time.time() - start_time
     return results
@@ -267,7 +273,8 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
         if resume:
             processed_ids = set(stats['processed_image_ids'])
             data_files = [f for f in data_files 
-                         if int(os.path.basename(os.path.dirname(f)).replace('image_', '')) not in processed_ids]
+                        #  if int(os.path.basename(os.path.dirname(f)).replace('image_', '')) not in processed_ids]
+                         if os.path.basename(os.path.dirname(f)) not in processed_ids]
             logger.info(f"Remaining to process: {len(data_files)} files")
         
         if not data_files:
@@ -277,9 +284,14 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
         # Process files with progress bar
         with tqdm(total=len(data_files), desc=f"FLUX generation for {supercategory} images") as pbar:
             for data_file in data_files:
+                # try:
                 result = process_single_image(
                     data_file, flux_generator, visualizer, output_dir, logger
                 )
+                # except:
+                #     result = {}
+                #     result['success'] = False
+                #     result['image_id'] = data_file
                 
                 # Update stats
                 stats['processed_images'] += 1
@@ -287,16 +299,16 @@ def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
                 
                 if result['success']:
                     stats['successful_images'] += 1
+                    # Update artifact stats
+                    for artifact in result['artifacts']['artifacts']:
+                        artifact_type = artifact['artifact_type']
+                        # Initialize artifact type if not already in stats
+                        if artifact_type not in stats['artifact_stats']:
+                            stats['artifact_stats'][artifact_type] = {'success': 0, 'failure': 0}
+                        stats['artifact_stats'][artifact_type]['success'] += 1
                 else:
                     stats['failed_images'] += 1
                 
-                # Update artifact stats
-                for artifact in result['artifacts']['artifacts']:
-                    artifact_type = artifact['artifact_type']
-                    # Initialize artifact type if not already in stats
-                    if artifact_type not in stats['artifact_stats']:
-                        stats['artifact_stats'][artifact_type] = {'success': 0, 'failure': 0}
-                    stats['artifact_stats'][artifact_type]['success'] += 1
                 
                 # Update progress bar
                 status = "✅" if result['success'] else "❌"

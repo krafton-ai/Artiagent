@@ -1,7 +1,7 @@
 import json
 import random
 from typing import List, Tuple
-from .types import ArtifactRegion
+from .vqa_types import ArtifactRegion
 
 class VQAAnswers:
     """Answer generation for VQA tasks."""

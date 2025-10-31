@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image
 from tqdm import tqdm
 
-from models import QwenEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval, LegionEval
+from models import QwenEval, Qwen32BMultiGPUEval, InternEval, GPTEval, GeminiEval, PalEval, DiffEval, LegionEval
 from eval_utils import Evaluation
 import legion_eval_utils
 import wsol_eval_utils
@@ -290,16 +290,28 @@ def calculate_f1_metrics(tp: int, fp: int, tn: int, fn: int) -> Dict[str, float]
         fn: False negatives
         
     Returns:
-        Dict with 'precision', 'recall', 'f1' scores
+        Dict with 'precision', 'recall', 'f1' scores for both classes
     """
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+    def f1_score(tp, fp, fn):
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+        return precision, recall, f1
+
+    # Positive class metrics
+    precision_pos, recall_pos, f1_pos = f1_score(tp, fp, fn)
+    
+    # Negative class metrics
+    precision_neg, recall_neg, f1_neg = f1_score(tn, fn, fp)
     
     return {
-        'precision': precision,
-        'recall': recall,
-        'f1': f1
+        'precision_pos': precision_pos,
+        'recall_pos': recall_pos,
+        'f1_pos': f1_pos,
+        'precision_neg': precision_neg,
+        'recall_neg': recall_neg,
+        'f1_neg': f1_neg,
+        'macro_f1': (f1_pos + f1_neg) / 2
     }
 
 
@@ -574,6 +586,8 @@ def create_model(config: Dict):
     
     if model_type == 'qwen':
         return QwenEval(config)
+    elif model_type == 'qwen32b_multi':
+        return Qwen32BMultiGPUEval(config)
     elif model_type == 'intern':
         return InternEval(config)
     elif model_type == 'gpt':
@@ -590,7 +604,7 @@ def create_model(config: Dict):
         raise ValueError(f"Unsupported model type: {model_type}")
 
 
-def unified_inference(model, image: Image.Image, prompt: str) -> str:
+def unified_inference(model, image: Image.Image, prompt: str, logger) -> str:
     """
     Unified inference wrapper for different model types.
     
@@ -609,6 +623,8 @@ def unified_inference(model, image: Image.Image, prompt: str) -> str:
         # Models that take both image and prompt
         result = model.inference(image, prompt)
     
+    logger.info(f"Raw response: {result}")
+
     # Handle None returns
     if result is None:
         return ""
@@ -632,7 +648,7 @@ def unified_inference(model, image: Image.Image, prompt: str) -> str:
     return str(result)
 
 
-def unified_batch_inference(model, images: List[Image.Image], prompt: str) -> List[str]:
+def unified_batch_inference(model, images: List[Image.Image], prompt: str, logger) -> List[str]:
     """
     Unified batch inference wrapper for different model types.
     
@@ -908,17 +924,17 @@ def run_multi_task_vqa_evaluation(args):
     if args.dataset in ['val', 'train']:
         dataset_path = args.dataset_path
     elif args.dataset == 'synthscars':
-        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/SynthScars/test"
+        dataset_path = "/home/jovyan/image-artifacts/data/SynthScars/test"
     elif args.dataset == 'synartifact':
-        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/SynArtifact/data"
+        dataset_path = "/home/jovyan/image-artifacts/data/SynArtifact/data"
     elif args.dataset == 'loki':
-        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/loki"
+        dataset_path = "/home/jovyan/image-artifacts/data/loki"
     elif args.dataset == 'richhf':
-        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/richhf-18k"
+        dataset_path = "/home/jovyan/image-artifacts/data/richhf-18k"
     elif args.dataset == 'ours':
-        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/ours"
+        dataset_path = "/home/jovyan/image-artifacts/data/eval"
     else:
-        dataset_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval"
+        dataset_path = "/home/jovyan/image-artifacts/data/eval"
     
     # Setup logging
     exp_name = Path(args.exp_dir).name if args.exp_dir else args.model_type
@@ -964,6 +980,7 @@ def run_multi_task_vqa_evaluation(args):
         'dataset_path': dataset_path if args.dataset in ['val', 'train'] else None,
         'use_finetuned': bool(args.exp_dir),  # True if exp_dir is provided
         'finetune_mode': 'custom',  # Placeholder for models that need it
+        'num_devices_per_job': args.gpus_per_job,  # Number of GPUs per inference job for multi-GPU models
     }
     
     # Initialize model
@@ -1079,21 +1096,21 @@ def run_multi_task_vqa_evaluation(args):
                 
                 if enabled_tasks['binary']:
                     if args.batch_size > 1:
-                        binary_outputs = unified_batch_inference(model, batch_images, prompts['binary'])
+                        binary_outputs = unified_batch_inference(model, batch_images, prompts['binary'], logger)
                     else:
-                        binary_outputs = [unified_inference(model, img, prompts['binary']) for img in batch_images]
+                        binary_outputs = [unified_inference(model, img, prompts['binary'], logger) for img in batch_images]
                 
                 if enabled_tasks['localization']:
                     if args.batch_size > 1:
-                        loc_outputs = unified_batch_inference(model, batch_images, prompts['localization'])
+                        loc_outputs = unified_batch_inference(model, batch_images, prompts['localization'], logger)
                     else:
-                        loc_outputs = [unified_inference(model, img, prompts['localization']) for img in batch_images]
+                        loc_outputs = [unified_inference(model, img, prompts['localization'], logger) for img in batch_images]
                 
                 if enabled_tasks['explanation']:
                     if args.batch_size > 1:
-                        expl_outputs = unified_batch_inference(model, batch_images, prompts['explanation'])
+                        expl_outputs = unified_batch_inference(model, batch_images, prompts['explanation'], logger)
                     else:
-                        expl_outputs = [unified_inference(model, img, prompts['explanation']) for img in batch_images]
+                        expl_outputs = [unified_inference(model, img, prompts['explanation'], logger) for img in batch_images]
                 
             except RuntimeError as e:
                 if "out of memory" in str(e).lower() and len(batch_images) > 1:
@@ -1107,11 +1124,11 @@ def run_multi_task_vqa_evaluation(args):
                     for img in batch_images:
                         try:
                             if enabled_tasks['binary']:
-                                binary_outputs.append(unified_inference(model, img, prompts['binary']))
+                                binary_outputs.append(unified_inference(model, img, prompts['binary']), logger)
                             if enabled_tasks['localization']:
-                                loc_outputs.append(unified_inference(model, img, prompts['localization']))
+                                loc_outputs.append(unified_inference(model, img, prompts['localization']), logger)
                             if enabled_tasks['explanation']:
-                                expl_outputs.append(unified_inference(model, img, prompts['explanation']))
+                                expl_outputs.append(unified_inference(model, img, prompts['explanation']), logger)
                         except Exception as inner_e:
                             logger.error(f"Per-sample inference failed: {inner_e}")
                             if enabled_tasks['binary']:
@@ -1202,17 +1219,19 @@ def run_multi_task_vqa_evaluation(args):
         logger.info(f"  Accuracy: {binary_acc:.4f} ({binary_acc*100:.2f}%)")
         
         f1_metrics = calculate_f1_metrics(true_positives, false_positives, true_negatives, false_negatives)
-        logger.info(f"  Precision: {f1_metrics['precision']:.4f} ({f1_metrics['precision']*100:.2f}%)")
-        logger.info(f"  Recall: {f1_metrics['recall']:.4f} ({f1_metrics['recall']*100:.2f}%)")
-        logger.info(f"  F1 Score: {f1_metrics['f1']:.4f} ({f1_metrics['f1']*100:.2f}%)")
+        # logger.info(f"  Macro Precision: {f1_metrics['macro_precision']:.4f} ({f1_metrics['macro_precision']*100:.2f}%)")
+        # logger.info(f"  Macro Recall: {f1_metrics['macro_recall']:.4f} ({f1_metrics['macro_recall']*100:.2f}%)")
+        logger.info(f"  Macro F1 Score: {f1_metrics['macro_f1']:.4f} ({f1_metrics['macro_f1']*100:.2f}%)")
+        logger.info(f"  Positive Class - Precision: {f1_metrics['precision_pos']:.4f}, Recall: {f1_metrics['recall_pos']:.4f}, F1: {f1_metrics['f1_pos']:.4f}")
+        logger.info(f"  Negative Class - Precision: {f1_metrics['precision_neg']:.4f}, Recall: {f1_metrics['recall_neg']:.4f}, F1: {f1_metrics['f1_neg']:.4f}")
         logger.info(f"  Confusion Matrix: TP={true_positives}, FP={false_positives}, TN={true_negatives}, FN={false_negatives}")
         logger.info(f"  Total samples: {len(all_binary_success)}")
         
         metrics['binary'] = {
             'accuracy': binary_acc,
-            'precision': f1_metrics['precision'],
-            'recall': f1_metrics['recall'],
-            'f1': f1_metrics['f1'],
+            'precision': f1_metrics['precision_pos'],
+            'recall': f1_metrics['recall_pos'],
+            'f1': f1_metrics['macro_f1'],
             'confusion_matrix': {
                 'true_positives': true_positives,
                 'false_positives': false_positives,
@@ -1312,7 +1331,7 @@ def run_multi_task_vqa_evaluation(args):
 def main():
     parser = argparse.ArgumentParser(description="Multi-Task VQA Evaluation with Batch Support")
     parser.add_argument("--model-type", type=str, default="qwen", 
-                        choices=["qwen", "intern", "gpt", "gemini", "pal", "diff", "legion"],
+                        choices=["qwen", "qwen32b_multi", "intern", "gpt", "gemini", "pal", "diff", "legion"],
                         help="Model type to use for evaluation")
     parser.add_argument("--exp-dir", type=str, default=None, help="Path to experiment directory (model checkpoint)")
     parser.add_argument("--dataset", type=str, default="ours", 
@@ -1321,6 +1340,8 @@ def main():
     parser.add_argument("--dataset-path", type=str, default=None, 
                         help="Path to dataset JSON file (required when --dataset val or train)")
     parser.add_argument("--device", type=str, default="cuda", help="Device")
+    parser.add_argument("--gpus-per-job", type=int, default=2, 
+                        help="Number of GPUs per inference job for multi-GPU models (default: 2)")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size for inference (default: 1)")
     parser.add_argument("--max-samples", type=int, default=None, help="Max samples to evaluate")
     parser.add_argument("--output-dir", type=str, default=None, 

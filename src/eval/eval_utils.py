@@ -39,14 +39,18 @@ There are four types of image artifacts: Addition, Removal, Distortion, and Fusi
         # Must return in format {"prediction": true | false}
         output_format = """```json{"prediction": true}``` OR ```json{"prediction": false}```"""
 
-        prompt = artifact_def + """
-Your task is to identify if there are any artifacts within this image.
+#         prompt = artifact_def + """
+# Your task is to identify if there are any artifacts within this image.
 
-Are there any artifacts in this image?
+# Are there any artifacts in this image?
 
-CRITICAL: Respond ONLY with valid JSON in exactly this format (no other text):\n""" + output_format + """
+# CRITICAL: Respond ONLY with valid JSON in exactly this format (no other text):\n""" + output_format + """
 
-Use lowercase "true" or "false" (boolean values). Do not include any explanations, reasoning, or other text outside the JSON block."""
+# Use lowercase "true" or "false" (boolean values). Do not include any explanations, reasoning, or other text outside the JSON block."""
+        prompt = "Analyze the image and tell if there are any visual artifacts in the image. Only respond in true or false."
+        # prompt = "Analyze the image and tell if there are any visual artifacts in this image. If true, explain why."
+        # prompt = "Analyze the image and tell if there are any visual artifacts in this image. If true, provide where the artifacts are and explain."
+
 
     elif option == 'localization':
         # Must return in format [{'bbox_2d': [x1, y1, x2, y2]}, {'bbox_2d': [x1, y1, x2, y2]}...]
@@ -58,8 +62,9 @@ Use lowercase "true" or "false" (boolean values). Do not include any explanation
   ...
 ]
 ```"""
-        # prompt = "Please provide a list of artifact regions in this photo, considering the different artifacts: **Physics artifacts** (e.g., optical display issues, violations of physical laws, and spatial/perspective errors), **Structure artifacts** (e.g., deformed objects, asymmetry, or distorted text), and **Distortion artifacts** (e.g., color/texture distortion, noise/blur, artistic style errors, and material misrepresentation). Output with interleaved bboxes strictly following the exact JSON structured format (no other text): ```json[{\"bbox_2d\": [x_min, y_min, x_max, y_max]}, ...]``` Do not include any explanations, reasoning, or other text outside the JSON block."
+        prompt = "Please provide a list of artifact regions in this photo, considering the different artifacts: **Physics artifacts** (e.g., optical display issues, violations of physical laws, and spatial/perspective errors), **Structure artifacts** (e.g., deformed objects, asymmetry, or distorted text), and **Distortion artifacts** (e.g., color/texture distortion, noise/blur, artistic style errors, and material misrepresentation). Output with interleaved bboxes strictly following the exact JSON structured format (no other text): ```json[{\"bbox_2d\": [x_min, y_min, x_max, y_max]}, ...]``` Do not include any explanations, reasoning, or other text outside the JSON block."
         prompt = artifact_def + """Identify and localize artifact regions in this image.
+    
 
 For each artifact found, provide bounding box coordinates [x_min, y_min, x_max, y_max] where coordinates are in pixels.
 Do NOT output multiple bboxes that indicate the same region.
@@ -314,8 +319,9 @@ class Evaluation:
         gt_type: str,
         image_width: int,
         image_height: int,
-        num_thresholds: int = 100
-    ) -> Dict[str, float]:
+        num_thresholds: int = 100,
+        return_matching: bool = False
+    ) -> Union[Dict[str, float], Tuple[Dict[str, float], Dict[int, int]]]:
         """
         Compute threshold-independent IoU and F1 metrics by converting everything to bboxes.
         
@@ -327,9 +333,11 @@ class Evaluation:
             image_width: Image width
             image_height: Image height
             num_thresholds: Number of thresholds to sweep
+            return_matching: If True, also return matching dict (GT idx -> pred idx)
             
         Returns:
             Dictionary with best IoU and F1 metrics across all thresholds
+            If return_matching=True, returns tuple of (metrics_dict, matching_dict)
         """
         thresholds = np.linspace(0.0, 1.0, num_thresholds)
         best_metrics = {
@@ -341,6 +349,7 @@ class Evaluation:
             'loc_recall': 0.0,
             'loc_f1': 0.0
         }
+        best_matching = {}  # Track best matching when return_matching=True
         
         # Convert ground truth to bbox
         gt_bboxes = []
@@ -371,6 +380,8 @@ class Evaluation:
                 gt_bboxes = [gt_bbox]
         
         if not gt_bboxes:
+            if return_matching:
+                return best_metrics, best_matching
             return best_metrics
         
         # Convert predictions to bboxes and sweep thresholds
@@ -385,7 +396,7 @@ class Evaluation:
             # For bbox predictions, no threshold sweep needed
             if pred_bboxes:
                 # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
+                iou, matching = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
                 # Compute F1
                 f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
                 
@@ -399,6 +410,7 @@ class Evaluation:
                         'loc_recall': f1_metrics['recall'],
                         'loc_f1': f1_metrics['f1']
                     })
+                    best_matching = matching
                     
         elif pred_type == 'segmentation':
             pred_bboxes = []
@@ -418,7 +430,7 @@ class Evaluation:
             # For segmentation predictions, no threshold sweep needed
             if pred_bboxes:
                 # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
+                iou, matching = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
                 # Compute F1
                 f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
                 
@@ -432,6 +444,7 @@ class Evaluation:
                         'loc_recall': f1_metrics['recall'],
                         'loc_f1': f1_metrics['f1']
                     })
+                    best_matching = matching
                     
         elif pred_type == 'heatmap':
             # For heatmap predictions, sweep thresholds
@@ -445,7 +458,7 @@ class Evaluation:
                 pred_bboxes = [pred_bbox]
                 
                 # Compute IoU
-                iou, _ = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
+                iou, matching = Evaluation._match_and_mean_iou(gt_bboxes, pred_bboxes, use_polygons=False)
                 # Compute F1
                 f1_metrics = Evaluation._compute_localization_f1(gt_bboxes, pred_bboxes, use_polygons=False, iou_threshold=0.5)
                 
@@ -460,7 +473,10 @@ class Evaluation:
                         'loc_recall': f1_metrics['recall'],
                         'loc_f1': f1_metrics['f1']
                     })
+                    best_matching = matching
         
+        if return_matching:
+            return best_metrics, best_matching
         return best_metrics
 
     @staticmethod
@@ -762,6 +778,8 @@ class Evaluation:
         # Binary evaluation expects True/False response from the model
         if isinstance(result, bool):
             predicted_artifacts = result
+        elif isinstance(result, List):
+            predicted_artifacts = len(result) > 0
         else:
             predicted_artifacts = result.get('prediction', False)
         
@@ -772,6 +790,10 @@ class Evaluation:
             stats['has_gt_artifacts'] = has_gt_artifacts
             print(f"Positive sample?: {has_gt_artifacts}")
         elif dataset_type == 'ours':
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+            stats['has_gt_artifacts'] = has_gt_artifacts
+            print(f"Positive sample?: {has_gt_artifacts}")
+        elif dataset_type == 'val':
             has_gt_artifacts = json_data.get('has_artifacts', False)
             stats['has_gt_artifacts'] = has_gt_artifacts
             print(f"Positive sample?: {has_gt_artifacts}")
@@ -802,16 +824,16 @@ class Evaluation:
                                         stats: Dict, img_w: int, img_h: int) -> Dict[str, Any]:
         """Handle localization evaluation using threshold-independent IoU and F1 metrics."""
         pred_heatmap = None
+        result_bbox_list = []
         if isinstance(result, Dict):
             pred_heatmap = result.get('heatmap', None)
-
-        # Extract prediction data
-        result_bbox_list = []
-        if len(result) > 0:
-            if isinstance(result[0], List):
-                result_bbox_list = result
-            else:
-                result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
+        else:
+            # Extract prediction data
+            if len(result) > 0:
+                if isinstance(result[0], List):
+                    result_bbox_list = result
+                else:
+                    result_bbox_list = [d.get('bbox_2d', []) for d in result if 'bbox_2d' in d]
 
         # Determine prediction type and data
         pred_type = None
@@ -985,6 +1007,67 @@ class Evaluation:
                     'loc_recall': None,
                     'loc_f1': None
                 })
+
+        elif dataset_type == 'val':
+            has_gt_artifacts = json_data.get('has_artifacts', [])
+            if has_gt_artifacts:
+                # Only compute localization metrics for positive samples (samples with artifacts)
+                ground_bbox_list = [artifact['target_bbox'] for artifact in json_data['artifacts']]
+                artifact_types = [artifact.get('artifact_type').lower() for artifact in json_data['artifacts']]
+                
+                if ground_bbox_list:
+                    gt_type = 'bbox'
+                    # Use threshold-independent evaluation with matching info
+                    metrics, matching = self._compute_threshold_independent_bbox_metrics(
+                        pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h, return_matching=True
+                    )
+                    stats.update(metrics)
+                    
+                    # Track per-artifact-type statistics
+                    artifact_type_stats = {
+                        'addition': {'total': 0, 'matched': 0},
+                        'removal': {'total': 0, 'matched': 0},
+                        'distortion': {'total': 0, 'matched': 0},
+                        'fusion': {'total': 0, 'matched': 0}
+                    }
+                    
+                    # Count total ground truth artifacts per type
+                    for artifact_type in artifact_types:
+                        if artifact_type in artifact_type_stats:
+                            artifact_type_stats[artifact_type]['total'] += 1
+                    
+                    # Count matched artifacts per type
+                    for gt_idx in matching.keys():
+                        if gt_idx < len(artifact_types):
+                            artifact_type = artifact_types[gt_idx]
+                            if artifact_type in artifact_type_stats:
+                                artifact_type_stats[artifact_type]['matched'] += 1
+                    
+                    stats['artifact_type_stats'] = artifact_type_stats
+                else:
+                    stats.update({
+                        'iou': 0.0,
+                        'loc_tp': 0,
+                        'loc_fp': 0,
+                        'loc_fn': 0,
+                        'loc_precision': 0.0,
+                        'loc_recall': 0.0,
+                        'loc_f1': 0.0,
+                        'artifact_type_stats': None
+                    })
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark these metrics as None so they can be filtered out during aggregation
+                stats.update({
+                    'iou': None,
+                    'loc_tp': None,
+                    'loc_fp': None,
+                    'loc_fn': None,
+                    'loc_precision': None,
+                    'loc_recall': None,
+                    'loc_f1': None,
+                    'artifact_type_stats': None
+                })
         
         return stats
     
@@ -993,7 +1076,7 @@ class Evaluation:
         """Handle explanation evaluation - compute ROUGE-L/CSS only for datasets with full captions."""
         
         # Only compute text scores for datasets with full image captions
-        if dataset_type in ['synthscars', 'loki', 'ours']:
+        if dataset_type in ['synthscars', 'loki', 'ours', 'val']:
             try:
                 print(result)
                 pred_caption = result.get('explanation', "").strip()
@@ -1006,6 +1089,8 @@ class Evaluation:
                     ref_caption = (json_data['problems']['global'][0].get('desc', "")).strip()
                 elif dataset_type == 'ours':
                     ref_caption = json_data.get('explanation')
+                elif dataset_type == 'val':
+                    ref_caption = json_data.get('caption')
 
                 if ref_caption and pred_caption:
                     rouge_l, css = self.compute_global_caption_scores(ref_caption, pred_caption)
@@ -1061,3 +1146,41 @@ class Evaluation:
             'recall_negative': recall_negative,
             'accuracy': accuracy
         }
+    
+    @staticmethod
+    def aggregate_artifact_type_stats(results: Dict[int, Dict]) -> Dict[str, Dict[str, float]]:
+        """
+        Aggregate per-artifact-type statistics from evaluation results.
+        
+        Args:
+            results: Dictionary of evaluation results with artifact_type_stats
+            
+        Returns:
+            Dictionary with aggregated statistics per artifact type including 
+            total count, matched count, and detection rate
+        """
+        aggregated = {
+            'addition': {'total': 0, 'matched': 0, 'detection_rate': 0.0},
+            'removal': {'total': 0, 'matched': 0, 'detection_rate': 0.0},
+            'distortion': {'total': 0, 'matched': 0, 'detection_rate': 0.0},
+            'fusion': {'total': 0, 'matched': 0, 'detection_rate': 0.0}
+        }
+        
+        for _, result in results.items():
+            type_stats = result.get('artifact_type_stats')
+            if type_stats is not None and isinstance(type_stats, dict):
+                for artifact_type in ['addition', 'removal', 'distortion', 'fusion']:
+                    if artifact_type in type_stats:
+                        aggregated[artifact_type]['total'] += type_stats[artifact_type].get('total', 0)
+                        aggregated[artifact_type]['matched'] += type_stats[artifact_type].get('matched', 0)
+        
+        # Compute detection rates
+        for artifact_type in aggregated:
+            total = aggregated[artifact_type]['total']
+            matched = aggregated[artifact_type]['matched']
+            if total > 0:
+                aggregated[artifact_type]['detection_rate'] = matched / total
+            else:
+                aggregated[artifact_type]['detection_rate'] = 0.0
+        
+        return aggregated

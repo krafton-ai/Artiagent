@@ -196,6 +196,17 @@ class BaseModelArguments:
         default=False,
         metadata={"help": "Whether to trust the execution of code from datasets/models defined on the Hub or not."},
     )
+    tensor_parallel_size: int = field(
+        default=1,
+        metadata={
+            "help": (
+                "Tensor parallel size for model sharding across GPUs. "
+                "When > 1, model layers are split across this many GPUs. "
+                "Requires DeepSpeed with tensor parallelism enabled. "
+                "Example: tensor_parallel_size=2 splits model across 2 GPUs."
+            )
+        },
+    )
 
     def __post_init__(self):
         if self.model_name_or_path is None:
@@ -267,6 +278,16 @@ class BaseModelArguments:
                     "Falling back to 'noise_init'"
                 )
                 self.init_special_tokens = "noise_init"
+
+        # Validate tensor parallel size
+        if self.tensor_parallel_size < 1:
+            raise ValueError(f"tensor_parallel_size must be >= 1, got {self.tensor_parallel_size}")
+        
+        if self.tensor_parallel_size > 1:
+            logger.info_rank0(
+                f"Tensor parallelism enabled with tp_size={self.tensor_parallel_size}. "
+                "Ensure DeepSpeed config has tensor_parallel.enabled=true"
+            )
 
 
 @dataclass
