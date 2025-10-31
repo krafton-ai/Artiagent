@@ -75,7 +75,7 @@ def load_source_images(source_dir: str, max_images: int = None) -> List[ArtiInst
     return instances
 
 
-def load_artiagent_directories(directories: List[str], source_dir: str = None, balance_real_images: bool = True, max_instances_per_path: int = None, real_image_filename: str = "real_image.png", artifact_image_filename: str = "artifact_image.png") -> List[ArtiInstance]:
+def load_artiagent_directories(directories: List[str], source_dir: str = None, balance_real_images: bool = True, max_instances_per_path: int = None, real_image_filename: str = "real_image.png", artifact_image_filename: str = "artifact_image.png", real_explanation_column: str = None) -> List[ArtiInstance]:
     """Load ArtiAgent data from multiple directory structures and optionally balance with real images.
     
     Args:
@@ -85,6 +85,7 @@ def load_artiagent_directories(directories: List[str], source_dir: str = None, b
         max_instances_per_path: Maximum instances to load from each directory (None for no limit)
         real_image_filename: Filename to use for real images (default: "real_image.png")
         artifact_image_filename: Filename to use for artifact images (default: "artifact_image.png")
+        real_explanation_column: Column name in metadata for real image explanation (default: None)
     
     Returns:
         List of ArtiInstance objects from all directories, optionally balanced with real images
@@ -94,7 +95,7 @@ def load_artiagent_directories(directories: List[str], source_dir: str = None, b
     # Load artifact instances
     for directory in directories:
         print(f"Loading from {directory}...")
-        instances = load_artiagent_directory(directory, max_instances=max_instances_per_path, real_image_filename=real_image_filename, artifact_image_filename=artifact_image_filename)
+        instances = load_artiagent_directory(directory, max_instances=max_instances_per_path, real_image_filename=real_image_filename, artifact_image_filename=artifact_image_filename, real_explanation_column=real_explanation_column)
         all_instances.extend(instances)
         print(f"  Loaded {len(instances)} instances")
     
@@ -109,7 +110,7 @@ def load_artiagent_directories(directories: List[str], source_dir: str = None, b
     return all_instances
 
 
-def load_artiagent_directory(directory: str, max_instances: int = None, real_image_filename: str = "real_image.png", artifact_image_filename: str = "artifact_image.png") -> List[ArtiInstance]:
+def load_artiagent_directory(directory: str, max_instances: int = None, real_image_filename: str = "real_image.png", artifact_image_filename: str = "artifact_image.png", real_explanation_column: str = None) -> List[ArtiInstance]:
     """Load ArtiAgent data from directory structure.
     
     Args:
@@ -117,6 +118,7 @@ def load_artiagent_directory(directory: str, max_instances: int = None, real_ima
         max_instances: Maximum number of instances to load (None for no limit)
         real_image_filename: Filename to use for real images (default: "real_image.png")
         artifact_image_filename: Filename to use for artifact images (default: "artifact_image.png")
+        real_explanation_column: Column name in metadata for real image explanation (default: None)
     
     Returns:
         List of ArtiInstance objects
@@ -160,6 +162,11 @@ def load_artiagent_directory(directory: str, max_instances: int = None, real_ima
         # Get caption
         caption = metadata.get("caption")
         
+        # Get real explanation caption if column is specified
+        real_caption = None
+        if real_explanation_column:
+            real_caption = metadata.get(real_explanation_column)
+        
         # Get image paths (convert to absolute paths)
         real_image = str(real_image_file.resolve()) if real_image_file.exists() else None
         artifact_image = str(artifact_image_file.resolve()) if artifact_image_file.exists() else None
@@ -169,7 +176,8 @@ def load_artiagent_directory(directory: str, max_instances: int = None, real_ima
             real_image=real_image,
             artifact_image=artifact_image,
             metadata_caption=caption,
-            artifacts=artifacts
+            artifacts=artifacts,
+            real_caption=real_caption
         )
         
         instances.append(instance)
@@ -349,6 +357,12 @@ def main():
         action="store_true",
         help="Always start artifact image conversations with question 1.1 (binary detection)"
     )
+    parser.add_argument(
+        "--real-explanation-column",
+        type=str,
+        default=None,
+        help="Column name in metadata for real image explanation (e.g., 'negative_caption' or 'real_description')"
+    )
     
     args = parser.parse_args()
     
@@ -373,7 +387,8 @@ def main():
         balance_real_images=bool(args.source_dir),
         max_instances_per_path=args.max_instances_per_path,
         real_image_filename=args.real_image_filename,
-        artifact_image_filename=args.artifact_image_filename
+        artifact_image_filename=args.artifact_image_filename,
+        real_explanation_column=args.real_explanation_column
     )
     
     print(f"Total loaded: {len(instances)} instances")

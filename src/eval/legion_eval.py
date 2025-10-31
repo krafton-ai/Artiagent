@@ -160,6 +160,8 @@ class DatasetIterator:
             self._load_loki()
         elif self.dataset_type == "richhf":
             self._load_richhf()
+        elif self.dataset_type == "ours":
+            self._load_ours()
         else:
             raise ValueError(f"Unsupported dataset type: {self.dataset_type}")
             
@@ -238,7 +240,12 @@ class DatasetIterator:
 
         elif self.dataset_type == "richhf":
             json_data = sample
-            image_path = self.base_dir / json_data["filename"]
+            image_path = self._find_richhf_image_path(json_data["filename"])
+            return json_data, image_path
+
+        elif self.dataset_type == "ours":
+            json_data = sample
+            image_path = self.base_dir / "images" / f"{json_data['id']}.png"
             return json_data, image_path
         # Should not reach here
         raise RuntimeError("Unsupported dataset type in _process_sample")
@@ -267,7 +274,43 @@ class DatasetIterator:
         """Load RichHF-18K dataset from TFRecord file."""
         json_path = os.path.join(self.base_dir, "test.json")
         with open(json_path, "r") as f:
+            raw_data = json.load(f)
+        # Convert dictionary to list of samples for consistent iteration
+        self.data = list(raw_data.values())
+
+    def _load_ours(self):
+        """Load custom eval dataset"""
+        json_path = self.base_dir / "metadata.json"
+        with open(json_path, "r") as f:
             self.data = json.load(f)
+    
+    def _find_richhf_image_path(self, base_filename: str) -> Path:
+        """
+        Find the actual image path for RichHF dataset.
+        Images are stored in numbered subdirectories but JSON doesn't specify which.
+        
+        Args:
+            base_filename: Filename from JSON like "test/image.png"
+            
+        Returns:
+            Path to actual image file
+        """
+        # Extract the image filename from the base path
+        base_path = Path(base_filename)
+        image_name = base_path.name  # e.g., "image.png"
+        
+        # Search in numbered subdirectories under test/
+        test_dir = self.base_dir / "test"
+        if test_dir.exists():
+            # Try to find the image in any numbered subdirectory
+            for subdir in test_dir.iterdir():
+                if subdir.is_dir() and subdir.name.isdigit():
+                    candidate_path = subdir / image_name
+                    if candidate_path.exists():
+                        return candidate_path
+        
+        # If not found, return original path as fallback
+        return self.base_dir / base_filename
 
 def create_model(config: Dict):
     """Create model instance based on configuration."""

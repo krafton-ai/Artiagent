@@ -35,8 +35,25 @@ class VQASampler:
         images = [instance.real_image]
         qa_pairs = []
         
-        # Only binary detection is applicable for real images
-        qa_pairs.append(VQABuilders.build_binary_detection_real(self.format_dropout))
+        # Determine available options based on real_caption availability
+        if instance.real_caption:
+            # Choose start option (force 1.1 if configured)
+            if self.always_start_with_binary:
+                start = '1.1'
+            else:
+                start_options = ['1.1', '1.3']
+                start = random.choice(start_options)
+            
+            if start == '1.1':
+                # [1.1, 1.3] Binary detection followed by real explanation
+                qa_pairs.append(VQABuilders.build_binary_detection_real(self.format_dropout))
+                qa_pairs.append(VQABuilders.build_global_explanation_real(instance.real_caption))
+            else:  # start == '1.3'
+                # [1.3] Only real explanation
+                qa_pairs.append(VQABuilders.build_global_explanation_real(instance.real_caption))
+        else:
+            # No real_caption available, only binary detection
+            qa_pairs.append(VQABuilders.build_binary_detection_real(self.format_dropout))
         
         return images, qa_pairs
     

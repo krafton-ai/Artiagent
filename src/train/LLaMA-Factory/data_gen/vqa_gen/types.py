@@ -14,4 +14,5 @@ class ArtiInstance:
     artifact_image: Optional[str]
     metadata_caption: Optional[str]
     artifacts: List[ArtifactRegion]
+    real_caption: Optional[str] = None
 

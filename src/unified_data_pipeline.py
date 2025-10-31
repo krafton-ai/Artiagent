@@ -40,7 +40,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 # Import query functions from prompts
-from pipeline.prompts import artifact_description, artifact_explanation, MoneyManager
+from pipeline.prompts import artifact_description, artifact_explanation, negative_explanation, MoneyManager
 from openai import OpenAI
 import lpips
 

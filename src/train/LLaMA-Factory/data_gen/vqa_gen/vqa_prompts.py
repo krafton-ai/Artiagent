@@ -40,6 +40,13 @@ Answer format (strict JSON):
 Answer format (strict JSON):
 {"type":"global_explanation","explanations":["<short description>"]}"""
     
+    # 1.5 Global Explanation Real (training-only - natural text)
+    GLOBAL_EXPLANATION_REAL_VARIANTS = [
+        "Explain why this image is free of artifacts.",
+        "Why does this image not contain any artifacts?",
+        "What makes this image artifact-free?"
+    ]
+    
     # 1.4 Regional Explanation (training-only - natural text)
     REGIONAL_EXPLANATION_VARIANTS = [
         "For region [{xmin},{ymin},{xmax},{ymax}], explain why it is considered an artifact.",
@@ -187,4 +194,13 @@ Answer format (strict JSON):
                 if VQAPrompts.USE_VARIANTS
                 else VQAPrompts.PAIR_EXPLANATION_SECOND_ARTIFACT[0]
             )
+    
+    @staticmethod
+    def get_global_explanation_real() -> str:
+        """Get global explanation question for real images (artifact-free)."""
+        return (
+            random.choice(VQAPrompts.GLOBAL_EXPLANATION_REAL_VARIANTS)
+            if VQAPrompts.USE_VARIANTS
+            else VQAPrompts.GLOBAL_EXPLANATION_REAL_VARIANTS[0]
+        )
 

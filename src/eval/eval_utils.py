@@ -9,6 +9,7 @@ import numpy as np
 import json
 import re
 import math
+import os
 from typing import Dict, List, Tuple, Optional, Union, Any
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
@@ -326,10 +327,6 @@ class Evaluation:
             gt_type: Type of ground truth ('heatmap', 'bbox', 'segmentation')
             image_width: Image width
             image_height: Image height
-            num_thresholds: Number of thresholds to sweep
-            
-        Returns:
-            Dictionary with best IoU and F1 metrics across all thresholds
         """
         thresholds = np.linspace(0.0, 1.0, num_thresholds)
         best_metrics = {
@@ -775,6 +772,10 @@ class Evaluation:
             has_gt_artifacts = json_data.get('has_artifacts', False)
             stats['has_gt_artifacts'] = has_gt_artifacts
             print(f"Positive sample?: {has_gt_artifacts}")
+        elif dataset_type in ['val', 'train']:
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+            stats['has_gt_artifacts'] = has_gt_artifacts
+            print(f"Positive sample?: {has_gt_artifacts}")
         else:
             # Other datasets (synthscars, loki, richhf) typically have only positive samples
             stats['has_gt_artifacts'] = True
@@ -928,9 +929,44 @@ class Evaluation:
                 })
                 
         elif dataset_type == 'richhf':
-            artifact_map_path = "/home/jovyan/image-artifacts/data/richhf-18k/" + json_data['artifact_map_path']
-            artifact_map = np.load(artifact_map_path)
-            gt_type = 'heatmap'
+            # Construct artifact map path based on the image filename
+            # The filename is like "test/bf07713d-b61a-4323-9515-7e9c4a70253b.png"
+            # The artifact map should be "test/000/artifact_map.png" (in the same subdirectory)
+            filename = json_data['filename']
+            image_name = filename.split('/')[-1]  # Get just the filename
+            image_id = image_name.split('.')[0]   # Remove extension
+            
+            # Find the subdirectory containing this image and construct artifact map path
+            base_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/richhf-18k"
+            test_dir = os.path.join(base_path, "test")
+            
+            artifact_map_path = None
+            for subdir in os.listdir(test_dir):
+                subdir_path = os.path.join(test_dir, subdir)
+                if os.path.isdir(subdir_path):
+                    potential_image = os.path.join(subdir_path, image_name)
+                    if os.path.exists(potential_image):
+                        artifact_map_path = os.path.join(subdir_path, "artifact_map.png")
+                        break
+            
+            if artifact_map_path and os.path.exists(artifact_map_path):
+                # Load artifact map as image and convert to numpy array
+                from PIL import Image
+                artifact_map_img = Image.open(artifact_map_path).convert('L')
+                artifact_map = np.array(artifact_map_img)
+                gt_type = 'heatmap'
+            else:
+                # Fallback: no ground truth available
+                stats.update({
+                    'iou': 0.0,
+                    'loc_tp': 0,
+                    'loc_fp': 0,
+                    'loc_fn': 0,
+                    'loc_precision': 0.0,
+                    'loc_recall': 0.0,
+                    'loc_f1': 0.0
+                })
+                return stats
             
             try:
                 # Use threshold-independent evaluation
@@ -950,7 +986,54 @@ class Evaluation:
                 })
 
         elif dataset_type == 'ours':
-            has_gt_artifacts = json_data.get('has_artifacts', [])
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+            
+            if has_gt_artifacts:
+                # Only compute localization metrics for positive samples (samples with artifacts)
+                # Extract bboxes from the correct field - check if bboxes exist at top level first
+                if 'bboxes' in json_data:
+                    ground_bbox_list = json_data['bboxes']
+                else:
+                    # Extract bboxes from artifacts list (nested structure)
+                    gt_artifacts = json_data.get('artifacts', [])
+                    ground_bbox_list = [
+                        artifact.get('target_bbox', artifact.get('bbox', artifact.get('bbox_2d', [])))
+                        for artifact in gt_artifacts
+                        if artifact.get('target_bbox') or artifact.get('bbox') or artifact.get('bbox_2d')
+                    ]
+                
+                if ground_bbox_list:
+                    gt_type = 'bbox'
+                    # Use threshold-independent evaluation
+                    metrics = self._compute_threshold_independent_bbox_metrics(
+                        pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
+                    )
+                    stats.update(metrics)
+                else:
+                    stats.update({
+                        'iou': 0.0,
+                        'loc_tp': 0,
+                        'loc_fp': 0,
+                        'loc_fn': 0,
+                        'loc_precision': 0.0,
+                        'loc_recall': 0.0,
+                        'loc_f1': 0.0
+                    })
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark these metrics as None so they can be filtered out during aggregation
+                stats.update({
+                    'iou': None,
+                    'loc_tp': None,
+                    'loc_fp': None,
+                    'loc_fn': None,
+                    'loc_precision': None,
+                    'loc_recall': None,
+                    'loc_f1': None
+                })
+        
+        elif dataset_type in ['val', 'train']:
+            has_gt_artifacts = json_data.get('has_artifacts', False)
             
             if has_gt_artifacts:
                 # Only compute localization metrics for positive samples (samples with artifacts)
@@ -993,7 +1076,7 @@ class Evaluation:
         """Handle explanation evaluation - compute ROUGE-L/CSS only for datasets with full captions."""
         
         # Only compute text scores for datasets with full image captions
-        if dataset_type in ['synthscars', 'loki', 'ours']:
+        if dataset_type in ['synthscars', 'loki', 'ours', 'val', 'train']:
             try:
                 print(result)
                 pred_caption = result.get('explanation', "").strip()
@@ -1004,8 +1087,8 @@ class Evaluation:
                     ref_caption = (json_data.get('caption') or '').strip().split('\n')[0]   # only use before To elaborate...
                 elif dataset_type == 'loki':
                     ref_caption = (json_data['problems']['global'][0].get('desc', "")).strip()
-                elif dataset_type == 'ours':
-                    ref_caption = json_data.get('explanation')
+                elif dataset_type in ['ours', 'val', 'train']:
+                    ref_caption = json_data.get('explanation', '')
 
                 if ref_caption and pred_caption:
                     rouge_l, css = self.compute_global_caption_scores(ref_caption, pred_caption)

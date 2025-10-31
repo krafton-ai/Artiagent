@@ -9,6 +9,7 @@ import numpy as np
 import json
 import re
 import math
+import os
 from typing import Dict, List, Tuple, Optional, Union, Any
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
@@ -438,6 +439,9 @@ class Evaluation:
             # SynArtifact has negative samples
             has_gt_artifacts = bool(json_data.get('Artifacts annotation', []))
             stats['has_gt_artifacts'] = has_gt_artifacts
+        elif dataset_type in ['val', 'train', 'ours']:
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+            stats['has_gt_artifacts'] = has_gt_artifacts
         else:
             # Other datasets (synthscars, loki, richhf) typically have only positive samples
             stats['has_gt_artifacts'] = True
@@ -574,9 +578,47 @@ class Evaluation:
             stats['iou'] = pixel_metrics['iou_foreground']
                 
         elif dataset_type == 'richhf':
-            artifact_map_path = "/home/jovyan/image-artifacts/data/richhf-18k/" + json_data['artifact_map_path']
-            artifact_map = np.load(artifact_map_path)
-            gt_mask = self._convert_to_binary_mask(artifact_map, 'heatmap', img_w, img_h)
+            # Construct artifact map path based on the image filename
+            # The filename is like "test/bf07713d-b61a-4323-9515-7e9c4a70253b.png"
+            # The artifact map should be "test/000/artifact_map.png" (in the same subdirectory)
+            filename = json_data['filename']
+            image_name = filename.split('/')[-1]  # Get just the filename
+            image_id = image_name.split('.')[0]   # Remove extension
+            
+            # Find the subdirectory containing this image and construct artifact map path
+            base_path = "/opt/dlami/nvme/DMLAB/jhpark/image-artifacts/data/eval/richhf-18k"
+            test_dir = os.path.join(base_path, "test")
+            
+            artifact_map_path = None
+            for subdir in os.listdir(test_dir):
+                subdir_path = os.path.join(test_dir, subdir)
+                if os.path.isdir(subdir_path):
+                    potential_image = os.path.join(subdir_path, image_name)
+                    if os.path.exists(potential_image):
+                        artifact_map_path = os.path.join(subdir_path, "artifact_map.png")
+                        break
+            
+            if artifact_map_path and os.path.exists(artifact_map_path):
+                # Load artifact map as image and convert to numpy array
+                from PIL import Image
+                artifact_map_img = Image.open(artifact_map_path).convert('L')
+                # Resize artifact map to 512x512 to match the resized input image
+                artifact_map_img = artifact_map_img.resize((512, 512), Image.LANCZOS)
+                artifact_map = np.array(artifact_map_img)
+                # Note: img_w and img_h should be 512 when dataset_type == 'richhf'
+                gt_mask = self._convert_to_binary_mask(artifact_map, 'heatmap', img_w, img_h)
+            else:
+                # Fallback: no ground truth available
+                stats.update({
+                    'iou': 0.0,
+                    'loc_tp': 0,
+                    'loc_fp': 0,
+                    'loc_fn': 0,
+                    'loc_precision': 0.0,
+                    'loc_recall': 0.0,
+                    'loc_f1': 0.0
+                })
+                return stats
             if gt_mask is not None:
                 binarized_gt = self._binarize_heatmap(gt_mask)
                 if binarized_gt is not None:
@@ -599,6 +641,55 @@ class Evaluation:
             stats['iou'] = pixel_metrics['iou_foreground']
 
         elif dataset_type == 'ours':
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+
+            if has_gt_artifacts:
+                # Extract bboxes from the correct field - check if bboxes exist at top level first
+                if 'bboxes' in json_data:
+                    ground_bbox_list = json_data['bboxes']
+                else:
+                    # Extract bboxes from artifacts list (nested structure)
+                    gt_artifacts = json_data.get('artifacts', [])
+                    ground_bbox_list = [
+                        artifact.get('target_bbox', artifact.get('bbox', artifact.get('bbox_2d', [])))
+                        for artifact in gt_artifacts
+                        if artifact.get('target_bbox') or artifact.get('bbox') or artifact.get('bbox_2d')
+                    ]
+                
+                gt_mask = self._convert_to_binary_mask(ground_bbox_list, 'bbox_list', img_w, img_h)
+            
+                # Convert predictions to binary mask
+                if pred_heatmap is not None:
+                    pred_mask = self._convert_to_binary_mask(pred_heatmap, 'heatmap', img_w, img_h)
+                elif result_bbox_list:
+                    pred_mask = self._convert_to_binary_mask(result_bbox_list, 'bbox_list', img_w, img_h)
+                else:
+                    pred_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            
+                # Compute pixel-level metrics
+                pixel_metrics = self._compute_pixel_level_metrics(pred_mask, gt_mask)
+                stats.update(pixel_metrics)
+
+                # Keep legacy IoU for backward compatibility
+                stats['iou'] = pixel_metrics['iou_foreground']
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark these metrics as None so they can be filtered out during aggregation
+                stats.update({
+                    'iou': None,
+                    'miou': None,
+                    'iou_foreground': None,
+                    'iou_background': None,
+                    'pixel_f1': None,
+                    'pixel_precision': None,
+                    'pixel_recall': None,
+                    'tp_pixels': None,
+                    'tn_pixels': None,
+                    'fp_pixels': None,
+                    'fn_pixels': None
+                })
+
+        elif dataset_type in ['val', 'train']:
             has_gt_artifacts = json_data.get('has_artifacts', False)
 
             if has_gt_artifacts:
@@ -644,7 +735,7 @@ class Evaluation:
         """Handle explanation evaluation - compute ROUGE-L/CSS only for datasets with full captions."""
         
         # Only compute text scores for datasets with full image captions
-        if dataset_type in ['synthscars', 'loki']:
+        if dataset_type in ['synthscars', 'loki', 'val', 'train']:
             try:
                 print(result)
                 pred_caption = result.get('explanation', "").strip()
@@ -655,6 +746,8 @@ class Evaluation:
                     # ref_caption = (json_data.get('caption') or '').strip().split('\n')[0]   # only use before To elaborate...
                 elif dataset_type == 'loki':
                     ref_caption = (json_data['problems']['global'][0].get('desc', "")).strip()
+                elif dataset_type in ['val', 'train']:
+                    ref_caption = (json_data.get('explanation') or '').strip()
 
                 if ref_caption and pred_caption:
                     rouge_l, css = self.compute_global_caption_scores(ref_caption, pred_caption)

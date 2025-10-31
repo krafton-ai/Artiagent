@@ -118,6 +118,20 @@ class VQABuilders:
         question = VQAPrompts.get_pair_explanation(artifact_position)
         answer = VQAAnswers.pair_explanation(metadata_caption)
         return QAPair(question, answer)
+    
+    @staticmethod
+    def build_global_explanation_real(real_caption: str) -> QAPair:
+        """Build global explanation Q-A for real image (artifact-free).
+        
+        Args:
+            real_caption: Description of why the image is artifact-free
+        
+        Returns:
+            QAPair with natural text answer
+        """
+        question = VQAPrompts.get_global_explanation_real()
+        answer = real_caption
+        return QAPair(question, answer)
 
 import random
 

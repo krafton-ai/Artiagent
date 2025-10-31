@@ -15,6 +15,8 @@ import re
 import io
 import base64
 import numpy as np
+from pathlib import Path
+import threading
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoModel, AutoConfig, AutoTokenizer, SegformerImageProcessor, SegformerForSemanticSegmentation
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
@@ -22,10 +24,11 @@ from qwen_vl_utils import process_vision_info
 import openai
 from openai.types.chat import ChatCompletion
 from google.oauth2 import service_account
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from google.generativeai import types
 
 # imports for LEGION - TODO
+LEGION_AVAILABLE = False
 try:
     import cv2
     import bleach
@@ -37,8 +40,20 @@ try:
     from model.SAM.utils.transforms import ResizeLongestSide
     from tools.utils import DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
     from eval.utils import grounding_image_ecoder_preprocess
+    LEGION_AVAILABLE = True
 except:
     print("LEGION model import failure, running w/o LEGION")
+
+# Thread-local context for passing image path to mock LEGION
+_context = threading.local()
+
+def set_current_image_path(image_path):
+    """Set current image path in thread-local context"""
+    _context.current_image_path = str(image_path)
+
+def get_current_image_path():
+    """Get current image path from thread-local context"""
+    return getattr(_context, 'current_image_path', None)
 
 class MoneyManager:
     def __init__(self, model: str = "gpt-3.5-turbo-0613"):
@@ -217,21 +232,20 @@ class QwenEval:
     def _load_model(self, config: str):
         """Load the Qwen2.5-VL model and processor."""
         if self.use_finetuned:
-            model_names = {'1k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k",
-                        '3k_all': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k",
-                        '3k_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary",
-                        '3k_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc",
-                        '3k_exp': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_exp",
-                        '3k_reasoned_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_bin",
-                        '3k_reasoned_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_loc",
-                        '8k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_8k"}
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/lora/sft_artifacts_gpt"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc"
-            # model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_exp"
-            model_name = model_names[config]
+            # Check if custom model_path is provided
+            if self.config.get('model_path'):
+                model_name = self.config['model_path']
+            else:
+                # Use predefined finetune modes
+                model_names = {'1k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k",
+                            '3k_all': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k",
+                            '3k_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary",
+                            '3k_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc",
+                            '3k_exp': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_exp",
+                            '3k_reasoned_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_bin",
+                            '3k_reasoned_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_loc",
+                            '8k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_8k"}
+                model_name = model_names[config]
             # config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer.padding_side = "left"
@@ -273,6 +287,8 @@ class QwenEval:
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+
+        print(text)
         
         image_inputs, _ = process_vision_info(messages)
         inputs = self.processor(
@@ -548,7 +564,21 @@ class GPTEval:
         Returns:
             Formatted prompt string for the model
         """
-        return "Analyze the image and describe any visual anomalies. Provide whether there is an artifact, and if so, provide bboxes and descriptions for all anomalies. Respond with a JSON array of these objects in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
+        artifact_def = """ Image artifacts refer to unintended, implausible, or visibly corrupted regions within images generated by diffusion models. These artifacts often break the natural semantics or visual coherence of an image, such as a person with extra fingers, a car with warped wheels, or missing parts of animals, and can significantly degrade image quality or realism. Artifacts are a critical concern in both model evaluation and training. 
+
+
+There are four types of image artifacts: Addition, Removal, Distortion, and Fusion. 
+
+1. Addition: These artifacts appear as excessive or repeated components, leading to unrealistic objects or implausible duplication. 
+
+2. Removal: These artifacts appear as omitted components, leading to unrealistic or incomplete objects. 
+
+3. Distortion: These artifacts occur when objects have details that are not typical, making the object unrecognizable or visually broken, such as geometric inconsistencies, abnormal textures, unnatural asymmetry or twisted, warped, scrambled parts. 
+
+4. Fusion: These artifacts result from the combination of objects so their boundaries or interiors merge into one ambiguous, hybrid part, resulting in a visually incoherent region. 
+
+""" 
+        return artifact_def + "Analyze the image and describe any visual anomalies. Provide whether there is an artifact, and if so, provide bboxes and descriptions for all anomalies. Respond with a JSON array of these objects in the following structured format: ```json\n[\n    {\n \"number_of_artifacts\": num,\n    \"artifacts\":\n[\n {\n        \"bbox_2d\": [x_min, y_min, x_max, y_max],\n        \"explanation\": \"The image contains an artifact of type ... on the ... of the ....\"\n    }, ...\n]\n}\n]\n```"
 
     def _encode_image_to_base64(self, image):
         """Convert PIL Image or numpy array to base64 string"""
@@ -1125,6 +1155,107 @@ class DiffEval:
     def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
         return [self.inference(img) for img in images]
    
+class MockLegionEval:
+    """
+    Mock LEGION artifact detector that loads pre-generated responses.
+    Compatible with evaluation scripts' unified_inference interface.
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.responses_dir = Path('/data2/jhpark/image-artifacts/eval/refined_legion_responses')
+        self.loaded_responses = {}
+        self.current_dataset = config.get('dataset_type', 'unknown')
+        
+        # Add mock attributes to match LegionEval interface
+        self.model = None  # Mock model placeholder
+        self.tokenizer = None  # Mock tokenizer placeholder 
+        
+        self._load_responses_for_dataset()
+
+    def _load_responses_for_dataset(self):
+        """Load pre-generated responses for current dataset"""
+        response_file = self.responses_dir / f"{self.current_dataset}_responses.pkl"
+        if response_file.exists():
+            try:
+                import pickle
+                with open(response_file, 'rb') as f:
+                    self.loaded_responses = pickle.load(f)
+                print(f"✅ Loaded {len(self.loaded_responses)} pre-generated responses for {self.current_dataset}")
+                self.use_pregenerated = True
+            except Exception as e:
+                print(f"⚠️ Failed to load pre-generated responses: {e}")
+                self.loaded_responses = {}
+                self.use_pregenerated = False
+        else:
+            print(f"⚠️ No pre-generated responses found at {response_file}")
+            self.use_pregenerated = False
+
+    def _get_image_key_from_path(self, image_path) -> str:
+        """Extract image filename to use as key"""
+        if hasattr(image_path, 'name'):
+            return image_path.name
+        return Path(str(image_path)).name
+
+    def inference(self, image: Image.Image) -> Dict[str, Any]:
+        """Mock inference using pre-generated responses"""
+        if not self.use_pregenerated:
+            return self._get_fallback_response()
+
+        # Try to get image path from thread-local context
+        current_image_path = get_current_image_path()
+        if current_image_path:
+            return self.inference_with_path(image, current_image_path)
+        else:
+            print("⚠️ No current image path available in context")
+            return self._get_fallback_response()
+
+    def inference_with_path(self, image: Image.Image, image_path: str) -> Dict[str, Any]:
+        """Inference with explicit image path for accurate response lookup"""
+        if not self.use_pregenerated:
+            return self._get_fallback_response()
+
+        image_key = self._get_image_key_from_path(image_path)
+        
+        if image_key in self.loaded_responses:
+            response_data = self.loaded_responses[image_key]['response'].copy()
+            
+            # Convert numpy arrays back to torch tensors if needed
+            if response_data.get('heatmap') is not None and isinstance(response_data['heatmap'], np.ndarray):
+                response_data['heatmap'] = torch.from_numpy(response_data['heatmap'])
+            
+            return response_data
+        else:
+            print(f"⚠️ No pre-generated response found for {image_key}")
+            return self._get_fallback_response()
+
+    def _get_fallback_response(self) -> Dict[str, Any]:
+        """Return fallback response when pre-generated response unavailable"""
+        return {
+            "heatmap": torch.zeros((512, 512), dtype=torch.int), 
+            "explanation": "No pre-generated response available for this image.",
+            "error": "missing_pregenerated_response"
+        }
+
+    def has_pregenerated_response(self, image_path: str) -> bool:
+        """Check if a pre-generated response exists for the given image path"""
+        if not self.use_pregenerated:
+            return False
+        image_key = self._get_image_key_from_path(image_path)
+        return image_key in self.loaded_responses
+    
+    def get_available_image_keys(self) -> List[str]:
+        """Get list of image filenames that have pre-generated responses"""
+        if not self.use_pregenerated:
+            return []
+        return list(self.loaded_responses.keys())
+
+    def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        """Batch inference using individual calls"""
+        return [self.inference(img) for img in images]
+
+
 class LegionEval:   # TODO : load / generate results properly with LEGION
     """
     LEGION artifact detector wrapper.
@@ -1132,10 +1263,33 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
     """
 
     def __init__(self, config: Dict[str, Any]):
+        # Check if pre-generated responses are available and use mock instead
+        responses_dir = Path('/data2/jhpark/image-artifacts/eval/refined_legion_responses')
+        dataset_type = config.get('dataset_type', 'unknown')
+        response_file = responses_dir / f"{dataset_type}_responses.pkl"
+        
+        if response_file.exists() and not config.get('force_real_legion', False):
+            print(f"🔄 Using pre-generated LEGION responses for {dataset_type}")
+            # Initialize as mock
+            self._mock = MockLegionEval(config)
+            self._use_mock = True
+            return
+        else:
+            self._use_mock = False
+        
+        if not LEGION_AVAILABLE:
+            raise ImportError("LEGION model dependencies are not available. Please install the required dependencies or use pre-generated responses.")
+        
         self.config = config
         self.device = config.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')
         self.instruction = 'Please provide a detailed analysis of artifacts in this photo, considering physical artifacts (e.g., optical display issues, violations of physical laws, and spatial/perspective errors), structural artifacts (e.g., deformed objects, asymmetry, or distorted text), and distortion artifacts (e.g., color/texture distortion, noise/blur, artistic style errors, and material misrepresentation). Output with interleaved segmentation masks for the corresponding parts of the answer.'
         self._load_model()
+    
+    def __getattr__(self, name):
+        """Delegate to mock if using pre-generated responses"""
+        if hasattr(self, '_use_mock') and self._use_mock:
+            return getattr(self._mock, name)
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
     def _get_segformer(self, path_or_hub, out_channels=1):
         # load a pretrained Segformer model
@@ -1147,18 +1301,19 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
 
     def _load_model(self) -> None:
         # Initialize tokenizer and model
-        base_dir = "/home/jovyan/image-artifacts/baselines/LEGION"  # TODO : modify /path/to/legion
+        base_dir = "/data2/jhpark/LEGION/exp/Legion/final_model/global_step7030"  # TODO : modify /path/to/legion
         ckpt = os.path.join(base_dir, "checkpoints", "ad_pytorch_model.bin")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(ckpt, cache_dir=None,
-                                                  model_max_length=512, padding_side="right",
-                                                  use_fast=False)
-        self.tokenizer.pad_token = tokenizer.unk_token
-        seg_token_idx = tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
+        self.tokenizer = AutoTokenizer.from_pretrained(base_dir, cache_dir=None,
+                                            model_max_length=512, padding_side="right",
+                                            use_fast=False)
+        # self.tokenizer = tokenizer
+        self.tokenizer.pad_token = self.tokenizer.unk_token
+        seg_token_idx = self.tokenizer("[SEG]", add_special_tokens=False).input_ids[0]
         torch_dtype = torch.bfloat16  # By default, using bf16
         kwargs = {"torch_dtype": torch_dtype}
 
-        self.model = LegionForCausalLM.from_pretrained(ckpt, low_cpu_mem_usage=True,
+        self.model = LegionForCausalLM.from_pretrained(base_dir, low_cpu_mem_usage=True,
                                              seg_token_idx=seg_token_idx, **kwargs)
         
         # Update model config
@@ -1172,7 +1327,7 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
         vision_tower.to(dtype=torch_dtype)
 
         # Transfer the model to GPU : TODO - select device
-        self.model = model.bfloat16().cuda()  # Replace with model = model.float().cuda() for 32 bit inference
+        self.model = self.model.bfloat16().cuda()  # Replace with model = model.float().cuda() for 32 bit inference
         vision_tower = self.model.get_model().get_vision_tower()
         vision_tower.to(device=self.device)
 
@@ -1215,7 +1370,7 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
         image = image.bfloat16()  # Precision is bf16 by default
 
         # Prepare inputs for inference
-        input_ids = tokenizer_image_token(prompt, tokenizer, return_tensors="pt")
+        input_ids = tokenizer_image_token(prompt, self.tokenizer, return_tensors="pt")
         input_ids = input_ids.unsqueeze(0).cuda()
         bboxes = None  # No box/region is input in GCG task
 
@@ -1244,6 +1399,10 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
         return cleaned_str, pred_masks, phrases  
 
     def inference(self, image: Image.Image) -> Dict[str, Any]:
+        # Check if we should delegate to mock
+        if hasattr(self, '_use_mock') and self._use_mock:
+            return self._mock.inference(image)
+        
         if self.model is None:
             return {"heatmap": None, "explanation": None, "error": "legion_model_not_loaded"}
         else:
@@ -1257,4 +1416,8 @@ class LegionEval:   # TODO : load / generate results properly with LEGION
             return {"heatmap": pred_mask, "explanation": result_caption}
 
     def inference_batch(self, images: List[Image.Image]) -> List[Dict[str, Any]]:
+        # Check if we should delegate to mock
+        if hasattr(self, '_use_mock') and self._use_mock:
+            return self._mock.inference_batch(images)
+        
         return [self.inference(img) for img in images]
