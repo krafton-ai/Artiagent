@@ -798,10 +798,6 @@ class Evaluation:
             has_gt_artifacts = json_data.get('has_artifacts', False)
             stats['has_gt_artifacts'] = has_gt_artifacts
             print(f"Positive sample?: {has_gt_artifacts}")
-        elif dataset_type == 'val':
-            has_gt_artifacts = json_data.get('has_artifacts', False)
-            stats['has_gt_artifacts'] = has_gt_artifacts
-            print(f"Positive sample?: {has_gt_artifacts}")
         else:
             # Other datasets (synthscars, loki, richhf) typically have only positive samples
             stats['has_gt_artifacts'] = True
@@ -1012,7 +1008,115 @@ class Evaluation:
                 })
 
         elif dataset_type == 'ours':
+            has_gt_artifacts = json_data.get('has_artifacts', False)
+            
+            if has_gt_artifacts:
+                # Only compute localization metrics for positive samples (samples with artifacts)
+                # Extract bboxes from the correct field - check if bboxes exist at top level first
+                if 'bboxes' in json_data:
+                    ground_bbox_list = json_data['bboxes']
+                else:
+                    # Extract bboxes from artifacts list (nested structure)
+                    gt_artifacts = json_data.get('artifacts', [])
+                    ground_bbox_list = [
+                        artifact.get('target_bbox', artifact.get('bbox', artifact.get('bbox_2d', [])))
+                        for artifact in gt_artifacts
+                        if artifact.get('target_bbox') or artifact.get('bbox') or artifact.get('bbox_2d')
+                    ]
+                
+                if ground_bbox_list:
+                    gt_type = 'bbox'
+                    # Use threshold-independent evaluation
+                    metrics = self._compute_threshold_independent_bbox_metrics(
+                        pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h
+                    )
+                    stats.update(metrics)
+                else:
+                    stats.update({
+                        'iou': 0.0,
+                        'loc_tp': 0,
+                        'loc_fp': 0,
+                        'loc_fn': 0,
+                        'loc_precision': 0.0,
+                        'loc_recall': 0.0,
+                        'loc_f1': 0.0
+                    })
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark these metrics as None so they can be filtered out during aggregation
+                stats.update({
+                    'iou': None,
+                    'loc_tp': None,
+                    'loc_fp': None,
+                    'loc_fn': None,
+                    'loc_precision': None,
+                    'loc_recall': None,
+                    'loc_f1': None
+                })
+
+        elif dataset_type in ['val', 'train']:
             has_gt_artifacts = json_data.get('has_artifacts', [])
+            if has_gt_artifacts:
+                # Only compute localization metrics for positive samples (samples with artifacts)
+                ground_bbox_list = [artifact['target_bbox'] for artifact in json_data['artifacts']]
+                artifact_types = [artifact.get('artifact_type').lower() for artifact in json_data['artifacts']]
+                
+                if ground_bbox_list:
+                    gt_type = 'bbox'
+                    # Use threshold-independent evaluation with matching info
+                    metrics, matching = self._compute_threshold_independent_bbox_metrics(
+                        pred_data, ground_bbox_list, pred_type, gt_type, img_w, img_h, return_matching=True
+                    )
+                    stats.update(metrics)
+                    
+                    # Track per-artifact-type statistics
+                    artifact_type_stats = {
+                        'addition': {'total': 0, 'matched': 0},
+                        'removal': {'total': 0, 'matched': 0},
+                        'distortion': {'total': 0, 'matched': 0},
+                        'fusion': {'total': 0, 'matched': 0}
+                    }
+                    
+                    # Count total ground truth artifacts per type
+                    for artifact_type in artifact_types:
+                        if artifact_type in artifact_type_stats:
+                            artifact_type_stats[artifact_type]['total'] += 1
+                    
+                    # Count matched artifacts per type
+                    for gt_idx in matching.keys():
+                        if gt_idx < len(artifact_types):
+                            artifact_type = artifact_types[gt_idx]
+                            if artifact_type in artifact_type_stats:
+                                artifact_type_stats[artifact_type]['matched'] += 1
+                    
+                    stats['artifact_type_stats'] = artifact_type_stats
+                else:
+                    stats.update({
+                        'iou': 0.0,
+                        'loc_tp': 0,
+                        'loc_fp': 0,
+                        'loc_fn': 0,
+                        'loc_precision': 0.0,
+                        'loc_recall': 0.0,
+                        'loc_f1': 0.0,
+                        'artifact_type_stats': None
+                    })
+            else:
+                # Skip negative samples (samples without artifacts) for localization evaluation
+                # Mark these metrics as None so they can be filtered out during aggregation
+                stats.update({
+                    'iou': None,
+                    'loc_tp': None,
+                    'loc_fp': None,
+                    'loc_fn': None,
+                    'loc_precision': None,
+                    'loc_recall': None,
+                    'loc_f1': None,
+                    'artifact_type_stats': None
+                })
+        
+        elif dataset_type in ['val', 'train']:
+            has_gt_artifacts = json_data.get('has_artifacts', False)
             
             if has_gt_artifacts:
                 # Only compute localization metrics for positive samples (samples with artifacts)
@@ -1117,7 +1221,6 @@ class Evaluation:
         
         # Only compute text scores for datasets with full image captions
         if dataset_type in ['synthscars', 'loki', 'ours', 'val', 'train']:
-        if dataset_type in ['synthscars', 'loki', 'ours', 'val']:
             try:
                 print(result)
                 pred_caption = result.get('explanation', "").strip()
@@ -1128,9 +1231,9 @@ class Evaluation:
                     ref_caption = (json_data.get('caption') or '').strip().split('\n')[0]   # only use before To elaborate...
                 elif dataset_type == 'loki':
                     ref_caption = (json_data['problems']['global'][0].get('desc', "")).strip()
-                elif dataset_type == 'ours':
-                    ref_caption = json_data.get('explanation')
-                elif dataset_type == 'val':
+                elif dataset_type in ['ours']:
+                    ref_caption = json_data.get('explanation', '')
+                elif dataset_type in ['val', 'train']:
                     ref_caption = json_data.get('caption')
 
                 if ref_caption and pred_caption:
