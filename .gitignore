@@ -22,6 +22,12 @@ src/notebooks/outputs
 src/outputs
 slurm/
 
+data/
+src/eval/eval_logs
+src/train/LLaMA-Factory/artiagent/train_yaml
+vlm/
+
+
 
 # Environment files (contains sensitive data)
 .env
