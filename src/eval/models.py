@@ -227,25 +227,13 @@ class QwenEval:
         self.use_finetuned = config.get('use_finetuned', False)
         
         # Load model and processor
-        self._load_model(config['finetune_mode'])
+        # self._load_model(config['finetune_path'])
+        self._load_model(config['model_path'])
         
-    def _load_model(self, config: str):
+    def _load_model(self, model_path: str):
         """Load the Qwen2.5-VL model and processor."""
         if self.use_finetuned:
-            # Check if custom model_path is provided
-            if self.config.get('model_path'):
-                model_name = self.config['model_path']
-            else:
-                # Use predefined finetune modes
-                model_names = {'1k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_1k",
-                            '3k_all': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k",
-                            '3k_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_binary",
-                            '3k_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_loc",
-                            '3k_exp': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_3k_exp",
-                            '3k_reasoned_bin': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_bin",
-                            '3k_reasoned_loc': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_reasoned_loc",
-                            '8k': "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/saves/qwen2_5vl-7b/full/sft_artifacts_8k"}
-                model_name = model_names[config]
+            model_name = model_path
             # config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             self.tokenizer.padding_side = "left"
@@ -380,10 +368,397 @@ class QwenEval:
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
 
-        for output_text in output_texts:
-            print(output_text)
+        # for output_text in output_texts:
+        #     print(output_text)
 
         return output_texts
+
+class Qwen32BMultiGPUEval:
+    """
+    Wrapper class for Qwen2.5-VL-32B-Instruct model with multi-GPU support.
+    
+    This class splits the large 32B model across multiple GPUs using HuggingFace
+    Accelerate's device_map="auto" feature, enabling inference on models too large
+    for a single GPU.
+    
+    Usage:
+        # Each inference job uses 2 GPUs (or num_devices_per_job)
+        config = {
+            'model_type': 'qwen32b_multi',
+            'model_path': '/path/to/checkpoint',
+            'device': 'cuda:0',  # Starting device
+            'num_devices_per_job': 2,  # Number of GPUs per inference job
+            'use_finetuned': True
+        }
+        
+    Note:
+        - Requires sufficient GPU memory across devices
+        - Uses accelerate's automatic device mapping
+        - Supports both base and LoRA-finetuned models
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the Qwen 32B model with multi-GPU support.
+        
+        Args:
+            config: Configuration dictionary with:
+                - model_path: Path to model checkpoint
+                - device: Starting device (e.g., 'cuda:0')
+                - num_devices_per_job: Number of GPUs to use (default: 2)
+                - use_finetuned: Whether to load finetuned checkpoint
+        """
+        self.config = config
+        self.use_finetuned = config.get('use_finetuned', False)
+        self.num_devices = config.get('num_devices_per_job', 2)
+        
+        # Parse starting device
+        if 'cuda:' in config.get('device', 'cuda:0'):
+            self.start_device_id = int(config['device'].split(':')[1])
+        else:
+            self.start_device_id = 0
+        
+        # Build device map for the specified GPUs
+        self.device_map = self._build_device_map()
+        
+        # Load model and processor
+        self._load_model(config['model_path'])
+        
+    def _build_device_map(self) -> Dict[str, int]:
+        """
+        Build device map for multi-GPU model splitting.
+        
+        Returns:
+            Dict mapping layer names to device IDs, or "auto" for automatic mapping
+        """
+        # Use "auto" but constrain to specific devices via max_memory
+        return "auto"
+    
+    def _get_max_memory(self) -> Dict[int, str]:
+        """
+        Get max memory configuration for specific GPU devices.
+        
+        Returns:
+            Dict mapping device IDs to memory limits
+        """
+        max_memory = {}
+        for i in range(self.num_devices):
+            device_id = self.start_device_id + i
+            # Allocate slightly less than full memory to be safe
+            max_memory[device_id] = "40GiB"  # Adjust based on your GPU memory
+        
+        # Disable other GPUs by setting their memory to 0
+        total_gpus = torch.cuda.device_count()
+        for i in range(total_gpus):
+            if i not in max_memory:
+                max_memory[i] = "0GiB"
+        
+        return max_memory
+    
+    def _load_model(self, model_path: str):
+        """Load the Qwen2.5-VL-32B model with multi-GPU support."""
+        if self.use_finetuned:
+            model_name = model_path
+        else:
+            model_name = "/home/jovyan/image-artifacts/src/train/LLaMA-Factory/Qwen/Qwen2.5-VL-32B-Instruct"
+        
+        print(f"Loading Qwen2.5-VL-32B on GPUs {self.start_device_id} to {self.start_device_id + self.num_devices - 1}")
+        
+        # Get max memory configuration
+        max_memory = self._get_max_memory()
+        
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.tokenizer.padding_side = "left"
+        
+        # Load model with device map
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map=self.device_map,
+            max_memory=max_memory,
+            trust_remote_code=True
+        )
+        
+        # Load processor
+        self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        self.processor.tokenizer.padding_side = "left"
+        
+        print(f"Model loaded successfully across {self.num_devices} GPUs")
+        print(f"Device map: {self.model.hf_device_map}")
+    
+    def inference(self, image: Image.Image, prompt: str) -> str:
+        """
+        Run inference on a single image.
+        
+        Args:
+            image: PIL Image to analyze
+            prompt: Text prompt for inference
+            
+        Returns:
+            String containing the model's response
+        """
+        # Prepare the conversation
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ]
+        
+        # Process the input
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        
+        image_inputs, _ = process_vision_info(messages)
+        inputs = self.processor(
+            text=[text],
+            images=image_inputs,
+            padding=True,
+            return_tensors="pt"
+        )
+        
+        # Move inputs to first device (model will handle distribution)
+        first_device = f"cuda:{self.start_device_id}"
+        inputs = {k: v.to(first_device) if isinstance(v, torch.Tensor) else v 
+                  for k, v in inputs.items()}
+        
+        # Generate response
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=512
+            )
+        
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs['input_ids'], generated_ids)
+        ]
+        
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]
+        
+        return output_text
+    
+    def inference_batch(self, images: List[Image.Image], prompt: str) -> List[str]:
+        """
+        Run inference on a batch of images.
+        
+        Args:
+            images: List of PIL Images to analyze
+            prompt: Text prompt for inference
+            
+        Returns:
+            List of strings containing the model's responses
+        """
+        if not images:
+            return []
+        
+        # Build batched messages
+        messages_list = []
+        for image in images:
+            messages_list.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            )
+        
+        # Build per-sample chat templates and vision inputs
+        texts: List[str] = []
+        batch_image_inputs: List[Any] = []
+        for messages in messages_list:
+            text = self.processor.apply_chat_template(
+                [messages], tokenize=False, add_generation_prompt=True
+            )
+            image_inputs, _ = process_vision_info([messages])
+            texts.append(text)
+            batch_image_inputs.append(image_inputs)
+        
+        # Tokenize/process as a batch
+        inputs = self.processor(
+            text=texts,
+            images=batch_image_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        
+        # Move inputs to first device
+        first_device = f"cuda:{self.start_device_id}"
+        inputs = {k: v.to(first_device) if isinstance(v, torch.Tensor) else v 
+                  for k, v in inputs.items()}
+        
+        # Generate batched outputs
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs, max_new_tokens=512
+            )
+        
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs['input_ids'], generated_ids)
+        ]
+        
+        output_texts = self.processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        
+        return output_texts
+
+
+class Qwen32Eval:
+    """
+    Wrapper class for Qwen2.5-VL-32B-Instruct model evaluation via OpenRouter API.
+    
+    This class provides a unified interface for running inference
+    on images to detect and describe artifacts using the larger 32B model
+    through OpenRouter's free tier.
+    
+    Reference: https://openrouter.ai/qwen/qwen2.5-vl-32b-instruct:free
+    
+    Setup:
+        1. Get an API key from OpenRouter (https://openrouter.ai)
+        2. Set environment variable: export OPENROUTER_API_KEY="your-key"
+           (or use OPENAI_API_KEY as fallback)
+        
+    Usage:
+        python eval.py --model qwen32 --dataset ours --type explanation
+        python eval.py --model qwen32 --dataset synartifact --type localization --batch-size 1
+        
+    Note: 
+        - This uses the FREE tier model (no cost per token)
+        - Finetuned models are NOT supported (API-based inference only)
+        - Batch processing is sequential (no true batch API support)
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the Qwen 32B model for evaluation via OpenRouter.
+        
+        Args:
+            config: Configuration dictionary containing model settings
+        """
+        self.config = config
+        self.use_finetuned = config.get('use_finetuned', False)
+        
+        if self.use_finetuned:
+            raise NotImplementedError("Finetuned models are not supported for Qwen32Eval (OpenRouter API)")
+        
+        # Initialize OpenRouter client
+        self._init_client()
+    
+    def _init_client(self):
+        """Initialize OpenRouter client with API key."""
+        # Check for OpenRouter API key (falls back to OpenAI key format)
+        api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            print("❌ Error: OPENROUTER_API_KEY or OPENAI_API_KEY environment variable not set.")
+            sys.exit(1)
+        
+        # Initialize OpenAI client with OpenRouter base URL
+        self.client = openai.OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+        )
+        
+        # Model identifier for OpenRouter
+        self.model_name = "qwen/qwen2.5-vl-32b-instruct"
+    
+    def _encode_image_to_base64(self, image: Image.Image) -> str:
+        """Convert PIL Image to base64 string."""
+        if isinstance(image, np.ndarray):
+            # Convert numpy array to PIL Image
+            pil_image = Image.fromarray(image)
+        else:
+            pil_image = image
+        
+        # Convert to RGB if necessary
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+        
+        # Save to bytes buffer
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format='JPEG')
+        buffer.seek(0)
+        
+        # Encode to base64
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+    
+    def inference(self, image: Image.Image, prompt: str) -> str:
+        """
+        Run inference on a single image to detect artifacts via OpenRouter API.
+        
+        Args:
+            image: PIL Image to analyze
+            prompt: Text prompt for the model
+            
+        Returns:
+            String containing model output
+        """
+        base64_image = self._encode_image_to_base64(image)
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=512,
+                temperature=0.2
+            )
+            
+            raw_text = response.choices[0].message.content.strip()
+            return raw_text
+            
+        except Exception as e:
+            print(f"Error during OpenRouter API call for Qwen32: {e}")
+            return ""
+
+    def inference_batch(self, images: List[Image.Image], prompt: str) -> List[str]:
+        """
+        Run inference on a batch of images via OpenRouter API.
+        
+        Note: OpenRouter API doesn't support true batch processing,
+        so we process images sequentially.
+
+        Args:
+            images: List of PIL Images to analyze
+            prompt: Text prompt for the model
+
+        Returns:
+            List of strings containing model outputs, one per image
+        """
+        if not images:
+            return []
+        
+        results = []
+        for img in images:
+            try:
+                result = self.inference(img, prompt)
+                results.append(result)
+            except Exception as e:
+                print(f"Error processing image in batch: {e}")
+                results.append("")
+        
+        return results
 
 class InternEval:
     """
@@ -604,22 +979,8 @@ There are four types of image artifacts: Addition, Removal, Distortion, and Fusi
         base64_image = self._encode_image_to_base64(image)
 
         try:
-            # response = self.client.chat.completions.create(
-            #     model="gpt-4o",
-            #     messages=[
-            #         {
-            #             "role": "user",
-            #             "content": [
-            #                 {"type": "text", "text": prompt},
-            #                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-            #             ]
-            #         }
-            #     ],
-            #     max_tokens=1000,
-            #     temperature=0.2
-            # )
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model="gpt-4o",
                 messages=[
                     {
                         "role": "user",
@@ -628,8 +989,22 @@ There are four types of image artifacts: Addition, Removal, Distortion, and Fusi
                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                         ]
                     }
-                ]
+                ],
+                max_tokens=1000,
+                temperature=0.2
             )
+            # response = self.client.chat.completions.create(
+            #     model="gpt-5",
+            #     messages=[
+            #         {
+            #             "role": "user",
+            #             "content": [
+            #                 {"type": "text", "text": prompt},
+            #                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+            #             ]
+            #         }
+            #     ]
+            # )
 
             if self.money_manager:
                 self.money_manager(response)

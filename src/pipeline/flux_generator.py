@@ -270,9 +270,9 @@ class FluxGenerator:
         
         # Choose denoising function based on configuration
         # RF solver (denoise) is more accurate but slower than first-order denoising
-        # denoise_func = denoise_fireflow if use_fireflow else denoise_first_order
+        denoise_func = denoise_fireflow if use_fireflow else denoise_first_order
         # denoise_func = denoise_fireflow
-        denoise_func = denoise_fireflow
+        # denoise_func = denoise_fireflow
         # inversion initial noise
         z, info = denoise_func(self.model, **inp, timesteps=timesteps, guidance=1, inverse=True, info=info, percentage_of_steps=flux_args.percentage_of_steps)
         inp_target["img"] = z

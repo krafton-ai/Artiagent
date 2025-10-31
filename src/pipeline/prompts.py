@@ -166,42 +166,7 @@ def get_entity_subentities(client, image, money_manager=None):
         "intermediate": []
     }
     - Variable-cardinality micro-parts are **not allowed** in the peripheral dictionary. Examples to avoid: leaf/leaves (tree), hair/hairs (person/animal), feather/feathers (bird), scale/scales (fish/reptile), spot/spots (dalmatian), petal/petals (flower), book/books (bookshelf), crowd/persons (crowd scene).
-
-    Bad examples (NOT allowed):
-    - Returning a single array or more than one top-level JSON object
-    - {"dog": []}  # empty subentities list
-    - Multiple separate top-level JSON objects
-    - "peripheral": [{"entity": "tree", "subentities": ["leaf", "fruit"]}]  # variable-cardinality micro-parts in peripheral
-
-    Good format examples (illustrative only):
-    {
-        "peripheral": [{"entity": "person", "subentities": ["hand", "finger", "leg", "arm"]}, {"entity": "car", "subentities": ["wheel", "mirror"]}, {"entity": "dog", "subentities": ["ear", "paw", "leg", "tail"]}],
-        "intermediate": [{"entity": "person", "subentities": ["face", "palm"]}, {"entity": "car", "subentities": ["door", "window"]}, {"entity": "dog", "subentities": ["leg", "face"]}]
-    }
-
-    {
-        "peripheral": [{"entity": "cat", "subentities": ["ear", "paw", "leg", "tail"]}, {"entity": "bicycle", "subentities": ["wheel", "pedal"]}],
-        "intermediate": [{"entity": "cat", "subentities": ["face"]}, {"entity": "bicycle", "subentities": ["frame", "seat"]}]
-    }
-
-    Edge-case examples:
-    - Only distal parts visible:
-    {
-        "peripheral": [{"entity": "hand", "subentities": ["finger", "nail"]}],
-        "intermediate": []
-    }
-
-    - Only intermediate parts visible:
-    {
-        "peripheral": [],
-        "intermediate": [{"entity": "person", "subentities": ["face", "palm"]}]
-    }
-
-    - Multiple distal entities visible, no intermediate:
-    {
-        "peripheral": [{"entity": "hand", "subentities": ["finger", "nail"]}, {"entity": "dog", "subentities": ["ear", "paw", "tail", "leg"]}],
-        "intermediate": []
-    }
+ㅊ
     """
 
     try:

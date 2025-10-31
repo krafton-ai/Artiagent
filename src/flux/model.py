@@ -106,69 +106,70 @@ class Flux(nn.Module):
         txt = self.txt_in(txt)
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
-        inject_pe = pe.clone()
-        if not info['inverse']:
-        # Initialize accumulated lists for tracking all processed IDs
-            accumulated_target_ids = []
-            accumulated_ref_ids = []
-            for artifact_data in info['artifact_data']:
-                if artifact_data['artifact_type'] == 'addition' and info['addition']:
-                    ref_ids = artifact_data['reference_patch_indices'].copy()
-                    target_ids = artifact_data['target_patch_indices'].copy()
-                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
-                    # Accumulate IDs
-                    if info['inject']:
-                        accumulated_target_ids.extend(target_ids)
-                        accumulated_ref_ids.extend(ref_ids)
-                elif artifact_data['artifact_type'] == 'removal' and info['removal']:
-                    ref_ids = artifact_data['reference_patch_indices'].copy()
-                    target_ids = artifact_data['target_patch_indices'].copy()
-                    # ref_ids = get_closest_patch_inds(info['patch_h'], info['patch_w'], target_ids, ref_ids)
-                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
-                    # Accumulate IDs (after target_ids modification)
-                    if info['inject']:
-                        accumulated_target_ids.extend(target_ids)
-                        accumulated_ref_ids.extend(ref_ids)
-                elif artifact_data['artifact_type'] == 'distortion' and info['distortion']:
-                    ref_ids = artifact_data['reference_patch_indices'].copy()
-                    target_ids = artifact_data['target_patch_indices'].copy()
-                    if len(ref_ids) == 0:
-                        # For distortion with no reference patches, shuffle target patches
-                        ref_ids = target_ids.copy()
-                        np.random.shuffle(ref_ids)
-                    # Ensure target_ids and ref_ids are different for distortion
-                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
-                    # Accumulate IDs (after any ref_ids modification)
-                    if info['inject']:
-                        accumulated_target_ids.extend(target_ids)
-                        accumulated_ref_ids.extend(ref_ids)
-                elif artifact_data['artifact_type'] == 'fusion' and info['fusion']:
-                    ref_ids = artifact_data['reference_patch_indices'].copy()
-                    target_ids = artifact_data['target_patch_indices'].copy()
-                    # np.random.shuffle(ref_ids)
-                    inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
-                    # Accumulate IDs
-                    if info['inject']:
-                        accumulated_target_ids.extend(target_ids)
-                        accumulated_ref_ids.extend(ref_ids)
+        # inject_pe = pe.clone()
+        # if not info['inverse']:
+        # # Initialize accumulated lists for tracking all processed IDs
+        #     accumulated_target_ids = []
+        #     accumulated_ref_ids = []
+        #     for artifact_data in info['artifact_data']:
+        #         if artifact_data['artifact_type'] == 'addition' and info['addition']:
+        #             ref_ids = artifact_data['reference_patch_indices'].copy()
+        #             target_ids = artifact_data['target_patch_indices'].copy()
+        #             inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+        #             # Accumulate IDs
+        #             if info['inject']:
+        #                 accumulated_target_ids.extend(target_ids)
+        #                 accumulated_ref_ids.extend(ref_ids)
+        #         elif artifact_data['artifact_type'] == 'removal' and info['removal']:
+        #             ref_ids = artifact_data['reference_patch_indices'].copy()
+        #             target_ids = artifact_data['target_patch_indices'].copy()
+        #             # ref_ids = get_closest_patch_inds(info['patch_h'], info['patch_w'], target_ids, ref_ids)
+        #             inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+        #             # Accumulate IDs (after target_ids modification)
+        #             if info['inject']:
+        #                 accumulated_target_ids.extend(target_ids)
+        #                 accumulated_ref_ids.extend(ref_ids)
+        #         elif artifact_data['artifact_type'] == 'distortion' and info['distortion']:
+        #             ref_ids = artifact_data['reference_patch_indices'].copy()
+        #             target_ids = artifact_data['target_patch_indices'].copy()
+        #             if len(ref_ids) == 0:
+        #                 # For distortion with no reference patches, shuffle target patches
+        #                 ref_ids = target_ids.copy()
+        #                 np.random.shuffle(ref_ids)
+        #             # Ensure target_ids and ref_ids are different for distortion
+        #             inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+        #             # Accumulate IDs (after any ref_ids modification)
+        #             if info['inject']:
+        #                 accumulated_target_ids.extend(target_ids)
+        #                 accumulated_ref_ids.extend(ref_ids)
+        #         elif artifact_data['artifact_type'] == 'fusion' and info['fusion']:
+        #             ref_ids = artifact_data['reference_patch_indices'].copy()
+        #             target_ids = artifact_data['target_patch_indices'].copy()
+        #             # np.random.shuffle(ref_ids)
+        #             inject_pe[:,:,target_ids,:,:,:] = inject_pe[:,:,ref_ids,:,:,:]
+        #             # Accumulate IDs
+        #             if info['inject']:
+        #                 accumulated_target_ids.extend(target_ids)
+        #                 accumulated_ref_ids.extend(ref_ids)
 
-            info['patch_ids'] = accumulated_target_ids
-            info['patch_ref_ids'] = accumulated_ref_ids 
-        info['timesteps'] = timesteps
+        #     info['patch_ids'] = accumulated_target_ids
+        #     info['patch_ref_ids'] = accumulated_ref_ids 
+        # info['timesteps'] = timesteps
 
 
         for block in self.double_blocks:
-            img, txt = block(img=img, txt=txt, vec=vec, pe=inject_pe, info=info)
+            # img, txt = block(img=img, txt=txt, vec=vec, pe=inject_pe, info=info)
+            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, info=info)
 
         cnt = 0
         img = torch.cat((txt, img), 1) 
         info['type'] = 'single'
         for block in self.single_blocks:
             info['id'] = cnt
-            if cnt < 19:
-                img, info = block(img, vec=vec, pe=inject_pe, info=info)
-            else:
-                img, info = block(img, vec=vec, pe=pe, info=info)
+            # if cnt < 19:
+            #     img, info = block(img, vec=vec, pe=inject_pe, info=info)
+            # else:
+            img, info = block(img, vec=vec, pe=pe, info=info)
             cnt += 1
             
 

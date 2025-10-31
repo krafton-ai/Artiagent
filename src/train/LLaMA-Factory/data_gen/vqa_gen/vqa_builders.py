@@ -1,5 +1,5 @@
 from typing import List, Tuple, Dict, Any, Optional
-from .types import ArtiInstance, ArtifactRegion
+from .vqa_types import ArtiInstance, ArtifactRegion
 from .vqa_prompts import VQAPrompts
 from .vqa_answers import VQAAnswers
 

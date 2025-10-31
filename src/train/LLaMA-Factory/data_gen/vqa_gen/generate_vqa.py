@@ -20,12 +20,12 @@ import glob
 # Handle both direct execution and module import
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from vqa_gen.types import ArtiInstance, ArtifactRegion
+    from vqa_gen.vqa_types import ArtiInstance, ArtifactRegion
     from vqa_gen.vqa_sampler import VQASampler
     from vqa_gen.vqa_serialize import VQASerializer
     from vqa_gen.vqa_prompts import VQAPrompts
 else:
-    from .types import ArtiInstance, ArtifactRegion
+    from .vqa_types import ArtiInstance, ArtifactRegion
     from .vqa_sampler import VQASampler
     from .vqa_serialize import VQASerializer
     from .vqa_prompts import VQAPrompts
@@ -221,7 +221,7 @@ def generate_vqa_dataset(
     format_dropout: float = 0.15,
     seed: int = 42,
     sample_one_mode: bool = False,
-    always_start_with_binary: bool = False
+    only_modes: List[str] = None
 ) -> List[Dict[str, Any]]:
     """Generate VQA dataset from ArtiAgent instances.
     
@@ -265,6 +265,10 @@ def generate_vqa_dataset(
         if has_real and has_artifact:
             modes_to_generate.append("pair")
         
+        # Filter by only_modes if specified
+        if only_modes:
+            modes_to_generate = [m for m in modes_to_generate if m in only_modes]
+        
         # Skip if no valid modes
         if not modes_to_generate:
             continue
@@ -276,10 +280,30 @@ def generate_vqa_dataset(
             selected_modes = modes_to_generate
 
         # Generate conversations for selected modes
+        # Track if artifact mode had localization to inform pairwise mode
+        artifact_has_localization = True  # Default to True
+        artifact_qa_pairs = None
+        
         for mode in selected_modes:
-            images, qa_pairs = sampler.sample_conversation(instance, mode=mode)
+            # Determine if we need to force localization for pairwise mode
+            force_localization = False
+            if mode == "pair" and not sample_one_mode:
+                # Check if artifact mode was generated and had no localization
+                # Artifact VQA starting from '1.3' generates only 1 qa_pair (global explanation)
+                # If instance has artifacts but artifact qa_pairs is length 1, it had no localization
+                if artifact_qa_pairs is not None and has_artifact:
+                    if len(artifact_qa_pairs) == 1:
+                        # Artifact VQA started from '1.3' - only global explanation, no localization
+                        force_localization = True
+            
+            images, qa_pairs = sampler.sample_conversation(instance, mode=mode, force_localization=force_localization)
             if not qa_pairs:
                 raise ValueError(f"No Q-A pairs generated for mode: {mode}")
+            
+            # Track artifact qa_pairs for later use
+            if mode == "artifact":
+                artifact_qa_pairs = qa_pairs
+            
             conversation = VQASerializer.serialize_conversation(images, qa_pairs)
             conversations.append(conversation)
     
@@ -343,13 +367,13 @@ def main():
     parser.add_argument(
         "--real-image-filename",
         type=str,
-        default="real_image.png",
+        default="fireflow_reconstructed_image.png",
         help="Filename to use for real images in subdirectories (default: real_image.png)"
     )
     parser.add_argument(
         "--artifact-image-filename",
         type=str,
-        default="artifact_image.png",
+        default="fireflow_artifact_image.png",
         help="Filename to use for artifact images in subdirectories (default: artifact_image.png)"
     )
     parser.add_argument(
@@ -392,6 +416,18 @@ def main():
     )
     
     print(f"Total loaded: {len(instances)} instances")
+    
+    # Determine mode filtering
+    only_modes = None
+    if args.only_pairwise:
+        only_modes = ["pair"]
+        print("Mode filter: Only pairwise VQA")
+    elif args.only_single:
+        only_modes = ["artifact"]
+        print("Mode filter: Only single-image artifact VQA")
+    elif args.only_real:
+        only_modes = ["real"]
+        print("Mode filter: Only real image VQA")
     
     # Split into train/val if train ratio < 1.0
     if args.train_ratio < 1.0:
