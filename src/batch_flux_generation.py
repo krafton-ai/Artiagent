@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+"""
+FLUX Artifact Generation Batch Processing Script
+
+This script reads unified VLPart processing results and generates
+artifacts using FLUX model for each annotation with patch annotations.
+
+Features:
+- Read unified VLPart processing data
+- Generate artifacts for each annotation using FLUX with patch-based guidance
+- Save visualizations and final results
+- Progress tracking and resumption capability
+"""
+
+import os
+import sys
+import json
+import time
+import logging
+import pickle
+import glob
+from datetime import datetime
+from typing import List, Dict, Optional
+
+import numpy as np
+from tqdm import tqdm
+from PIL import Image
+
+from pipeline import FluxGenerator, FluxConfig
+
+
+def setup_logging(output_dir: str, supercategory: str):
+    """Setup logging configuration"""
+    log_dir = os.path.join(output_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f'flux_generation_{supercategory}_{timestamp}.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    return logging.getLogger(__name__)
+
+
+def load_processed_data(file_path: str) -> Optional[Dict]:
+    """Load unified processed data from pickle file"""
+    try:
+        with open(file_path, 'rb') as f:
+            data = pickle.load(f)
+        return data
+    except Exception as e:
+        print(f"Failed to load data from {file_path}: {e}")
+        return None
+
+
+def create_flux_visualizations(img_array: np.ndarray, generated_image: np.ndarray,
+                             artifact_data: Dict, img_filename: str, caption: str, output_dir: str):
+    """Create visualizations for FLUX generation results - simplified without ImageVisualizer"""
+    # Save generated artifact image
+    os.makedirs(output_dir, exist_ok=True)
+    generated_image.save(os.path.join(output_dir, f'artifact.png'))
+
+
+def process_single_image(data_file: str, flux_generator: FluxGenerator,
+                        output_dir: str, logger) -> Dict:
+    """Process a single image with FLUX artifact generation"""
+    # Load data
+    data = load_processed_data(data_file)
+    if data is None:
+        return {'success': False, 'error': 'Failed to load data'}
+    
+    img_id = data['id']
+    img_filename = data['real_image_path']
+    
+    logger.info(f"Processing FLUX generation for image {img_id}: {img_filename}")
+    
+    results = {
+        'image_id': img_id,
+        'filename': img_filename,
+        'artifacts': {},
+        'success': False,
+        'error': None,
+        'processing_time': 0
+    }
+    
+    start_time = time.time()
+    img_array = Image.open(data['real_image_path'])
+    caption = data['caption']
+    
+    # Create image-specific output directory for FLUX results
+    flux_output_path = os.path.join(output_dir, f'{data["id"]}')
+    os.makedirs(flux_output_path, exist_ok=True)
+    
+    # Copy visualizations from GSAM processing (they're in the same directory as metadata.pkl)
+    gsam_image_dir = os.path.dirname(data_file)  # Directory containing metadata.pkl
+    viz_file = "real_image.png"
+    gsam_viz_path = os.path.join(gsam_image_dir, viz_file)
+    flux_viz_path = os.path.join(flux_output_path, viz_file)
+    
+    if os.path.exists(gsam_viz_path) and not os.path.exists(flux_viz_path):
+        import shutil
+        shutil.copy2(gsam_viz_path, flux_viz_path)
+    
+    # Process each artifact type
+    successful_artifacts = 0
+    if len(data['artifacts']) == 0:
+        logger.warning(f"  No artifact data found")
+        return None
+    
+    artifact_data = data['artifacts']
+    
+    logger.info(f"  Generating artifacts...")
+            
+    # Run artifact injection with patch annotations only
+    try:
+        generated_image = flux_generator.inject_artifacts(
+            source_prompt=caption,
+            target_prompt=caption,
+            artifact_data=artifact_data,
+            source_img=img_array.copy(),
+        )
+
+        # Save generated artifact image directly
+        generated_image.save(os.path.join(flux_output_path, 'artifact.png'))
+
+        results['artifacts'] = {
+            'success': True,
+            'artifacts': artifact_data
+        }
+        successful_artifacts += 1
+        logger.info(f"  ✅ artifact generated successfully")
+
+        if successful_artifacts > 0:
+            results['success'] = True
+    except:
+        results['artifacts'] = {
+            'success': False
+        }
+        logger.info(f"  ❌ artifact generation failure")
+    
+    results['processing_time'] = time.time() - start_time
+    return results
+
+
+def run_flux_generation(segmentation_output_dir: str, artifact_types: List[str],
+                       resume: bool = False, device: str = 'cuda',
+                       output_dir: Optional[str] = None, inject_step: int=20,
+                       pe_step_addition: int=25, pe_step_removal: int=25, pe_step_distortion: int=15,
+                       pe_step_fusion: int=15,
+                       guidance: float=5.0, num_steps: int=25, seed: int=42, use_rf_solver: bool=False):
+    """Run FLUX artifact generation on processed data"""
+    
+    # Extract supercategory from output directory name
+    supercategory = os.path.basename(segmentation_output_dir).replace('vlpart_output_', '')
+    
+    # Setup configurations  
+    output_dir = output_dir or f'flux_output_{supercategory}'
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Setup logging
+    logger = setup_logging(output_dir, supercategory)
+    logger.info(f"Starting FLUX generation for supercategory: {supercategory}")
+    logger.info(f"Reading from: {segmentation_output_dir}")
+    logger.info(f"Artifact types: {artifact_types}")
+    
+    # Setup progress tracking
+    progress_file = os.path.join(output_dir, f'flux_progress.json')
+    stats = {
+        'total_images': 0,
+        'processed_images': 0,
+        'successful_images': 0,
+        'failed_images': 0,
+        'artifact_stats': {artifact_type: {'success': 0, 'failure': 0} 
+                         for artifact_type in artifact_types},
+        'start_time': datetime.now().isoformat(),
+        'processed_image_ids': []
+    }
+    
+    # Load previous progress if resuming
+    if resume and os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r') as f:
+                stats.update(json.load(f))
+                logger.info(f"Resuming: {len(stats['processed_image_ids'])} images already processed")
+        except Exception as e:
+            logger.warning(f"Could not load progress file: {e}")
+    
+    # Setup FLUX configuration
+    flux_config = FluxConfig(
+        name='flux-dev',
+        guidance=guidance,
+        num_steps=num_steps,
+        pe_step={
+            'addition': pe_step_addition,     
+            'removal': pe_step_removal,      
+            'distortion': pe_step_distortion,
+            'fusion': pe_step_fusion
+        },
+        inject_step=inject_step,
+        attn_mask_step=0,
+        seed=seed,
+        use_rf_solver=use_rf_solver,
+    )
+    
+    # Initialize components directly
+    logger.info("Initializing FLUX components...")
+    flux_generator = FluxGenerator(device=device, config=flux_config)
+    # For debug : log configuration stuff
+    logger.info("FLUX Configuration")
+    logger.info(f"Inject step: {inject_step}")
+    logger.info(f"PE step addition: {pe_step_addition}")
+    logger.info(f"PE step removal: {pe_step_removal}")
+    logger.info(f"PE step distortion: {pe_step_distortion}")
+    logger.info(f"PE step fusion: {pe_step_fusion}")
+    logger.info(f"Guidance: {guidance}")
+    logger.info(f"Number of steps: {num_steps}")
+    
+    try:
+        # Get list of processed data files from image directories
+        if not os.path.exists(segmentation_output_dir):
+            logger.error(f"Segmentation output directory does not exist: {segmentation_output_dir}")
+            return
+            
+        # Look for image_* directories containing metadata.pkl files
+        data_files = []
+        for image_dir in os.listdir(segmentation_output_dir):
+            metadata_file = os.path.join(segmentation_output_dir, image_dir, 'metadata.pkl')
+            if os.path.exists(metadata_file):
+                data_files.append(metadata_file)
+        
+        stats['total_images'] = len(data_files)
+        logger.info(f"Found {len(data_files)} processed data files")
+        
+        # Filter out already processed images if resuming
+        if resume:
+            processed_ids = set(stats['processed_image_ids'])
+            data_files = [f for f in data_files 
+                        #  if int(os.path.basename(os.path.dirname(f)).replace('image_', '')) not in processed_ids]
+                         if os.path.basename(os.path.dirname(f)) not in processed_ids]
+            logger.info(f"Remaining to process: {len(data_files)} files")
+        
+        if not data_files:
+            logger.info("No files to process!")
+            return
+            
+        # Process files with progress bar
+        with tqdm(total=len(data_files), desc=f"FLUX generation for {supercategory} images") as pbar:
+            for data_file in data_files:
+                # try:
+                result = process_single_image(
+                    data_file, flux_generator, output_dir, logger
+                )
+                # except:
+                #     result = {}
+                #     result['success'] = False
+                #     result['image_id'] = data_file
+                
+                # Update stats
+                stats['processed_images'] += 1
+                stats['processed_image_ids'].append(result['image_id'])
+                
+                if result['success']:
+                    stats['successful_images'] += 1
+                    # Update artifact stats
+                    for artifact in result['artifacts']['artifacts']:
+                        artifact_type = artifact['artifact_type']
+                        # Initialize artifact type if not already in stats
+                        if artifact_type not in stats['artifact_stats']:
+                            stats['artifact_stats'][artifact_type] = {'success': 0, 'failure': 0}
+                        stats['artifact_stats'][artifact_type]['success'] += 1
+                else:
+                    stats['failed_images'] += 1
+                
+                
+                # Update progress bar
+                status = "✅" if result['success'] else "❌"
+                pbar.set_postfix({
+                    'Current': f"{status} {result['filename'][:20]}...",
+                    'Success': stats['successful_images'],
+                    'Failed': stats['failed_images']
+                })
+                pbar.update(1)
+                
+                # Save progress periodically
+                if stats['processed_images'] % 10 == 0:
+                    with open(progress_file, 'w') as f:
+                        json.dump(stats, f, indent=2)
+                        
+        # Final progress save and summary
+        with open(progress_file, 'w') as f:
+            json.dump(stats, f, indent=2)
+        
+        # Print summary
+        logger.info("\n" + "="*60)
+        logger.info("FLUX ARTIFACT GENERATION SUMMARY")
+        logger.info("="*60)
+        logger.info(f"Supercategory: {supercategory}")
+        logger.info(f"Total images: {stats['total_images']}")
+        logger.info(f"Processed: {stats['processed_images']}")
+        logger.info(f"Successful: {stats['successful_images']}")
+        logger.info(f"Failed: {stats['failed_images']}")
+        success_rate = stats['successful_images']/max(stats['processed_images'], 1)*100
+        logger.info(f"Success rate: {success_rate:.1f}%")
+        
+        logger.info("\nArtifact Generation Statistics:")
+        for artifact_type, artifact_stats in stats['artifact_stats'].items():
+            total = artifact_stats['success'] + artifact_stats['failure']
+            success_rate = artifact_stats['success'] / max(total, 1) * 100
+            logger.info(f"  {artifact_type.title()}: {artifact_stats['success']}/{total} ({success_rate:.1f}%)")
+            
+        elapsed_time = (datetime.now() - datetime.fromisoformat(stats['start_time'])).total_seconds()
+        logger.info(f"\nTotal time: {elapsed_time/3600:.1f} hours")
+        logger.info(f"Results saved in: {output_dir}")
+        logger.info("="*60)
+        
+    finally:
+        # Cleanup components
+        flux_generator.unload_models()
+
+
+def main():
+    """Main function for FLUX artifact generation"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Generate FLUX artifacts from GSAM processing results')
+    parser.add_argument('segmentation_output_dir', type=str, 
+                       help='Directory containing GSAM processing results (with image_* subdirectories)')
+    parser.add_argument('--artifact-types', nargs='+', 
+                       default=['distortion', 'removal', 'addition'],
+                       help='Artifact types to generate')
+    parser.add_argument('--resume', action='store_true',
+                       help='Resume from previous run')
+    parser.add_argument('--device', type=str, default='cuda',
+                       help='Device to use (cuda/cpu)')
+    parser.add_argument('--output-dir', type=str, default=None,
+                       help='Output directory (default: flux_output_{supercategory})')
+    parser.add_argument('--inject', type=int, default=25,
+                       help='Inject step for FLUX generation (default: 25)')
+    parser.add_argument('--pe-step-addition', type=int, default=25,
+                       help='PE step count for addition artifacts (default: 25)')
+    parser.add_argument('--pe-step-removal', type=int, default=25,
+                       help='PE step count for removal artifacts (default: 25)')
+    parser.add_argument('--pe-step-distortion', type=int, default=15,
+                       help='PE step count for distortion artifacts (default: 15)')
+    parser.add_argument('--pe-step-fusion', type=int, default=15,
+                       help='PE step count for fusion artifacts (default: 15)')
+    parser.add_argument('--guidance', type=float, default=5.0,
+                       help='Guidance for FLUX generation (default: 5.0)')
+    parser.add_argument('--num-steps', type=int, default=25,
+                       help='Number of steps for FLUX generation (default: 25)')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Seed for FLUX generation (default: 42)')
+    parser.add_argument('--use-rf-solver', action='store_true',
+                       help='Use RF solver (second-order) instead of first-order denoising (default: False)')
+    args = parser.parse_args()
+    
+    run_flux_generation(
+        segmentation_output_dir=args.segmentation_output_dir,
+        artifact_types=args.artifact_types,
+        resume=args.resume,
+        device=args.device,
+        output_dir=args.output_dir,
+        inject_step=args.inject,
+        pe_step_addition=args.pe_step_addition,
+        pe_step_removal=args.pe_step_removal,
+        pe_step_distortion=args.pe_step_distortion,
+        pe_step_fusion=args.pe_step_fusion,
+        guidance=args.guidance,
+        num_steps=args.num_steps,
+        seed=args.seed,
+        use_rf_solver=args.use_rf_solver
+    )
+
+
+if __name__ == "__main__":
+    main() 
