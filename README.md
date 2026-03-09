@@ -1,5 +1,12 @@
 # See and Fix the Flaws: Enabling VLMs and Diffusion Models to Comprehend Visual Artifacts via Agentic Data Synthesis
 
+<div align="center">
+
+[![arXiv](https://img.shields.io/badge/arXiv-2602.20951-b31b1b.svg?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2602.20951)
+[![Dataset](https://img.shields.io/badge/🤗%20Dataset-ArtiBench-F59E0B.svg?style=for-the-badge&logoColor=white)](https://huggingface.co/datasets/KRAFTON/ArtiBench)
+[![Website](https://img.shields.io/badge/🌐%20Website-ArtiAgent-2563EB.svg?style=for-the-badge&logoColor=white)](https://cabbalett.github.io/publications/ArtiAgent/)
+</div>
+
 ## Overview
 **ArtiAgent** comprises three agents to efficiently create pairs of artifact-injected images and its correspondant:
 - **Perception agent** recognizes and grounds entities and subentities from real images.
